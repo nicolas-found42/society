@@ -1,4 +1,4 @@
-use crate::action::{affordances, apply, Intent, SocialAct, Verb};
+use crate::action::{affordances, apply, Intent, SocialAct};
 use crate::memory::{Memory, MemoryKind};
 use crate::world::{EventKind, Place, World};
 
@@ -27,7 +27,11 @@ fn affordances_only_offer_legal_actions() {
     for a in &w.agents {
         let opts = affordances(&w, a);
         for o in &opts {
-            assert!(Intent::parse(o, a.place).is_some(), "{o} should parse from {}", a.place.id());
+            assert!(
+                Intent::parse(o, a.place).is_some(),
+                "{o} should parse from {}",
+                a.place.id()
+            );
         }
         // A move is only ever offered to an adjacent place.
         for o in opts.iter().filter(|o| o.starts_with("go:")) {
@@ -77,9 +81,9 @@ fn desperate_agents_are_not_offered_rest_or_give() {
     }
     let a = w.agent(&name).unwrap();
     let opts = affordances(&w, a);
-    assert!(!opts.contains(&"rest".to_string()));
-    assert!(!opts.contains(&"give".to_string()));
-    assert!(opts.contains(&"forage".to_string()));
+    assert!(!opts.contains(&"rest".to_owned()));
+    assert!(!opts.contains(&"give".to_owned()));
+    assert!(opts.contains(&"forage".to_owned()));
     assert!(opts.iter().any(|o| o.starts_with("go:")));
 }
 
@@ -120,7 +124,9 @@ fn giving_transfers_exactly_one_and_raises_trust() {
 fn memory_cap_never_evicts_a_scar() {
     let mut w = World::founding(17);
     let name = w.agents[0].name.clone();
-    w.agent_mut(&name).unwrap().remember(Memory::scar(0, "You watched a man starve."));
+    w.agent_mut(&name)
+        .unwrap()
+        .remember(Memory::scar(0, "You watched a man starve."));
     for i in 0..40 {
         w.agent_mut(&name).unwrap().remember(Memory::new(
             i,
@@ -145,12 +151,12 @@ fn memory_decays_but_scars_do_not() {
 #[test]
 fn starvation_kills_after_three_turns() {
     let mut w = World::founding(19);
-    for a in w.agents.iter_mut() {
+    for a in &mut w.agents {
         a.food = 0;
         a.hunger = 3;
         a.starving_turns = 0;
     }
-    for (_, st) in w.places.iter_mut() {
+    for (_, st) in &mut w.places {
         st.food = 0;
     }
     w.weather = 0.0;
@@ -160,7 +166,13 @@ fn starvation_kills_after_three_turns() {
     assert_eq!(w.living().count(), 9);
     w.settle();
     assert_eq!(w.living().count(), 0);
-    assert_eq!(w.agents.iter().filter(|a| a.memories.iter().any(|m| m.permanent)).count(), 0);
+    assert_eq!(
+        w.agents
+            .iter()
+            .filter(|a| a.memories.iter().any(|m| m.permanent))
+            .count(),
+        0
+    );
 }
 
 #[test]
@@ -179,7 +191,10 @@ fn death_leaves_a_scar_in_the_survivors() {
     w.settle();
     assert!(!w.agent(&victim).unwrap().alive);
     let survivor = w.agents.iter().find(|a| a.alive).unwrap();
-    assert!(survivor.memories.iter().any(|m| m.permanent && m.text.contains(&victim)));
+    assert!(survivor
+        .memories
+        .iter()
+        .any(|m| m.permanent && m.text.contains(&victim)));
 }
 
 #[test]
@@ -188,7 +203,7 @@ fn broken_promise_becomes_a_scar() {
     let who = w.agents[0].name.clone();
     let to = w.agents[1].name.clone();
     w.agent_mut(&who).unwrap().promise = Some(crate::world::Promise {
-        to: to.clone(),
+        to,
         text: "half my grain".into(),
         made_turn: 0,
         kept: None,
@@ -231,9 +246,20 @@ fn speaking_records_an_event_and_a_memory() {
     let mut w = World::founding(41);
     let name = w.agents[0].name.clone();
     let intent = Intent::parse("speak", w.agent(&name).unwrap().place).unwrap();
-    apply(&mut w, &name, &intent, "the grain is short", SocialAct::None);
+    apply(
+        &mut w,
+        &name,
+        &intent,
+        "the grain is short",
+        SocialAct::None,
+    );
     assert_eq!(w.events.len(), 2);
-    assert!(w.agent(&name).unwrap().memories.iter().any(|m| m.text.contains("grain is short")));
+    assert!(w
+        .agent(&name)
+        .unwrap()
+        .memories
+        .iter()
+        .any(|m| m.text.contains("grain is short")));
 }
 
 #[test]
@@ -261,7 +287,7 @@ fn verb_roundtrip_covers_every_affordance() {
     for a in &w.agents {
         for o in affordances(&w, a) {
             let i = Intent::parse(&o, a.place).expect("affordance parses");
-            assert!(!i.verb.id().is_empty());
+            assert_ne!(i.verb.id(), "");
         }
     }
 }
@@ -276,10 +302,30 @@ use crate::world::{
 
 /// Two adults of age, fed, together, mutually trusting, with a full granary.
 fn pair_world(seed: u64) -> World {
-    let names = vec!["Ada".to_string(), "Bo".to_string()];
+    let names = vec!["Ada".to_owned(), "Bo".to_owned()];
     let mut agents = vec![
-        Agent::new("Ada", "cautious and loyal; keeps accounts", Place::Hut, 2, 0, 0, 0, vec![], &names),
-        Agent::new("Bo", "anxious and generous; apologises", Place::Hut, 2, 0, 0, 0, vec![], &names),
+        Agent::new(
+            "Ada",
+            "cautious and loyal; keeps accounts",
+            Place::Hut,
+            2,
+            0,
+            0,
+            0,
+            vec![],
+            &names,
+        ),
+        Agent::new(
+            "Bo",
+            "anxious and generous; apologises",
+            Place::Hut,
+            2,
+            0,
+            0,
+            0,
+            vec![],
+            &names,
+        ),
     ];
     // Comfortably above the threshold, so tuning the constant cannot silently
     // turn this fixture into a no-birth case.
@@ -288,12 +334,7 @@ fn pair_world(seed: u64) -> World {
     agents[1].set_trust("Ada", trust);
     let places = Place::ALL
         .into_iter()
-        .map(|p| {
-            (
-                p,
-                PlaceState::new(if p == Place::Granary { 9 } else { 0 }),
-            )
-        })
+        .map(|p| (p, PlaceState::new(if p == Place::Granary { 9 } else { 0 })))
         .collect();
     World {
         seed,
@@ -313,7 +354,10 @@ fn pair_world(seed: u64) -> World {
 }
 
 fn births(w: &World) -> usize {
-    w.events.iter().filter(|e| e.kind == EventKind::Birth).count()
+    w.events
+        .iter()
+        .filter(|e| e.kind == EventKind::Birth)
+        .count()
 }
 
 #[test]
@@ -326,28 +370,45 @@ fn a_fed_trusting_pair_has_a_child() {
 
     let child = w.agents.last().unwrap();
     assert_eq!(child.generation, 1);
-    assert_eq!(child.parents, vec!["Ada".to_string(), "Bo".to_string()]);
+    assert_eq!(child.parents, vec!["Ada".to_owned(), "Bo".to_owned()]);
     assert_eq!(child.place, Place::Hut, "born where the parents are");
     assert_eq!(child.born_turn, BIRTH_MIN_AGE);
     assert_eq!(child.food, CHILD_FOOD);
     assert_eq!(child.hunger, 1);
     assert!(child.memories.is_empty(), "no inherited memories");
-    assert_eq!(child.trust_of("Ada"), NEUTRAL_TRUST);
-    assert_eq!(child.trust_of("Bo"), NEUTRAL_TRUST);
+    assert!((child.trust_of("Ada") - NEUTRAL_TRUST).abs() < f32::EPSILON);
+    assert!((child.trust_of("Bo") - NEUTRAL_TRUST).abs() < f32::EPSILON);
     assert!(child.alive);
 
     // The granary pays; the parents' carried food is untouched.
     let granary_after = w.place_state(Place::Granary).food;
     let harvested = granary_after + BIRTH_COST - granary_before;
-    assert_eq!(granary_after, (granary_before + harvested).min(18) - BIRTH_COST);
+    assert_eq!(
+        granary_after,
+        (granary_before + harvested).min(18) - BIRTH_COST
+    );
     assert_eq!(w.agent("Ada").unwrap().food, 2);
     assert_eq!(w.agent("Bo").unwrap().food, 2);
 
-    let birth = w.events.iter().find(|e| e.kind == EventKind::Birth).unwrap();
+    let birth = w
+        .events
+        .iter()
+        .find(|e| e.kind == EventKind::Birth)
+        .unwrap();
     assert!(birth.text.contains(&child.name));
     assert!(birth.text.contains("Ada") && birth.text.contains("Bo"));
-    assert!(w.agent("Ada").unwrap().memories.iter().any(|m| m.text.contains(&child.name)));
-    assert!(w.agent("Bo").unwrap().memories.iter().any(|m| m.text.contains(&child.name)));
+    assert!(w
+        .agent("Ada")
+        .unwrap()
+        .memories
+        .iter()
+        .any(|m| m.text.contains(&child.name)));
+    assert!(w
+        .agent("Bo")
+        .unwrap()
+        .memories
+        .iter()
+        .any(|m| m.text.contains(&child.name)));
 }
 
 #[test]
@@ -385,7 +446,9 @@ fn no_birth_when_either_parent_is_hungry() {
 #[test]
 fn no_birth_without_mutual_trust() {
     let mut w = pair_world(89);
-    w.agent_mut("Bo").unwrap().set_trust("Ada", BIRTH_TRUST - 0.5);
+    w.agent_mut("Bo")
+        .unwrap()
+        .set_trust("Ada", BIRTH_TRUST - 0.5);
     w.settle();
     assert_eq!(w.agents.len(), 2, "one-sided trust is not enough");
 }
@@ -408,7 +471,7 @@ fn no_birth_at_the_population_cap() {
         names.push(n);
         w.agents.push(a);
     }
-    for a in w.agents.iter_mut() {
+    for a in &mut w.agents {
         if a.name.starts_with("Extra") {
             a.hunger = 2;
         }
@@ -422,11 +485,15 @@ fn no_birth_at_the_population_cap() {
 #[test]
 fn no_birth_before_minimum_age() {
     let mut w = pair_world(103);
-    for a in w.agents.iter_mut() {
+    for a in &mut w.agents {
         a.born_turn = BIRTH_MIN_AGE;
     }
     w.settle();
-    assert_eq!(w.agents.len(), 2, "the founding pair cannot pair off on turn one");
+    assert_eq!(
+        w.agents.len(),
+        2,
+        "the founding pair cannot pair off on turn one"
+    );
 }
 
 #[test]
@@ -435,10 +502,10 @@ fn at_most_one_birth_per_turn() {
     let mut names: Vec<String> = w.agents.iter().map(|a| a.name.clone()).collect();
     for n in ["Cy", "Di"] {
         let a = Agent::new(n, "plain", Place::Hut, 2, 0, 0, 0, vec![], &names);
-        names.push(n.to_string());
+        names.push(n.to_owned());
         w.agents.push(a);
     }
-    for a in w.agents.iter_mut() {
+    for a in &mut w.agents {
         for other in names.clone() {
             if other != a.name {
                 a.set_trust(&other, BIRTH_TRUST + 0.2);
@@ -449,7 +516,6 @@ fn at_most_one_birth_per_turn() {
     w.settle();
     assert_eq!(w.agents.len(), 5);
     assert_eq!(births(&w), 1);
-    assert!(w.place_state(Place::Granary).food >= 0);
 }
 
 #[test]
@@ -459,8 +525,14 @@ fn same_seed_same_child() {
     a.settle();
     b.settle();
     assert_eq!(a.agents.last().unwrap().name, b.agents.last().unwrap().name);
-    assert_eq!(a.agents.last().unwrap().parents, b.agents.last().unwrap().parents);
-    assert_eq!(a.place_state(Place::Granary).food, b.place_state(Place::Granary).food);
+    assert_eq!(
+        a.agents.last().unwrap().parents,
+        b.agents.last().unwrap().parents
+    );
+    assert_eq!(
+        a.place_state(Place::Granary).food,
+        b.place_state(Place::Granary).food
+    );
 }
 
 #[test]
@@ -491,7 +563,10 @@ fn the_child_is_an_ordinary_villager_next_turn() {
     }
     w.settle();
     assert!(!w.agent(&name).unwrap().alive);
-    assert!(w.events.iter().any(|e| e.kind == EventKind::Death && e.actor == name));
+    assert!(w
+        .events
+        .iter()
+        .any(|e| e.kind == EventKind::Death && e.actor == name));
 }
 
 #[test]
@@ -499,7 +574,10 @@ fn lineage_is_strictly_increasing_and_empty_for_founders() {
     let w = World::founding(127);
     for a in &w.agents {
         assert_eq!(a.generation, 0);
-        assert!(a.parents.is_empty(), "parents empty exactly for the founding cast");
+        assert!(
+            a.parents.is_empty(),
+            "parents empty exactly for the founding cast"
+        );
         assert_eq!(a.born_turn, 0);
     }
     let mut w = pair_world(131);
@@ -515,7 +593,7 @@ fn lineage_is_strictly_increasing_and_empty_for_founders() {
 #[test]
 fn a_birth_does_not_erase_a_death_scar() {
     let mut w = pair_world(137);
-    let names = vec!["Ada".to_string(), "Bo".to_string(), "Cy".to_string()];
+    let names = vec!["Ada".to_owned(), "Bo".to_owned(), "Cy".to_owned()];
     let mut dying = Agent::new("Cy", "tired", Place::Hut, 0, 3, 0, 0, vec![], &names);
     dying.starving_turns = 2;
     w.agents.push(dying);
@@ -523,14 +601,33 @@ fn a_birth_does_not_erase_a_death_scar() {
     assert!(w.events.iter().any(|e| e.kind == EventKind::Death));
     assert_eq!(births(&w), 1, "a birth happens in the same turn as a death");
     let survivor = w.agent("Ada").unwrap();
-    assert!(survivor.memories.iter().any(|m| m.permanent && m.text.contains("Cy")));
+    assert!(survivor
+        .memories
+        .iter()
+        .any(|m| m.permanent && m.text.contains("Cy")));
 }
 
 #[test]
 fn a_child_inherits_a_trait_from_each_parent() {
     let mut w = pair_world(139);
-    let mother_trait = w.agent("Ada").unwrap().persona.split(';').next().unwrap().trim().to_string();
-    let father_trait = w.agent("Bo").unwrap().persona.split(';').next().unwrap().trim().to_string();
+    let mother_trait = w
+        .agent("Ada")
+        .unwrap()
+        .persona
+        .split(';')
+        .next()
+        .unwrap()
+        .trim()
+        .to_owned();
+    let father_trait = w
+        .agent("Bo")
+        .unwrap()
+        .persona
+        .split(';')
+        .next()
+        .unwrap()
+        .trim()
+        .to_owned();
     w.settle();
     let child = w.agents.last().unwrap();
     // Mixed, not authored: both parents' dominant traits are present. The exact
@@ -558,7 +655,13 @@ fn multi_resource_actions_work_and_update_skills() {
     w.agent_mut(&name).unwrap().place = Place::Woods;
     let wood_before = w.agent(&name).unwrap().wood;
     let chop = Intent::parse("chop", Place::Woods).unwrap();
-    let out = apply(&mut w, &name, &chop, "timber for the hearth", SocialAct::None);
+    let out = apply(
+        &mut w,
+        &name,
+        &chop,
+        "timber for the hearth",
+        SocialAct::None,
+    );
     assert!(out.accepted);
     assert!(w.agent(&name).unwrap().wood > wood_before);
 
@@ -583,7 +686,13 @@ fn healing_cures_ailments_and_restores_health() {
     w.agent_mut(&patient).unwrap().ailment = Some(crate::world::Ailment::Fever);
 
     let heal = Intent::parse("heal", Place::Shrine).unwrap();
-    let out = apply(&mut w, &healer, &heal, "drink this infusion", SocialAct::Blessing);
+    let out = apply(
+        &mut w,
+        &healer,
+        &heal,
+        "drink this infusion",
+        SocialAct::Blessing,
+    );
     assert!(out.accepted);
     assert!(w.agent(&patient).unwrap().ailment.is_none());
     assert_eq!(w.agent(&patient).unwrap().health, 9);

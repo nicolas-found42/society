@@ -1,0 +1,5 @@
+[build]
+rustflags = ["-D", "warnings"]
+
+[env]
+RUSTDOCFLAGS = "-D warnings"

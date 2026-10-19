@@ -14,3 +14,83 @@ society-sim = { path = "crates/sim" }
 [profile.release]
 opt-level = "s"
 lto = true
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unused = { level = "warn", priority = -1 }
+rust_2018_idioms = { level = "warn", priority = -1 }
+future_incompatible = { level = "warn", priority = -1 }
+nonstandard_style = { level = "warn", priority = -1 }
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+unused_qualifications = "warn"
+unused_lifetimes = "warn"
+single_use_lifetimes = "warn"
+non_ascii_idents = "warn"
+redundant_lifetimes = "warn"
+variant_size_differences = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+unwrap_used = "warn"
+panic = "warn"
+undocumented_unsafe_blocks = "warn"
+
+# Deliberate exceptions to pedantic/nursery. Each is noise for this codebase,
+# not a defect class: the sim does bounded f32 arithmetic on small counts, and
+# long UI/engine functions are sequential by nature.
+# Invariant `expect("...")` is how this code states "the agent/place exists";
+# the sim is a state machine whose lookups are guarded by `living()`/`names`.
+# Score tables list one arm per verb on purpose, so a tweak touches one line.
+# Building prompt/card text; an allocation per line is irrelevant there.
+# Contradicts rustc `unreachable_pub`, which we keep.
+redundant_pub_crate = "allow"
+# Errors are typed (`EngineError`, `JudgmentError`, ...); prose repeats them.
+# Handlers hold the world lock for the whole request on purpose.
+# Style-only; the rewrites they ask for read worse here.
+# CLI flags and UI toggles are bools by nature; the lint's heuristic misfires on `a.name == e.actor`.
+
+# Restriction lints worth having.
+clone_on_ref_ptr = "warn"
+str_to_string = "warn"
+rc_buffer = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+empty_structs_with_brackets = "warn"
+lossy_float_literal = "warn"
+mem_forget = "warn"
+same_name_method = "warn"
+unneeded_field_pattern = "warn"
+verbose_file_reads = "warn"
+unseparated_literal_suffix = "warn"
+try_err = "warn"
+string_add = "warn"
+tests_outside_test_module = "warn"
+float_cmp_const = "warn"
+filetype_is_file = "warn"
+fn_to_numeric_cast_any = "warn"
+get_unwrap = "warn"
+if_then_some_else_none = "warn"
+infinite_loop = "warn"
+map_err_ignore = "warn"
+needless_raw_strings = "warn"
+pub_without_shorthand = "warn"
+rc_mutex = "warn"
+self_named_module_files = "warn"
+string_lit_chars_any = "warn"
+suspicious_xor_used_as_pow = "warn"
+unnecessary_self_imports = "warn"
+use_debug = "warn"
+allow_attributes_without_reason = "warn"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
+private_intra_doc_links = "deny"
+invalid_codeblock_attributes = "deny"
+bare_urls = "deny"

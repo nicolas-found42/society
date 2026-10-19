@@ -41,6 +41,19 @@ struct EnvelopeRef<'a> {
     world: &'a World,
 }
 
+/// Lightweight metadata summary of a saved village on disk.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SaveSummary {
+    pub version: u32,
+    pub seed: u64,
+    pub turn: u64,
+    pub day: u64,
+    pub living: usize,
+    pub season: String,
+    pub weather_kind: String,
+    pub halted: Option<String>,
+}
+
 #[derive(Debug)]
 pub enum SaveError {
     /// The file could not be read, written, or removed.
@@ -64,15 +77,15 @@ pub enum SaveError {
 impl std::fmt::Display for SaveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SaveError::Io {
+            Self::Io {
                 path,
                 action,
                 source,
             } => write!(f, "cannot {action} save {}: {source}", path.display()),
-            SaveError::Corrupt { path, reason } => {
+            Self::Corrupt { path, reason } => {
                 write!(f, "save {} is corrupt: {reason}", path.display())
-            }
-            SaveError::Version {
+            },
+            Self::Version {
                 path,
                 found,
                 expected,
@@ -81,9 +94,9 @@ impl std::fmt::Display for SaveError {
                 "save {} has format version {found}, this build reads version {expected}",
                 path.display()
             ),
-            SaveError::Unwritable { path, reason } => {
+            Self::Unwritable { path, reason } => {
                 write!(f, "cannot write save {}: {reason}", path.display())
-            }
+            },
         }
     }
 }
@@ -93,13 +106,15 @@ impl std::error::Error for SaveError {}
 /// Resolve the village path: the environment variable if set, otherwise the
 /// project's ignored data directory.
 pub fn save_path() -> PathBuf {
-    std::env::var_os(SAVE_PATH_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_SAVE_PATH))
+    std::env::var_os(SAVE_PATH_ENV).map_or_else(|| PathBuf::from(DEFAULT_SAVE_PATH), PathBuf::from)
 }
 
 /// Load a village. An absent file is not an error: it means first run, and the
 /// caller founds a fresh world from the seed.
+///
+/// # Errors
+///
+/// Returns a `SaveError` if the file cannot be read, parsed, or migrated.
 pub fn load(path: &Path) -> Result<Option<World>, SaveError> {
     let bytes = match fs::read(path) {
         Ok(b) => b,
@@ -110,22 +125,21 @@ pub fn load(path: &Path) -> Result<Option<World>, SaveError> {
                 action: "read",
                 source,
             })
-        }
+        },
     };
 
-    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| {
-        SaveError::Corrupt {
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| SaveError::Corrupt {
             path: path.to_path_buf(),
             reason: e.to_string(),
-        }
-    })?;
-    let Some(version) = value.get("version").and_then(|v| v.as_u64()) else {
+        })?;
+    let Some(version) = value.get("version").and_then(serde_json::Value::as_u64) else {
         return Err(SaveError::Corrupt {
             path: path.to_path_buf(),
             reason: "no format version".into(),
         });
     };
-    if version != SAVE_VERSION as u64 {
+    if version != u64::from(SAVE_VERSION) {
         return Err(SaveError::Version {
             path: path.to_path_buf(),
             found: version,
@@ -143,10 +157,60 @@ pub fn load(path: &Path) -> Result<Option<World>, SaveError> {
     Ok(Some(world))
 }
 
+/// Inspect a village save file without replacing the active simulation state.
+///
+/// # Errors
+///
+/// Returns a `SaveError` under the same conditions as [`load`].
+pub fn inspect(path: &Path) -> Result<Option<SaveSummary>, SaveError> {
+    let Some(w) = load(path)? else {
+        return Ok(None);
+    };
+    Ok(Some(SaveSummary {
+        version: SAVE_VERSION,
+        seed: w.seed,
+        turn: w.turn,
+        day: w.day,
+        living: w.living().count(),
+        season: w.season().id().to_owned(),
+        weather_kind: w.weather_kind.id().to_owned(),
+        halted: w.halted,
+    }))
+}
+
+/// Check that every floating-point invariant in `World` is finite before disk
+/// serialization.
+///
+/// # Errors
+///
+/// Returns a `SaveError` if any floating-point field is not finite.
+pub fn validate_world(world: &World, path: &Path) -> Result<(), SaveError> {
+    if !world.weather.is_finite() || !world.village_morale.is_finite() {
+        return Err(SaveError::Unwritable {
+            path: path.to_path_buf(),
+            reason: "non-finite world weather or village_morale".into(),
+        });
+    }
+    for a in &world.agents {
+        if !a.standing.is_finite() || a.trust.iter().any(|(_, v)| !v.is_finite()) {
+            return Err(SaveError::Unwritable {
+                path: path.to_path_buf(),
+                reason: format!("non-finite standing or trust on agent {}", a.name),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Save a village atomically. The bytes are serialised and verified to load
 /// back before the target is touched, so a save that could not be read is
 /// never written.
+///
+/// # Errors
+///
+/// Returns a `SaveError` if validation, serialisation, verification or the write fails.
 pub fn save(world: &World, path: &Path) -> Result<(), SaveError> {
+    validate_world(world, path)?;
     let envelope = EnvelopeRef {
         version: SAVE_VERSION,
         world,
@@ -202,6 +266,10 @@ pub fn save(world: &World, path: &Path) -> Result<(), SaveError> {
 
 /// Remove the save. Returns whether a file was actually cleared, so `/reset`
 /// and `--reset` can report what they did.
+///
+/// # Errors
+///
+/// Returns a `SaveError` if the file exists but cannot be removed.
 pub fn clear(path: &Path) -> Result<bool, SaveError> {
     match fs::remove_file(path) {
         Ok(()) => Ok(true),
@@ -223,7 +291,7 @@ pub fn mark_reset(world: &mut World, cause: &str) {
         place: Place::Granary,
         kind: EventKind::Divine,
         action: "reset".into(),
-        text: cause.to_string(),
+        text: cause.to_owned(),
         social: None,
         intensity: None,
         grounded: None,
@@ -235,11 +303,12 @@ pub fn mark_reset(world: &mut World, cause: &str) {
 /// Load the village at `path`, founding a new one at `seed` only when there is
 /// no save. `--seed` is deliberately ignored when a village exists: restarting
 /// must never replace a living settlement.
+///
+/// # Errors
+///
+/// Returns a `SaveError` if an existing save cannot be loaded.
 pub fn load_or_found(path: &Path, seed: u64) -> Result<(World, bool), SaveError> {
-    match load(path)? {
-        Some(world) => Ok((world, true)),
-        None => Ok((World::founding(seed), false)),
-    }
+    Ok(load(path)?.map_or_else(|| (World::founding(seed), false), |world| (world, true)))
 }
 
 fn temp_path(path: &Path) -> PathBuf {
@@ -251,8 +320,8 @@ fn temp_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use society_sim::{Agent, Memory, Promise};
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -302,7 +371,9 @@ mod tests {
             made_turn: 20,
             kept: None,
         });
-        w.agent_mut("Bo").unwrap().remember(Memory::scar(9, "You watched Cor starve."));
+        w.agent_mut("Bo")
+            .unwrap()
+            .remember(Memory::scar(9, "You watched Cor starve."));
         let names: Vec<String> = w.agents.iter().map(|a| a.name.clone()).collect();
         let mut child = Agent::new(
             "Ash",
@@ -433,10 +504,12 @@ mod tests {
         assert!(text.contains(&path.display().to_string()), "{text}");
         assert!(text.contains("99"), "{text}");
         match err {
-            SaveError::Version { found, expected, .. } => {
+            SaveError::Version {
+                found, expected, ..
+            } => {
                 assert_eq!(found, 99);
                 assert_eq!(expected, SAVE_VERSION);
-            }
+            },
             other => panic!("wrong error: {other}"),
         }
     }
@@ -458,7 +531,10 @@ mod tests {
 
         assert_eq!(fs::read(&path).unwrap(), before);
         assert_eq!(json(&load(&path).unwrap().unwrap()), json(&good));
-        assert!(!temp_path(&path).exists(), "no partial temp file left behind");
+        assert!(
+            !temp_path(&path).exists(),
+            "no partial temp file left behind"
+        );
     }
 
     #[test]
@@ -500,5 +576,23 @@ mod tests {
         save(&w, &path).unwrap();
         let loaded = load(&path).unwrap().unwrap();
         assert_eq!(loaded.halted.as_deref(), Some("judgment layer unreachable"));
+    }
+
+    #[test]
+    fn inspect_summarizes_saved_village_metadata() {
+        let dir = TempDir::new();
+        let path = dir.join("village.json");
+        assert!(inspect(&path).unwrap().is_none());
+
+        let w = lived_in_world(23);
+        save(&w, &path).unwrap();
+        let summary = inspect(&path).unwrap().expect("save summary");
+        assert_eq!(summary.seed, 23);
+        assert_eq!(summary.turn, 31);
+        assert_eq!(summary.day, 2);
+        assert_eq!(
+            summary.halted.as_deref(),
+            Some("judgment layer unreachable")
+        );
     }
 }

@@ -1,4 +1,4 @@
-//! `society` — a persistent society of small local models.
+//! `society` — a persistent society of small models.
 //!
 //! Two run modes share one engine:
 //!   `society`            — native window, dev server on :8100
@@ -7,11 +7,24 @@
 //! The dev server is the harness: it lets an agent inspect and drive the same
 //! process the window is showing.
 
+// A drawing/UI crate: pixel and layout math is f32 on small counts, `App` and
+// the CLI are bags of independent toggles, and `egui` frame functions read as
+// one top-to-bottom layout, so splitting them hides the screen's structure.
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::too_many_lines,
+    clippy::struct_excessive_bools,
+    reason = "egui layout math and top-to-bottom frame functions"
+)]
+
 use clap::Parser;
 use society_server::{boot, devserver, DEFAULT_PORT};
 
 #[derive(Parser, Debug)]
-#[command(name = "society", about = "A small society of local models")]
+#[command(name = "society", about = "A small society of models")]
 struct Args {
     /// Run without opening a window.
     #[arg(long)]
@@ -27,13 +40,14 @@ struct Args {
     /// seed alone must not overwrite a village that already lived.
     #[arg(long)]
     reset: bool,
-    /// Concurrent voice calls. 16 measured clean on qwen3:0.6b.
+    /// Concurrent voice calls. Caps concurrency for nine-villager turns (a
+    /// turn issues at most one call per living villager, cap 12).
     #[arg(long, default_value_t = 8)]
     permits: usize,
     /// Advance this many turns immediately, then continue live.
     #[arg(long, default_value_t = 0)]
     warmup: usize,
-    /// Open on this view: world, feed, or inspector.
+    /// Open on this view: world, council, feed, or inspector.
     #[arg(long, default_value = "world")]
     view: String,
     /// Inspector selection; defaults to the first villager. Lets a capture
@@ -58,14 +72,17 @@ struct Args {
     /// Open paused instead of advancing turns on its own.
     #[arg(long)]
     paused: bool,
+    /// Print a village civic and economic digest on startup.
+    #[arg(long)]
+    digest: bool,
 }
 
 fn parse_size(s: &str) -> Result<(f32, f32), String> {
     let (w, h) = s
         .split_once(['x', 'X'])
-        .ok_or_else(|| "expected WIDTHxHEIGHT, e.g. 900x600".to_string())?;
-    let w: f32 = w.trim().parse().map_err(|_| "bad width".to_string())?;
-    let h: f32 = h.trim().parse().map_err(|_| "bad height".to_string())?;
+        .ok_or_else(|| "expected WIDTHxHEIGHT, e.g. 900x600".to_owned())?;
+    let w: f32 = w.trim().parse().map_err(|_bad| "bad width".to_owned())?;
+    let h: f32 = h.trim().parse().map_err(|_bad| "bad height".to_owned())?;
     Ok((w, h))
 }
 
@@ -85,25 +102,37 @@ fn main() {
                 eprintln!("the judgment layer is required; set OPENROUTER_API_KEY");
             }
             std::process::exit(2);
-        }
+        },
     };
     // Boot has finished and no turn has started, so the lock is free; a
     // blocked try_lock here would mean a bug, not contention, and reporting
     // nothing beats hanging before the window opens.
-    let (turn, seed) = state
-        .world
-        .try_lock()
-        .map(|w| (w.turn, w.seed))
-        .unwrap_or((0, args.seed));
+    let (turn, seed, pop, season, weather) = state.world.try_lock().map_or_else(
+        |_| (0, args.seed, 0, "spring".into(), "clear".into()),
+        |w| {
+            (
+                w.turn,
+                w.seed,
+                w.living().count(),
+                w.season().id().to_owned(),
+                w.weather_kind.id().to_owned(),
+            )
+        },
+    );
     let origin = if args.reset {
         "reset"
     } else {
         "loaded or founded"
     };
     println!(
-        "village: {origin} · seed {seed} · turn {turn} · save {}",
+        "village: {origin} · seed {seed} · turn {turn} · pop {pop} · {season}/{weather} · save {}",
         save_path.display()
     );
+    if args.digest {
+        if let Ok(w) = state.world.try_lock() {
+            println!("{}", window::format_village_digest(&w));
+        }
+    }
 
     let handle = rt.handle().clone();
     let server_state = state.clone();
@@ -117,24 +146,30 @@ fn main() {
     if args.warmup > 0 {
         let st = state.clone();
         let n = args.warmup;
+        #[allow(
+            clippy::significant_drop_tightening,
+            reason = "the world lock spans the whole warmup"
+        )]
         rt.block_on(async move {
             let mut w = st.world.lock().await;
             for i in 0..n {
                 match st.engine.step(&mut w).await {
                     Ok(rec) => {
+                        let civic_notes = window::apply_village_systems(&mut w);
                         println!(
-                            "[warmup {}/{}] turn {} — {} agent turns",
+                            "[warmup {}/{}] turn {} — {} agent turns ({} civic events)",
                             i + 1,
                             n,
                             rec.turn,
-                            rec.agents.len()
+                            rec.agents.len(),
+                            civic_notes
                         );
                         st.record(std::iter::once(rec)).await;
-                    }
+                    },
                     Err(e) => {
                         eprintln!("warmup halted: {e}");
                         break;
-                    }
+                    },
                 }
             }
         });
@@ -153,14 +188,16 @@ fn main() {
     if let Err(e) = window::run(
         handle,
         state,
-        port,
-        &args.view,
-        args.select.as_deref(),
-        args.expand_state,
-        args.no_select,
-        args.size,
-        !args.paused,
-        args.focus,
+        window::Launch {
+            port,
+            view: &args.view,
+            select: args.select.as_deref(),
+            expand_state: args.expand_state,
+            select_none: args.no_select,
+            size: args.size,
+            autostart: !args.paused,
+            focus: args.focus,
+        },
     ) {
         eprintln!("window failed: {e}");
         std::process::exit(1);

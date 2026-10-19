@@ -19,3 +19,6 @@ egui = "0.37"
 # launch: the observer window must never take focus from the user.
 winit = "0.30"
 clap = { version = "4", features = ["derive"] }
+
+[lints]
+workspace = true

@@ -1,7 +1,8 @@
 # society
 
-A living settlement of small local models. Nine villagers with memory, hunger,
-grudges and promises run on `qwen3:0.6b`; a typed judgment layer decides what
+A living settlement of small models. Nine villagers with memory, hunger,
+grudges and promises speak through a local 350M model
+(`hf.co/LiquidAI/LFM2.5-350M-GGUF:Q4_K_M`); a typed judgment layer decides what
 they do; you watch. It is a native desktop app with a control API so it can be
 driven and inspected from a terminal.
 
@@ -31,6 +32,31 @@ file, never a silent reset.
 | Variable | Default | Meaning |
 |---|---|---|
 | `SOCIETY_SAVE_PATH` | `data/society.json` | village file; one file per village |
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | daemon the voice models are called through |
+| `SOCIETY_ACTOR_MODEL` | `hf.co/LiquidAI/LFM2.5-350M-GGUF:Q4_K_M` | model for ordinary villagers |
+| `SOCIETY_ELDER_MODEL` | `hf.co/LiquidAI/LFM2.5-350M-GGUF:Q4_K_M` | model for the elder's lines |
+| `SOCIETY_ACTOR_THINK` | `false` | reasoning level for villagers (`low\|medium\|high\|xhigh\|max`, or `false`) |
+| `SOCIETY_ELDER_THINK` | `false` | reasoning level for the elder (`false\|low\|high\|max`) |
+| `OPENROUTER_API_KEY` | — | required for the judgment layer |
+| `SOCIETY_JEV_ENDPOINT` | OpenRouter Decisions API | judgment endpoint |
+| `SOCIETY_JEV_MODEL` | `typesafe/jev-1.14` | judgment model |
+
+The voice model is local: pull it once with
+`ollama pull hf.co/LiquidAI/LFM2.5-350M-GGUF:Q4_K_M`. Reasoning is off by
+default — it is a non-thinking model, and reasoning-off is where the measured
+turn time comes from. The model is fast enough that Ollama's default
+single-request slot is not a constraint (nine concurrent lines: 650 ms at one
+slot, 618 ms at eight). If you point `SOCIETY_*_MODEL` at a slower model, raise
+`OLLAMA_NUM_PARALLEL`: `qwen3:0.6b` drops from ~2.0 s to ~1.0 s per turn with
+eight slots, because its nine lines otherwise queue behind each other.
+
+`--permits` defaults to 8: caps concurrency for nine-villager turns. A turn
+makes at most one call per living villager (cap 12), so the default keeps a
+nine-line round inside one batch. A 429 is treated as backpressure: the line waits out
+`Retry-After` (capped at 10 s) and retries once, the window sheds to the floor,
+and the turn still commits with that villager silent rather than halting the
+village. Two such waits in one turn can exceed `/turn`'s default 120 s budget;
+that returns `504` with the already-committed turns kept.
 
 The window never takes focus and never raises itself, so it can sit behind what
 you are working on. Screenshot it at any time, from any app, with:
@@ -61,7 +87,7 @@ deterministic rules is worse than a `match`.
 |---|---|---|
 | Which moves are legal, what they cost, who owns what | code | Jev "is this legal" scored 0.56–0.59; code is 100% by construction |
 | Among 2–5 legal actions, which one now | Jev | 3.88/4 sensible vs 3.12/4 for a deterministic policy, blind-judged by the 12B |
-| One spoken line | qwen3:0.6b | 0.2–0.5 s solo, 1–3 s at 16-way concurrency |
+| One spoken line | LFM2.5-350M (both roles) | **72 ms** solo, **408 ms** line median and **689 ms** turn median on a stock daemon; nine concurrent lines 650 ms at one slot vs 618 ms at eight — the slot count is noise for this model |
 | "Does this line fit the world" | Jev | grounding 10/10, true 0.72 vs false 0.05 |
 | "What kind of social act is that" | Jev | 17/18 labelled set |
 | Memory salience | Jev | absolute ranking is unreliable; *conditional* selection is strong |
@@ -81,14 +107,19 @@ Two failure modes are designed around explicitly:
 ```
 code: enumerate legal actions per living villager
   └─ Jev: one batched request → intent + register + addressee for everyone
-      └─ qwen × 9: one line each, concurrent, AIMD-capped
+      └─ voice × 9: one line each, concurrent, AIMD-capped
           └─ Jev: one batched request → fidelity, grounding, social act, intensity
               └─ code: validate, apply, settle, log
 ```
 
-One turn for nine villagers costs about **1.8–2.5 s** and **$0.0004**. Nothing
-is committed until every judgment has landed, so a mid-turn failure leaves the
-world untouched.
+One turn for nine villagers takes **~0.7 s** with the default LFM2.5-350M voice
+models, reasoning off, on a stock Ollama daemon (measured medians: 689 ms over
+5 turns, 408 ms per line). The old default (`qwen3:0.6b`) took ~2.0 s on the
+same daemon — not because it is 3× slower per line (124 ms solo), but because
+Ollama's default single slot serializes its nine lines; with
+`OLLAMA_NUM_PARALLEL=8` it reaches ~1.0 s. Judgment costs about **$0.0012** per
+turn; a local voice model is free. Nothing is committed until every judgment
+has landed, so a mid-turn failure leaves the world untouched.
 
 A line that contradicts its own decision or the world is still spoken, but is
 marked `discredited` and cannot move trust. That is what makes lying *cost*
@@ -104,7 +135,10 @@ noise generator; measured, its output drifts to restatement within a few turns.
 
 ```json
 {"judgment": {"reachable": true, "required": true},
- "voice": {"reachable": true, "models": ["gemma4:12b", "qwen3:0.6b"]}}
+ "voice": {"reachable": true,
+           "models": ["hf.co/LiquidAI/LFM2.5-350M-GGUF:Q4_K_M"],
+           "configured": ["hf.co/LiquidAI/LFM2.5-350M-GGUF:Q4_K_M"],
+           "missing": []}}
 ```
 
 ## World
@@ -152,7 +186,7 @@ cannot edit minds or kill directly.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/health` | both backends, permits, models, population cap, save path |
+| GET | `/health` | both backends, configured/missing models, permits, population cap, save path |
 | GET | `/state` | world snapshot: agents, places, food, trust, memories |
 | GET | `/agent/{name}` | one villager, including the exact JSON Jev sees |
 | GET | `/events?since=N&limit=M` | append-only event log |

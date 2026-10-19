@@ -16,59 +16,64 @@ pub enum Place {
 }
 
 impl Place {
-    pub const ALL: [Place; 7] = [
-        Place::Granary,
-        Place::Well,
-        Place::Field,
-        Place::Hut,
-        Place::Market,
-        Place::Shrine,
-        Place::Woods,
+    pub const ALL: [Self; 7] = [
+        Self::Granary,
+        Self::Well,
+        Self::Field,
+        Self::Hut,
+        Self::Market,
+        Self::Shrine,
+        Self::Woods,
     ];
 
-    pub fn id(self) -> &'static str {
+    #[must_use]
+    pub const fn id(self) -> &'static str {
         match self {
-            Place::Granary => "granary",
-            Place::Well => "well",
-            Place::Field => "field",
-            Place::Hut => "hut",
-            Place::Market => "market",
-            Place::Shrine => "shrine",
-            Place::Woods => "woods",
+            Self::Granary => "granary",
+            Self::Well => "well",
+            Self::Field => "field",
+            Self::Hut => "hut",
+            Self::Market => "market",
+            Self::Shrine => "shrine",
+            Self::Woods => "woods",
         }
     }
 
-    pub fn title(self) -> &'static str {
+    #[must_use]
+    pub const fn title(self) -> &'static str {
         match self {
-            Place::Granary => "The Granary",
-            Place::Well => "The Stone Well",
-            Place::Field => "The Barley Field",
-            Place::Hut => "The Long Hut",
-            Place::Market => "The Market Green",
-            Place::Shrine => "The Moss Shrine",
-            Place::Woods => "The Deep Woods",
+            Self::Granary => "The Granary",
+            Self::Well => "The Stone Well",
+            Self::Field => "The Barley Field",
+            Self::Hut => "The Long Hut",
+            Self::Market => "The Market Green",
+            Self::Shrine => "The Moss Shrine",
+            Self::Woods => "The Deep Woods",
         }
     }
 
-    pub fn icon(self) -> &'static str {
+    #[must_use]
+    pub const fn icon(self) -> &'static str {
         match self {
-            Place::Granary => "🏛",
-            Place::Well => "⛲",
-            Place::Field => "🌾",
-            Place::Hut => "🛖",
-            Place::Market => "⚖",
-            Place::Shrine => "⛩",
-            Place::Woods => "🌲",
+            Self::Granary => "🏛",
+            Self::Well => "⛲",
+            Self::Field => "🌾",
+            Self::Hut => "🛖",
+            Self::Market => "⚖",
+            Self::Shrine => "⛩",
+            Self::Woods => "🌲",
         }
     }
 
-    pub fn from_id(s: &str) -> Option<Place> {
-        Place::ALL.into_iter().find(|p| p.id() == s)
+    #[must_use]
+    pub fn from_id(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.id() == s)
     }
 
     /// Ring of seven. Symmetric; both directions are listed.
-    pub fn adjacent(self) -> &'static [Place] {
-        use Place::*;
+    #[must_use]
+    pub const fn adjacent(self) -> &'static [Self] {
+        use Place::{Field, Granary, Hut, Market, Shrine, Well, Woods};
         match self {
             Granary => &[Market, Field],
             Field => &[Granary, Woods],
@@ -80,24 +85,29 @@ impl Place {
         }
     }
 
-    pub fn can_harvest(self) -> bool {
-        matches!(self, Place::Field | Place::Woods)
+    #[must_use]
+    pub const fn can_harvest(self) -> bool {
+        matches!(self, Self::Field | Self::Woods)
     }
 
-    pub fn can_chop(self) -> bool {
-        matches!(self, Place::Woods)
+    #[must_use]
+    pub const fn can_chop(self) -> bool {
+        matches!(self, Self::Woods)
     }
 
-    pub fn can_draw_water(self) -> bool {
-        matches!(self, Place::Well)
+    #[must_use]
+    pub const fn can_draw_water(self) -> bool {
+        matches!(self, Self::Well)
     }
 
-    pub fn can_gather_herbs(self) -> bool {
-        matches!(self, Place::Woods | Place::Shrine | Place::Field)
+    #[must_use]
+    pub const fn can_gather_herbs(self) -> bool {
+        matches!(self, Self::Woods | Self::Shrine | Self::Field)
     }
 
-    pub fn can_craft(self) -> bool {
-        matches!(self, Place::Market | Place::Hut)
+    #[must_use]
+    pub const fn can_craft(self) -> bool {
+        matches!(self, Self::Market | Self::Hut)
     }
 }
 
@@ -124,41 +134,45 @@ pub enum TimeOfDay {
 }
 
 impl TimeOfDay {
-    pub fn from_turn(turn: u64) -> Self {
+    #[must_use]
+    pub const fn from_turn(turn: u64) -> Self {
         match turn % 12 {
-            0 | 1 => TimeOfDay::Dawn,
-            2 | 3 => TimeOfDay::Morning,
-            4 | 5 => TimeOfDay::Midday,
-            6 | 7 => TimeOfDay::Afternoon,
-            8 | 9 => TimeOfDay::Dusk,
-            _ => TimeOfDay::Night,
+            0 | 1 => Self::Dawn,
+            2 | 3 => Self::Morning,
+            4 | 5 => Self::Midday,
+            6 | 7 => Self::Afternoon,
+            8 | 9 => Self::Dusk,
+            _ => Self::Night,
         }
     }
 
-    pub fn id(self) -> &'static str {
+    #[must_use]
+    pub const fn id(self) -> &'static str {
         match self {
-            TimeOfDay::Dawn => "dawn",
-            TimeOfDay::Morning => "morning",
-            TimeOfDay::Midday => "midday",
-            TimeOfDay::Afternoon => "afternoon",
-            TimeOfDay::Dusk => "dusk",
-            TimeOfDay::Night => "night",
+            Self::Dawn => "dawn",
+            Self::Morning => "morning",
+            Self::Midday => "midday",
+            Self::Afternoon => "afternoon",
+            Self::Dusk => "dusk",
+            Self::Night => "night",
         }
     }
 
-    pub fn icon(self) -> &'static str {
+    #[must_use]
+    pub const fn icon(self) -> &'static str {
         match self {
-            TimeOfDay::Dawn => "🌅",
-            TimeOfDay::Morning => "🌤",
-            TimeOfDay::Midday => "☀️",
-            TimeOfDay::Afternoon => "⛅",
-            TimeOfDay::Dusk => "🌇",
-            TimeOfDay::Night => "🌙",
+            Self::Dawn => "🌅",
+            Self::Morning => "🌤",
+            Self::Midday => "☀️",
+            Self::Afternoon => "⛅",
+            Self::Dusk => "🌇",
+            Self::Night => "🌙",
         }
     }
 
-    pub fn is_night(self) -> bool {
-        matches!(self, TimeOfDay::Night)
+    #[must_use]
+    pub const fn is_night(self) -> bool {
+        matches!(self, Self::Night)
     }
 }
 
@@ -172,39 +186,43 @@ pub enum Season {
 }
 
 impl Season {
-    pub fn from_day(day: u64) -> Self {
+    #[must_use]
+    pub const fn from_day(day: u64) -> Self {
         match (day / 3) % 4 {
-            0 => Season::Spring,
-            1 => Season::Summer,
-            2 => Season::Autumn,
-            _ => Season::Winter,
+            0 => Self::Spring,
+            1 => Self::Summer,
+            2 => Self::Autumn,
+            _ => Self::Winter,
         }
     }
 
-    pub fn id(self) -> &'static str {
+    #[must_use]
+    pub const fn id(self) -> &'static str {
         match self {
-            Season::Spring => "spring",
-            Season::Summer => "summer",
-            Season::Autumn => "autumn",
-            Season::Winter => "winter",
+            Self::Spring => "spring",
+            Self::Summer => "summer",
+            Self::Autumn => "autumn",
+            Self::Winter => "winter",
         }
     }
 
-    pub fn icon(self) -> &'static str {
+    #[must_use]
+    pub const fn icon(self) -> &'static str {
         match self {
-            Season::Spring => "🌱",
-            Season::Summer => "🌻",
-            Season::Autumn => "🍂",
-            Season::Winter => "❄️",
+            Self::Spring => "🌱",
+            Self::Summer => "🌻",
+            Self::Autumn => "🍂",
+            Self::Winter => "❄️",
         }
     }
 
-    pub fn base_temp_c(self) -> i32 {
+    #[must_use]
+    pub const fn base_temp_c(self) -> i32 {
         match self {
-            Season::Spring => 14,
-            Season::Summer => 23,
-            Season::Autumn => 10,
-            Season::Winter => -2,
+            Self::Spring => 14,
+            Self::Summer => 23,
+            Self::Autumn => 10,
+            Self::Winter => -2,
         }
     }
 }
@@ -222,27 +240,29 @@ pub enum WeatherKind {
 }
 
 impl WeatherKind {
-    pub fn id(self) -> &'static str {
+    #[must_use]
+    pub const fn id(self) -> &'static str {
         match self {
-            WeatherKind::Clear => "clear",
-            WeatherKind::SoftRain => "soft_rain",
-            WeatherKind::BountifulSun => "bountiful_sun",
-            WeatherKind::Fog => "fog",
-            WeatherKind::Frost => "frost",
-            WeatherKind::Drought => "drought",
-            WeatherKind::Storm => "storm",
+            Self::Clear => "clear",
+            Self::SoftRain => "soft_rain",
+            Self::BountifulSun => "bountiful_sun",
+            Self::Fog => "fog",
+            Self::Frost => "frost",
+            Self::Drought => "drought",
+            Self::Storm => "storm",
         }
     }
 
-    pub fn icon(self) -> &'static str {
+    #[must_use]
+    pub const fn icon(self) -> &'static str {
         match self {
-            WeatherKind::Clear => "☀",
-            WeatherKind::SoftRain => "🌧",
-            WeatherKind::BountifulSun => "🌞",
-            WeatherKind::Fog => "🌫",
-            WeatherKind::Frost => "🥶",
-            WeatherKind::Drought => "🏜",
-            WeatherKind::Storm => "⛈",
+            Self::Clear => "☀",
+            Self::SoftRain => "🌧",
+            Self::BountifulSun => "🌞",
+            Self::Fog => "🌫",
+            Self::Frost => "🥶",
+            Self::Drought => "🏜",
+            Self::Storm => "⛈",
         }
     }
 }
@@ -273,16 +293,17 @@ pub struct PlaceState {
     pub fertility: f32,
 }
 
-fn default_condition() -> u8 {
+const fn default_condition() -> u8 {
     4
 }
 
-fn default_fertility() -> f32 {
+const fn default_fertility() -> f32 {
     1.0
 }
 
 impl PlaceState {
-    pub fn new(food: u32) -> Self {
+    #[must_use]
+    pub const fn new(food: u32) -> Self {
         Self {
             food,
             owner: None,
@@ -322,14 +343,13 @@ pub const BIRTH_MIN_AGE: u64 = 24;
 pub const CHILD_FOOD: u32 = 1;
 
 /// Standing every villager starts with: neither respected nor despised.
-pub const STARTING_STANDING: f32 = 2.0;
+pub(crate) const STARTING_STANDING: f32 = 2.0;
 
 /// Fixed local name pool for children. Choosing needs no network call, and
 /// deterministic selection keeps a seed replayable.
 const CHILD_NAMES: [&str; 24] = [
-    "Ash", "Bram", "Cael", "Dara", "Ede", "Fen", "Gale", "Hale", "Ivo", "Juna",
-    "Kira", "Lark", "Mab", "Nim", "Orin", "Pell", "Quill", "Rhea", "Sen", "Tove",
-    "Ulla", "Vale", "Wisp", "Yara",
+    "Ash", "Bram", "Cael", "Dara", "Ede", "Fen", "Gale", "Hale", "Ivo", "Juna", "Kira", "Lark",
+    "Mab", "Nim", "Orin", "Pell", "Quill", "Rhea", "Sen", "Tove", "Ulla", "Vale", "Wisp", "Yara",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -348,46 +368,53 @@ pub enum Role {
 }
 
 impl Role {
-    pub fn id(self) -> &'static str {
+    #[must_use]
+    pub const fn id(self) -> &'static str {
         match self {
-            Role::Steward => "steward",
-            Role::Farmer => "farmer",
-            Role::Woodcutter => "woodcutter",
-            Role::Herbalist => "herbalist",
-            Role::Artisan => "artisan",
-            Role::Watchman => "watchman",
-            Role::Elder => "elder",
-            Role::Trader => "trader",
-            Role::Forager => "forager",
+            Self::Steward => "steward",
+            Self::Farmer => "farmer",
+            Self::Woodcutter => "woodcutter",
+            Self::Herbalist => "herbalist",
+            Self::Artisan => "artisan",
+            Self::Watchman => "watchman",
+            Self::Elder => "elder",
+            Self::Trader => "trader",
+            Self::Forager => "forager",
         }
     }
 
-    pub fn icon(self) -> &'static str {
+    #[must_use]
+    pub const fn icon(self) -> &'static str {
         match self {
-            Role::Steward => "📜",
-            Role::Farmer => "🌾",
-            Role::Woodcutter => "🪓",
-            Role::Herbalist => "🌿",
-            Role::Artisan => "⚒",
-            Role::Watchman => "🛡",
-            Role::Elder => "🕯",
-            Role::Trader => "⚖",
-            Role::Forager => "🧺",
+            Self::Steward => "📜",
+            Self::Farmer => "🌾",
+            Self::Woodcutter => "🪓",
+            Self::Herbalist => "🌿",
+            Self::Artisan => "⚒",
+            Self::Watchman => "🛡",
+            Self::Elder => "🕯",
+            Self::Trader => "⚖",
+            Self::Forager => "🧺",
         }
     }
 
+    #[allow(
+        clippy::match_same_arms,
+        reason = "the roster maps each founder by name"
+    )]
+    #[must_use]
     pub fn for_founder(name: &str) -> Self {
         match name {
-            "Ada" => Role::Steward,
-            "Bo" => Role::Farmer,
-            "Cor" => Role::Trader,
-            "Mira" => Role::Herbalist,
-            "Tam" => Role::Elder,
-            "Nell" => Role::Forager,
-            "Odo" => Role::Artisan,
-            "Wren" => Role::Watchman,
-            "Sable" => Role::Woodcutter,
-            _ => Role::Farmer,
+            "Ada" => Self::Steward,
+            "Bo" => Self::Farmer,
+            "Cor" => Self::Trader,
+            "Mira" => Self::Herbalist,
+            "Tam" => Self::Elder,
+            "Nell" => Self::Forager,
+            "Odo" => Self::Artisan,
+            "Wren" => Self::Watchman,
+            "Sable" => Self::Woodcutter,
+            _ => Self::Farmer,
         }
     }
 }
@@ -403,7 +430,8 @@ pub struct Skills {
 }
 
 impl Skills {
-    pub fn for_role(role: Role) -> Self {
+    #[must_use]
+    pub const fn for_role(role: Role) -> Self {
         let mut s = Self {
             farming: 1,
             forestry: 1,
@@ -421,20 +449,21 @@ impl Skills {
             Role::Watchman => {
                 s.forestry = 2;
                 s.stewardship = 2;
-            }
+            },
             Role::Elder => s.counsel = 3,
             Role::Trader => {
                 s.craft = 2;
                 s.stewardship = 2;
-            }
+            },
             Role::Forager => {
                 s.farming = 2;
                 s.herbalism = 2;
-            }
+            },
         }
         s
     }
 
+    #[must_use]
     pub fn top_skill(&self) -> (&'static str, u8) {
         let all = [
             ("farming", self.farming),
@@ -444,7 +473,9 @@ impl Skills {
             ("stewardship", self.stewardship),
             ("counsel", self.counsel),
         ];
-        all.into_iter().max_by_key(|(_, v)| *v).unwrap_or(("farming", 1))
+        all.into_iter()
+            .max_by_key(|(_, v)| *v)
+            .unwrap_or(("farming", 1))
     }
 }
 
@@ -459,13 +490,14 @@ pub enum Ailment {
 }
 
 impl Ailment {
-    pub fn id(self) -> &'static str {
+    #[must_use]
+    pub const fn id(self) -> &'static str {
         match self {
-            Ailment::Chill => "chill",
-            Ailment::Fever => "fever",
-            Ailment::Exhaustion => "exhaustion",
-            Ailment::Injury => "injury",
-            Ailment::Heartache => "heartache",
+            Self::Chill => "chill",
+            Self::Fever => "fever",
+            Self::Exhaustion => "exhaustion",
+            Self::Injury => "injury",
+            Self::Heartache => "heartache",
         }
     }
 }
@@ -486,31 +518,33 @@ pub enum Mood {
 }
 
 impl Mood {
-    pub fn id(self) -> &'static str {
+    #[must_use]
+    pub const fn id(self) -> &'static str {
         match self {
-            Mood::Content => "content",
-            Mood::Hopeful => "hopeful",
-            Mood::Determined => "determined",
-            Mood::Anxious => "anxious",
-            Mood::Weary => "weary",
-            Mood::Bitter => "bitter",
-            Mood::Grieving => "grieving",
-            Mood::Feverish => "feverish",
-            Mood::Desperate => "desperate",
+            Self::Content => "content",
+            Self::Hopeful => "hopeful",
+            Self::Determined => "determined",
+            Self::Anxious => "anxious",
+            Self::Weary => "weary",
+            Self::Bitter => "bitter",
+            Self::Grieving => "grieving",
+            Self::Feverish => "feverish",
+            Self::Desperate => "desperate",
         }
     }
 
-    pub fn icon(self) -> &'static str {
+    #[must_use]
+    pub const fn icon(self) -> &'static str {
         match self {
-            Mood::Content => "🙂",
-            Mood::Hopeful => "✨",
-            Mood::Determined => "🔥",
-            Mood::Anxious => "😟",
-            Mood::Weary => "😮‍💨",
-            Mood::Bitter => "😠",
-            Mood::Grieving => "🖤",
-            Mood::Feverish => "🤒",
-            Mood::Desperate => "🚨",
+            Self::Content => "🙂",
+            Self::Hopeful => "✨",
+            Self::Determined => "🔥",
+            Self::Anxious => "😟",
+            Self::Weary => "😮‍💨",
+            Self::Bitter => "😠",
+            Self::Grieving => "🖤",
+            Self::Feverish => "🤒",
+            Self::Desperate => "🚨",
         }
     }
 }
@@ -530,16 +564,17 @@ pub enum Kinship {
 }
 
 impl Kinship {
-    pub fn id(self) -> &'static str {
+    #[must_use]
+    pub const fn id(self) -> &'static str {
         match self {
-            Kinship::Acquaintance => "acquaintance",
-            Kinship::Friend => "friend",
-            Kinship::Confidant => "confidant",
-            Kinship::Partner => "partner",
-            Kinship::Parent => "parent",
-            Kinship::Child => "child",
-            Kinship::Sibling => "sibling",
-            Kinship::Rival => "rival",
+            Self::Acquaintance => "acquaintance",
+            Self::Friend => "friend",
+            Self::Confidant => "confidant",
+            Self::Partner => "partner",
+            Self::Parent => "parent",
+            Self::Child => "child",
+            Self::Sibling => "sibling",
+            Self::Rival => "rival",
         }
     }
 }
@@ -623,16 +658,16 @@ pub struct Agent {
     pub reflection_poignancy: f32,
 }
 
-fn default_energy() -> u8 {
+const fn default_energy() -> u8 {
     8
 }
-fn default_warmth() -> u8 {
+const fn default_warmth() -> u8 {
     3
 }
-fn default_health() -> u8 {
+const fn default_health() -> u8 {
     10
 }
-fn default_hope() -> f32 {
+const fn default_hope() -> f32 {
     2.5
 }
 
@@ -640,7 +675,10 @@ impl Agent {
     /// The single way a villager comes into existence. The founding cast and
     /// every child go through here, so trust seeding, lineage, food and hunger
     /// are one rule rather than two that can drift apart.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a villager is built from every trait at once"
+    )]
     pub fn new(
         name: impl Into<String>,
         persona: impl Into<String>,
@@ -696,8 +734,15 @@ impl Agent {
             water: 1,
             wood: 0,
             herbs: 0,
-            tools: if matches!(role, Role::Artisan | Role::Woodcutter | Role::Farmer) { 1 } else { 0 },
-            coin: if matches!(role, Role::Trader | Role::Steward) { 2 } else { 1 },
+            tools: u32::from(matches!(
+                role,
+                Role::Artisan | Role::Woodcutter | Role::Farmer
+            )),
+            coin: if matches!(role, Role::Trader | Role::Steward) {
+                2
+            } else {
+                1
+            },
             thirst: 0,
             energy: 8,
             warmth: 3,
@@ -718,12 +763,12 @@ impl Agent {
         }
     }
 
+    #[must_use]
     pub fn trust_of(&self, other: &str) -> f32 {
         self.trust
             .iter()
             .find(|(n, _)| n == other)
-            .map(|(_, v)| *v)
-            .unwrap_or(NEUTRAL_TRUST)
+            .map_or(NEUTRAL_TRUST, |(_, v)| *v)
     }
 
     pub fn set_trust(&mut self, other: &str, v: f32) {
@@ -731,7 +776,7 @@ impl Agent {
         if let Some(slot) = self.trust.iter_mut().find(|(n, _)| n == other) {
             slot.1 = v;
         } else {
-            self.trust.push((other.to_string(), v));
+            self.trust.push((other.to_owned(), v));
         }
         self.sync_relation_from_trust(other, v);
     }
@@ -740,18 +785,18 @@ impl Agent {
         let v = self.trust_of(other) + delta;
         self.set_trust(other, v);
         if let Some(rel) = self.relations.iter_mut().find(|r| r.other == other) {
-            rel.affinity = (rel.affinity + delta * 0.8).clamp(0.0, 4.0);
+            rel.affinity = delta.mul_add(0.8, rel.affinity).clamp(0.0, 4.0);
             if delta < -0.3 {
                 rel.grudge = (rel.grudge + (-delta)).clamp(0.0, 4.0);
             } else if delta > 0.2 {
-                rel.grudge = (rel.grudge - delta * 0.5).clamp(0.0, 4.0);
+                rel.grudge = delta.mul_add(-0.5, rel.grudge).clamp(0.0, 4.0);
             }
         }
     }
 
     fn sync_relation_from_trust(&mut self, other: &str, trust_val: f32) {
         if let Some(rel) = self.relations.iter_mut().find(|r| r.other == other) {
-            rel.affinity = ((rel.affinity + trust_val) * 0.5).clamp(0.0, 4.0);
+            rel.affinity = f32::midpoint(rel.affinity, trust_val).clamp(0.0, 4.0);
             if !matches!(
                 rel.kinship,
                 Kinship::Parent | Kinship::Child | Kinship::Sibling | Kinship::Partner
@@ -768,7 +813,7 @@ impl Agent {
             }
         } else {
             self.relations.push(RelationDetail {
-                other: other.to_string(),
+                other: other.to_owned(),
                 affinity: trust_val,
                 respect: NEUTRAL_TRUST,
                 grudge: 0.0,
@@ -777,6 +822,7 @@ impl Agent {
         }
     }
 
+    #[must_use]
     pub fn relation_with(&self, other: &str) -> Option<&RelationDetail> {
         self.relations.iter().find(|r| r.other == other)
     }
@@ -786,14 +832,21 @@ impl Agent {
         if let Some(b) = self.beliefs.iter_mut().find(|b| b.about == key) {
             *b = Belief::observed(key, st.food as i32, tick);
         } else {
-            self.beliefs.push(Belief::observed(key, st.food as i32, tick));
+            self.beliefs
+                .push(Belief::observed(key, st.food as i32, tick));
         }
     }
 
-    pub fn record_fact(&mut self, subject: impl Into<String>, text: impl Into<String>, tick: u64, confidence: f32) {
+    pub fn record_fact(
+        &mut self,
+        subject: impl Into<String>,
+        text: impl Into<String>,
+        tick: u64,
+        confidence: f32,
+    ) {
         let subject = subject.into();
         let text = text.into();
-        for f in self.facts.iter_mut() {
+        for f in &mut self.facts {
             if f.subject == subject && f.live(tick) && f.text != text {
                 f.invalid_at = Some(tick);
             }
@@ -815,7 +868,10 @@ impl Agent {
             Mood::Desperate
         } else if self.ailment.is_some() {
             Mood::Feverish
-        } else if self.memories.iter().any(|m| m.permanent && m.turn + 12 >= self.born_turn)
+        } else if self
+            .memories
+            .iter()
+            .any(|m| m.permanent && m.turn + 12 >= self.born_turn)
             && self.stress >= 2.5
         {
             Mood::Grieving
@@ -860,7 +916,7 @@ impl Agent {
 
     /// Insert a memory, then enforce the cap. Scars are never evicted.
     pub fn remember(&mut self, m: Memory) {
-        self.reflection_poignancy += m.salience * 25.0;
+        self.reflection_poignancy = m.salience.mul_add(25.0, self.reflection_poignancy);
         self.memories.push(m);
         self.compact();
         if self.reflection_poignancy >= REFLECTION_BUDGET {
@@ -897,12 +953,13 @@ impl Agent {
             match victim {
                 Some(i) => {
                     self.memories.remove(i);
-                }
+                },
                 None => break,
             }
         }
     }
 
+    #[must_use]
     pub fn memories_brief(&self, now: u64) -> Vec<(f32, String)> {
         let mut v: Vec<(f32, String)> = self
             .memories
@@ -966,6 +1023,7 @@ pub struct Event {
 }
 
 impl Event {
+    #[must_use]
     pub fn line(&self) -> String {
         format!("{} at the {}: {}", self.actor, self.place.id(), self.text)
     }
@@ -991,11 +1049,11 @@ pub struct World {
     pub halted: Option<String>,
 }
 
-fn default_weather_kind() -> WeatherKind {
+const fn default_weather_kind() -> WeatherKind {
     WeatherKind::Clear
 }
 
-fn default_temp_c() -> i32 {
+const fn default_temp_c() -> i32 {
     14
 }
 
@@ -1017,6 +1075,11 @@ impl World {
         self.temperature_c = new_season.base_temp_c() + ((self.weather - 1.0) * 6.0).round() as i32;
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one sequential rule table; splitting hides the order"
+    )]
+    #[must_use]
     pub fn founding(seed: u64) -> Self {
         let mut rng = Rng::new(seed);
         let cast = [
@@ -1033,7 +1096,11 @@ impl World {
         let names: Vec<String> = cast.iter().map(|(n, _)| n.to_string()).collect();
         let mut agents = Vec::new();
         for (i, (name, persona)) in cast.iter().enumerate() {
-            let place = if i == 0 { Place::Granary } else { Place::ALL[rng.below(Place::ALL.len())] };
+            let place = if i == 0 {
+                Place::Granary
+            } else {
+                Place::ALL[rng.below(Place::ALL.len())]
+            };
             // Founding and birth share one constructor, so neither invents a
             // different notion of what a villager starts with.
             agents.push(Agent::new(
@@ -1052,32 +1119,88 @@ impl World {
         for p in Place::ALL {
             let st = match p {
                 Place::Granary => PlaceState {
-                    food: 9, water: 2, wood: 2, herbs: 1, tools: 2, coin: 4,
-                    owner: None, condition: 5, hearth_lit: false, fertility: 1.0,
+                    food: 9,
+                    water: 2,
+                    wood: 2,
+                    herbs: 1,
+                    tools: 2,
+                    coin: 4,
+                    owner: None,
+                    condition: 5,
+                    hearth_lit: false,
+                    fertility: 1.0,
                 },
                 Place::Field => PlaceState {
-                    food: 4, water: 2, wood: 0, herbs: 1, tools: 1, coin: 0,
-                    owner: None, condition: 4, hearth_lit: false, fertility: 1.2,
+                    food: 4,
+                    water: 2,
+                    wood: 0,
+                    herbs: 1,
+                    tools: 1,
+                    coin: 0,
+                    owner: None,
+                    condition: 4,
+                    hearth_lit: false,
+                    fertility: 1.2,
                 },
                 Place::Market => PlaceState {
-                    food: 3, water: 1, wood: 3, herbs: 2, tools: 3, coin: 8,
-                    owner: None, condition: 4, hearth_lit: false, fertility: 1.0,
+                    food: 3,
+                    water: 1,
+                    wood: 3,
+                    herbs: 2,
+                    tools: 3,
+                    coin: 8,
+                    owner: None,
+                    condition: 4,
+                    hearth_lit: false,
+                    fertility: 1.0,
                 },
                 Place::Well => PlaceState {
-                    food: 1, water: 12, wood: 0, herbs: 1, tools: 0, coin: 1,
-                    owner: None, condition: 5, hearth_lit: false, fertility: 1.1,
+                    food: 1,
+                    water: 12,
+                    wood: 0,
+                    herbs: 1,
+                    tools: 0,
+                    coin: 1,
+                    owner: None,
+                    condition: 5,
+                    hearth_lit: false,
+                    fertility: 1.1,
                 },
                 Place::Hut => PlaceState {
-                    food: 2, water: 3, wood: 4, herbs: 1, tools: 1, coin: 0,
-                    owner: None, condition: 5, hearth_lit: true, fertility: 1.0,
+                    food: 2,
+                    water: 3,
+                    wood: 4,
+                    herbs: 1,
+                    tools: 1,
+                    coin: 0,
+                    owner: None,
+                    condition: 5,
+                    hearth_lit: true,
+                    fertility: 1.0,
                 },
                 Place::Shrine => PlaceState {
-                    food: 1, water: 2, wood: 1, herbs: 4, tools: 0, coin: 2,
-                    owner: None, condition: 5, hearth_lit: true, fertility: 1.1,
+                    food: 1,
+                    water: 2,
+                    wood: 1,
+                    herbs: 4,
+                    tools: 0,
+                    coin: 2,
+                    owner: None,
+                    condition: 5,
+                    hearth_lit: true,
+                    fertility: 1.1,
                 },
                 Place::Woods => PlaceState {
-                    food: 3, water: 2, wood: 8, herbs: 5, tools: 0, coin: 0,
-                    owner: None, condition: 4, hearth_lit: false, fertility: 1.3,
+                    food: 3,
+                    water: 2,
+                    wood: 8,
+                    herbs: 5,
+                    tools: 0,
+                    coin: 0,
+                    owner: None,
+                    condition: 4,
+                    hearth_lit: false,
+                    fertility: 1.3,
                 },
             };
             places.push((p, st));
@@ -1096,7 +1219,7 @@ impl World {
             rng,
             halted: None,
         };
-        for a in w.agents.iter_mut() {
+        for a in &mut w.agents {
             a.refresh_mood_and_goal(Season::Spring);
         }
         w.push_event(Event {
@@ -1115,14 +1238,17 @@ impl World {
         w
     }
 
-    pub fn season(&self) -> Season {
+    #[must_use]
+    pub const fn season(&self) -> Season {
         Season::from_day(self.day)
     }
 
-    pub fn time_of_day(&self) -> TimeOfDay {
+    #[must_use]
+    pub const fn time_of_day(&self) -> TimeOfDay {
         TimeOfDay::from_turn(self.turn)
     }
 
+    #[must_use]
     pub fn agent(&self, name: &str) -> Option<&Agent> {
         self.agents.iter().find(|a| a.name == name)
     }
@@ -1135,14 +1261,32 @@ impl World {
         self.agents.iter().filter(|a| a.alive)
     }
 
+    /// # Panics
+    ///
+    /// Panics if `p` is not one of the world's places; all of them exist.
+    #[must_use]
     pub fn place_state(&self, p: Place) -> &PlaceState {
-        &self.places.iter().find(|(q, _)| *q == p).expect("every place exists").1
+        &self
+            .places
+            .iter()
+            .find(|(q, _)| *q == p)
+            .expect("every place exists")
+            .1
     }
 
+    /// # Panics
+    ///
+    /// Panics if `p` is not one of the world's places; all of them exist.
     pub fn place_state_mut(&mut self, p: Place) -> &mut PlaceState {
-        &mut self.places.iter_mut().find(|(q, _)| *q == p).expect("every place exists").1
+        &mut self
+            .places
+            .iter_mut()
+            .find(|(q, _)| *q == p)
+            .expect("every place exists")
+            .1
     }
 
+    #[must_use]
     pub fn present(&self, place: Place, except: &str) -> Vec<String> {
         self.living()
             .filter(|a| a.place == place && a.name != except)
@@ -1155,6 +1299,10 @@ impl World {
     }
 
     /// End-of-turn bookkeeping: eating, hunger, harvest, death, promises.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one sequential rule table; splitting hides the order"
+    )]
     pub fn settle(&mut self) {
         let turn = self.turn;
         let season = self.season();
@@ -1162,7 +1310,7 @@ impl World {
         // The yield is carried to the granary: a field that keeps its grain is a
         // field nobody visits.
         let weather = self.weather;
-        let mut harvested = 0u32;
+        let mut harvested = 0_u32;
         for p in Place::ALL {
             if p.can_harvest() {
                 harvested += (weather * if p == Place::Field { 2.0 } else { 1.0 }).round() as u32;
@@ -1171,21 +1319,28 @@ impl World {
         {
             let st = self.place_state_mut(Place::Granary);
             st.food = (st.food + harvested).min(18);
-        }
+        };
         // Natural regeneration of water at the Well, timber/herbs in the Woods, and hearth upkeep.
         {
-            let rain_bonus = if matches!(self.weather_kind, WeatherKind::SoftRain | WeatherKind::Storm) { 3 } else { 1 };
+            let rain_bonus = if matches!(
+                self.weather_kind,
+                WeatherKind::SoftRain | WeatherKind::Storm
+            ) {
+                3
+            } else {
+                1
+            };
             let well = self.place_state_mut(Place::Well);
             well.water = (well.water + rain_bonus).min(20);
-        }
-        if turn % 3 == 0 {
+        };
+        if turn.is_multiple_of(3) {
             let woods = self.place_state_mut(Place::Woods);
             woods.wood = (woods.wood + 1).min(16);
             if season != Season::Winter {
                 woods.herbs = (woods.herbs + 1).min(10);
             }
         }
-        if turn % 4 == 0 {
+        if turn.is_multiple_of(4) {
             let hut = self.place_state_mut(Place::Hut);
             if hut.wood > 0 {
                 hut.wood -= 1;
@@ -1223,7 +1378,7 @@ impl World {
             // Warmth & ailment dynamics.
             if a.place == Place::Hut && hut_lit {
                 a.warmth = (a.warmth + 1).min(4);
-            } else if season == Season::Winter && turn % 3 == 0 {
+            } else if season == Season::Winter && turn.is_multiple_of(3) {
                 a.warmth = a.warmth.saturating_sub(1);
             }
             if a.warmth == 0 && a.ailment.is_none() && season == Season::Winter {
@@ -1271,7 +1426,10 @@ impl World {
                 divine: false,
             });
             for other in self.agents.iter_mut().filter(|a| a.alive && a.name != name) {
-                other.remember(Memory::scar(turn, format!("{name} starved while you lived.")));
+                other.remember(Memory::scar(
+                    turn,
+                    format!("{name} starved while you lived."),
+                ));
                 other.set_trust(&name, 0.0);
                 other.stress = (other.stress + 1.0).min(4.0);
             }
@@ -1301,15 +1459,15 @@ impl World {
         if living_count > 0 {
             let sum_hope: f32 = self
                 .living()
-                .map(|a| (a.hope + (4.0 - a.stress).max(0.0)) * 0.5)
+                .map(|a| f32::midpoint(a.hope, (4.0 - a.stress).max(0.0)))
                 .sum();
             self.village_morale = ((sum_hope / living_count as f32) * 100.0).round() / 100.0;
         }
 
         self.turn += 1;
-        if self.turn % 12 == 0 {
+        if self.turn.is_multiple_of(12) {
             self.day += 1;
-            self.weather = 0.6 + self.rng.next_f32() * 0.9;
+            self.weather = self.rng.next_f32().mul_add(0.9, 0.6);
             self.set_weather(self.weather);
         }
     }
@@ -1317,6 +1475,10 @@ impl World {
     /// One birth per turn, if a pair qualifies. Candidates are gathered in
     /// agent order and the pair is chosen with the world's own RNG, so the same
     /// seed and the same actions produce the same child.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one sequential rule table; splitting hides the order"
+    )]
     fn settle_birth(&mut self, turn: u64) {
         if self.living().count() >= POPULATION_CAP {
             return;
@@ -1365,12 +1527,12 @@ impl World {
         // When the pool is spent the same ordered walk continues with
         // suffixed variants, so growth never stops for want of a noun.
         let start = self.rng.below(CHILD_NAMES.len());
-        let mut round = 0u32;
+        let mut round = 0_u32;
         let name = 'name: loop {
             for k in 0..CHILD_NAMES.len() {
                 let base = CHILD_NAMES[(start + k) % CHILD_NAMES.len()];
                 let cand = match round {
-                    0 => base.to_string(),
+                    0 => base.to_owned(),
                     n => format!("{base} {n}"),
                 };
                 if self.agent(&cand).is_none() {
@@ -1388,9 +1550,7 @@ impl World {
         let siblings: Vec<String> = self
             .agents
             .iter()
-            .filter(|a| {
-                a.parents.contains(&mother) || a.parents.contains(&father)
-            })
+            .filter(|a| a.parents.contains(&mother) || a.parents.contains(&father))
             .map(|a| a.name.clone())
             .collect();
 
@@ -1429,7 +1589,7 @@ impl World {
         self.place_state_mut(Place::Granary).food -= BIRTH_COST;
         self.push_event(Event {
             turn,
-            actor: name.to_string(),
+            actor: name.clone(),
             place,
             kind: EventKind::Birth,
             action: "birth".into(),
@@ -1453,10 +1613,10 @@ impl World {
         self.agents.push(child);
     }
 
-    pub fn record(&mut self, kind: MemoryKind, text: String, salience: f32) {
+    pub fn record(&mut self, kind: MemoryKind, text: &str, salience: f32) {
         let turn = self.turn;
         for a in self.agents.iter_mut().filter(|a| a.alive) {
-            a.remember(Memory::new(turn, text.clone(), salience, kind));
+            a.remember(Memory::new(turn, text.to_owned(), salience, kind));
         }
     }
 
@@ -1481,8 +1641,9 @@ impl World {
 
 /// A child inherits traits from both parents rather than being authored. The
 /// first clause of each persona is its dominant trait; joining them gives a
-/// small model one readable line with both influences in view.
+/// model one readable line with both influences in view.
+#[must_use]
 pub fn mix_personas(a: &str, b: &str) -> String {
-    let first = |s: &str| s.split(';').next().unwrap_or(s).trim().to_string();
+    let first = |s: &str| s.split(';').next().unwrap_or(s).trim().to_owned();
     format!("{}; {}", first(a), first(b))
 }

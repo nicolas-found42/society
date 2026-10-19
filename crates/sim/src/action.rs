@@ -29,35 +29,36 @@ pub enum Verb {
 }
 
 impl Verb {
-    pub fn id(self) -> &'static str {
+    #[must_use]
+    pub const fn id(self) -> &'static str {
         match self {
-            Verb::Speak => "speak",
-            Verb::Rest => "rest",
-            Verb::Take => "take",
-            Verb::Give => "give",
-            Verb::Forage => "forage",
-            Verb::Help => "help",
-            Verb::Steal => "steal",
-            Verb::Accuse => "accuse",
-            Verb::Promise => "promise",
-            Verb::Move => "move",
-            Verb::DrawWater => "draw_water",
-            Verb::Chop => "chop",
-            Verb::GatherHerbs => "gather_herbs",
-            Verb::Craft => "craft",
-            Verb::Tend => "tend",
-            Verb::Heal => "heal",
-            Verb::Trade => "trade",
-            Verb::Pray => "pray",
-            Verb::Repair => "repair",
-            Verb::Console => "console",
+            Self::Speak => "speak",
+            Self::Rest => "rest",
+            Self::Take => "take",
+            Self::Give => "give",
+            Self::Forage => "forage",
+            Self::Help => "help",
+            Self::Steal => "steal",
+            Self::Accuse => "accuse",
+            Self::Promise => "promise",
+            Self::Move => "move",
+            Self::DrawWater => "draw_water",
+            Self::Chop => "chop",
+            Self::GatherHerbs => "gather_herbs",
+            Self::Craft => "craft",
+            Self::Tend => "tend",
+            Self::Heal => "heal",
+            Self::Trade => "trade",
+            Self::Pray => "pray",
+            Self::Repair => "repair",
+            Self::Console => "console",
         }
     }
 }
 
 /// A fully resolved intent. `action` is the stable wire id the model chooses
 /// from the enumerated affordances; nothing here is inferred later.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Intent {
     /// Stable id: `speak`, `rest`, `take`, `give`, `forage`, `help`, `steal`,
     /// `accuse`, `promise`, or `go:<place>`.
@@ -67,14 +68,15 @@ pub struct Intent {
 }
 
 impl Intent {
-    pub fn parse(action: &str, from: Place) -> Option<Intent> {
+    #[must_use]
+    pub fn parse(action: &str, from: Place) -> Option<Self> {
         if let Some(rest) = action.strip_prefix("go:") {
             let dest = Place::from_id(rest)?;
             if !from.adjacent().contains(&dest) {
                 return None;
             }
-            return Some(Intent {
-                action: action.to_string(),
+            return Some(Self {
+                action: action.to_owned(),
                 verb: Verb::Move,
                 place: Some(dest),
             });
@@ -101,8 +103,8 @@ impl Intent {
             "console" => Verb::Console,
             _ => return None,
         };
-        Some(Intent {
-            action: action.to_string(),
+        Some(Self {
+            action: action.to_owned(),
             verb,
             place: None,
         })
@@ -111,6 +113,7 @@ impl Intent {
 
 /// Every action the simulator will accept for this agent right now, in the
 /// exact spelling the model must choose from.
+#[must_use]
 pub fn affordances(w: &World, a: &Agent) -> Vec<String> {
     let here = w.place_state(a.place);
     let others = w.present(a.place, &a.name);
@@ -123,7 +126,7 @@ pub fn affordances(w: &World, a: &Agent) -> Vec<String> {
 
     let mut v = Vec::new();
     if here.food > 0 {
-        v.push("take".to_string());
+        v.push("take".to_owned());
         if here.owner.is_some() {
             v.push("steal".into());
         }
@@ -141,7 +144,12 @@ pub fn affordances(w: &World, a: &Agent) -> Vec<String> {
             .map(|p| format!("go:{}", p.id()))
             .collect();
         if moves.is_empty() {
-            moves = a.place.adjacent().iter().map(|p| format!("go:{}", p.id())).collect();
+            moves = a
+                .place
+                .adjacent()
+                .iter()
+                .map(|p| format!("go:{}", p.id()))
+                .collect();
         }
         v.extend(moves);
         // Nothing edible anywhere in reach: they may still try to talk someone
@@ -152,7 +160,7 @@ pub fn affordances(w: &World, a: &Agent) -> Vec<String> {
         return v;
     }
 
-    v.insert(0, "speak".to_string());
+    v.insert(0, "speak".to_owned());
     v.push("rest".into());
     if a.place.can_draw_water() && here.water > 0 {
         v.push("draw_water".into());
@@ -185,7 +193,9 @@ pub fn affordances(w: &World, a: &Agent) -> Vec<String> {
     if a.place == Place::Shrine {
         v.push("pray".into());
     }
-    if (a.wood > 0 || here.wood > 0) && (here.condition < 5 || (a.place == Place::Hut && !here.hearth_lit)) {
+    if (a.wood > 0 || here.wood > 0)
+        && (here.condition < 5 || (a.place == Place::Hut && !here.hearth_lit))
+    {
         v.push("repair".into());
     }
     if a.food > 0 && !others.is_empty() {
@@ -221,55 +231,55 @@ pub enum SocialAct {
 }
 
 impl SocialAct {
-    pub fn from_id(s: &str) -> SocialAct {
+    #[must_use]
+    pub fn from_id(s: &str) -> Self {
         match s {
-            "promise" => SocialAct::Promise,
-            "gift" => SocialAct::Gift,
-            "accusation" => SocialAct::Accusation,
-            "threat" => SocialAct::Threat,
-            "gossip" => SocialAct::Gossip,
-            "plea" => SocialAct::Plea,
-            "gratitude" => SocialAct::Gratitude,
-            "counsel" => SocialAct::Counsel,
-            "trade_offer" => SocialAct::TradeOffer,
-            "blessing" => SocialAct::Blessing,
-            "forgiveness" => SocialAct::Forgiveness,
-            _ => SocialAct::None,
+            "promise" => Self::Promise,
+            "gift" => Self::Gift,
+            "accusation" => Self::Accusation,
+            "threat" => Self::Threat,
+            "gossip" => Self::Gossip,
+            "plea" => Self::Plea,
+            "gratitude" => Self::Gratitude,
+            "counsel" => Self::Counsel,
+            "trade_offer" => Self::TradeOffer,
+            "blessing" => Self::Blessing,
+            "forgiveness" => Self::Forgiveness,
+            _ => Self::None,
         }
     }
 
     /// Trust delta applied to every listener when the act lands.
-    pub fn trust_delta(self) -> f32 {
+    #[must_use]
+    pub const fn trust_delta(self) -> f32 {
         match self {
-            SocialAct::None => 0.0,
-            SocialAct::Promise => 0.2,
-            SocialAct::Gift => 0.5,
-            SocialAct::Accusation => -0.7,
-            SocialAct::Threat => -1.0,
-            SocialAct::Gossip => -0.2,
-            SocialAct::Plea => -0.1,
-            SocialAct::Gratitude => 0.3,
-            SocialAct::Counsel => 0.35,
-            SocialAct::TradeOffer => 0.15,
-            SocialAct::Blessing => 0.3,
-            SocialAct::Forgiveness => 0.45,
+            Self::None => 0.0,
+            Self::Promise => 0.2,
+            Self::Gift => 0.5,
+            Self::Accusation => -0.7,
+            Self::Threat => -1.0,
+            Self::Gossip => -0.2,
+            Self::Plea => -0.1,
+            Self::Gratitude | Self::Blessing => 0.3,
+            Self::Counsel => 0.35,
+            Self::TradeOffer => 0.15,
+            Self::Forgiveness => 0.45,
         }
     }
 
-    pub fn salience(self) -> f32 {
+    #[must_use]
+    pub const fn salience(self) -> f32 {
         match self {
-            SocialAct::None => 0.2,
-            SocialAct::Promise => 0.8,
-            SocialAct::Gift => 0.7,
-            SocialAct::Accusation => 0.9,
-            SocialAct::Threat => 0.9,
-            SocialAct::Gossip => 0.6,
-            SocialAct::Plea => 0.5,
-            SocialAct::Gratitude => 0.4,
-            SocialAct::Counsel => 0.65,
-            SocialAct::TradeOffer => 0.45,
-            SocialAct::Blessing => 0.6,
-            SocialAct::Forgiveness => 0.75,
+            Self::None => 0.2,
+            Self::Promise => 0.8,
+            Self::Gift => 0.7,
+            Self::Accusation | Self::Threat => 0.9,
+            Self::Gossip | Self::Blessing => 0.6,
+            Self::Plea => 0.5,
+            Self::Gratitude => 0.4,
+            Self::Counsel => 0.65,
+            Self::TradeOffer => 0.45,
+            Self::Forgiveness => 0.75,
         }
     }
 }
@@ -288,21 +298,49 @@ enum Plan {
     Rejected(String),
     Noop(EventKind),
     Move(Place),
-    Transfer { food_after_carried: u32, food_after_here: u32, kind: EventKind, note: Option<String> },
-    Give { target: String },
-    Promise { to: String },
-    DrawWater { amount: u32 },
-    Chop { amount: u32 },
-    GatherHerbs { amount: u32 },
-    CraftTool { use_carried_wood: bool },
+    Transfer {
+        food_after_carried: u32,
+        food_after_here: u32,
+        kind: EventKind,
+        note: Option<String>,
+    },
+    Give {
+        target: String,
+    },
+    Promise {
+        to: String,
+    },
+    DrawWater {
+        amount: u32,
+    },
+    Chop {
+        amount: u32,
+    },
+    GatherHerbs {
+        amount: u32,
+    },
+    CraftTool {
+        use_carried_wood: bool,
+    },
     TendField,
-    Heal { target: String, use_carried_herb: bool },
+    Heal {
+        target: String,
+        use_carried_herb: bool,
+    },
     TradeMarket,
     PrayShrine,
-    RepairPlace { use_carried_wood: bool },
-    Console { target: String },
+    RepairPlace {
+        use_carried_wood: bool,
+    },
+    Console {
+        target: String,
+    },
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one sequential rule table; splitting hides the order"
+)]
 fn plan(w: &World, actor: &str, intent: &Intent) -> Plan {
     let Some(a) = w.agent(actor) else {
         return Plan::Rejected("no such agent".into());
@@ -319,11 +357,9 @@ fn plan(w: &World, actor: &str, intent: &Intent) -> Plan {
         Verb::Rest => Plan::Noop(EventKind::Rest),
         Verb::Move => match intent.place {
             Some(dest) if place.adjacent().contains(&dest) => Plan::Move(dest),
-            Some(dest) => Plan::Rejected(format!(
-                "{} is not adjacent to {}",
-                dest.id(),
-                place.id()
-            )),
+            Some(dest) => {
+                Plan::Rejected(format!("{} is not adjacent to {}", dest.id(), place.id()))
+            },
             None => Plan::Rejected("no destination".into()),
         },
         Verb::Take | Verb::Steal => {
@@ -347,11 +383,9 @@ fn plan(w: &World, actor: &str, intent: &Intent) -> Plan {
                     note: None,
                 },
             }
-        }
+        },
         Verb::Forage => {
-            if !place.can_harvest() {
-                Plan::Rejected("nothing grows here".into())
-            } else {
+            if place.can_harvest() {
                 let tool_bonus = u32::from(a.tools > 0 && a.skills.farming >= 3);
                 let base = if w.weather > 1.1 { 2 } else { 1 };
                 let yield_ = base + tool_bonus;
@@ -361,8 +395,10 @@ fn plan(w: &World, actor: &str, intent: &Intent) -> Plan {
                     kind: EventKind::Harvest,
                     note: Some(format!("+{yield_}")),
                 }
+            } else {
+                Plan::Rejected("nothing grows here".into())
             }
-        }
+        },
         Verb::Give | Verb::Help => {
             if a.food == 0 {
                 Plan::Rejected("nothing to give".into())
@@ -375,14 +411,14 @@ fn plan(w: &World, actor: &str, intent: &Intent) -> Plan {
                     target: others[0].clone(),
                 }
             }
-        }
+        },
         Verb::Accuse => {
             if others.is_empty() {
                 Plan::Rejected("nobody here".into())
             } else {
                 Plan::Noop(EventKind::Accusation)
             }
-        }
+        },
         Verb::Promise => {
             if others.is_empty() {
                 Plan::Rejected("nobody here".into())
@@ -391,16 +427,18 @@ fn plan(w: &World, actor: &str, intent: &Intent) -> Plan {
                     to: others[0].clone(),
                 }
             }
-        }
+        },
         Verb::DrawWater => {
             if !place.can_draw_water() {
                 Plan::Rejected("no well here".into())
             } else if here.water == 0 {
                 Plan::Rejected("the well is dry".into())
             } else {
-                Plan::DrawWater { amount: here.water.min(2) }
+                Plan::DrawWater {
+                    amount: here.water.min(2),
+                }
             }
-        }
+        },
         Verb::Chop => {
             if !place.can_chop() {
                 Plan::Rejected("no timber here".into())
@@ -414,7 +452,7 @@ fn plan(w: &World, actor: &str, intent: &Intent) -> Plan {
                 };
                 Plan::Chop { amount }
             }
-        }
+        },
         Verb::GatherHerbs => {
             if !place.can_gather_herbs() {
                 Plan::Rejected("no herbs grow here".into())
@@ -428,40 +466,54 @@ fn plan(w: &World, actor: &str, intent: &Intent) -> Plan {
                 };
                 Plan::GatherHerbs { amount }
             }
-        }
+        },
         Verb::Craft => {
             if !place.can_craft() {
                 Plan::Rejected("cannot craft here".into())
             } else if a.wood > 0 {
-                Plan::CraftTool { use_carried_wood: true }
+                Plan::CraftTool {
+                    use_carried_wood: true,
+                }
             } else if here.wood > 0 {
-                Plan::CraftTool { use_carried_wood: false }
+                Plan::CraftTool {
+                    use_carried_wood: false,
+                }
             } else {
                 Plan::Rejected("need wood to craft".into())
             }
-        }
+        },
         Verb::Tend => {
-            if place != Place::Field {
-                Plan::Rejected("can only tend the field".into())
-            } else {
+            if place == Place::Field {
                 Plan::TendField
+            } else {
+                Plan::Rejected("can only tend the field".into())
             }
-        }
+        },
         Verb::Heal => {
             let use_carried_herb = a.herbs > 0;
             if !use_carried_herb && here.herbs == 0 {
                 return Plan::Rejected("no herbs available".into());
             }
             if a.ailment.is_some() || a.health < 10 {
-                Plan::Heal { target: actor.to_string(), use_carried_herb }
+                Plan::Heal {
+                    target: actor.to_owned(),
+                    use_carried_herb,
+                }
             } else if let Some(sick) = others.iter().find(|o| {
-                w.agent(o).is_some_and(|oa| oa.ailment.is_some() || oa.health < 10)
+                w.agent(o)
+                    .is_some_and(|oa| oa.ailment.is_some() || oa.health < 10)
             }) {
-                Plan::Heal { target: sick.clone(), use_carried_herb }
+                Plan::Heal {
+                    target: sick.clone(),
+                    use_carried_herb,
+                }
             } else {
-                Plan::Heal { target: actor.to_string(), use_carried_herb }
+                Plan::Heal {
+                    target: actor.to_owned(),
+                    use_carried_herb,
+                }
             }
-        }
+        },
         Verb::Trade => {
             if place != Place::Market {
                 Plan::Rejected("trading happens at the market".into())
@@ -470,35 +522,49 @@ fn plan(w: &World, actor: &str, intent: &Intent) -> Plan {
             } else {
                 Plan::TradeMarket
             }
-        }
+        },
         Verb::Pray => {
-            if place != Place::Shrine {
-                Plan::Rejected("prayers belong at the shrine".into())
-            } else {
+            if place == Place::Shrine {
                 Plan::PrayShrine
+            } else {
+                Plan::Rejected("prayers belong at the shrine".into())
             }
-        }
+        },
         Verb::Repair => {
             if a.wood > 0 {
-                Plan::RepairPlace { use_carried_wood: true }
+                Plan::RepairPlace {
+                    use_carried_wood: true,
+                }
             } else if here.wood > 0 {
-                Plan::RepairPlace { use_carried_wood: false }
+                Plan::RepairPlace {
+                    use_carried_wood: false,
+                }
             } else {
                 Plan::Rejected("need wood to repair or stoke hearth".into())
             }
-        }
+        },
         Verb::Console => {
             if others.is_empty() {
                 Plan::Rejected("nobody here to console".into())
             } else {
-                Plan::Console { target: others[0].clone() }
+                Plan::Console {
+                    target: others[0].clone(),
+                }
             }
-        }
+        },
     }
 }
 
 /// Validate and apply one intent. Returns what was committed. Speech is passed
 /// in because rendering already happened; this only moves state.
+///
+/// # Panics
+///
+/// Panics if `actor` is not a known agent after `plan` accepted the intent.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one sequential rule table; splitting hides the order"
+)]
 pub fn apply(
     w: &mut World,
     actor: &str,
@@ -522,14 +588,14 @@ pub fn apply(
                 }
             }
             (true, kind, None)
-        }
+        },
         Plan::Move(dest) => {
             if let Some(a) = w.agent_mut(actor) {
                 a.place = dest;
                 a.energy = a.energy.saturating_sub(1);
             }
             (true, EventKind::Move, None)
-        }
+        },
         Plan::Transfer {
             food_after_carried,
             food_after_here,
@@ -546,7 +612,7 @@ pub fn apply(
             }
             w.place_state_mut(place).food = food_after_here;
             (true, kind, note)
-        }
+        },
         Plan::Give { target } => {
             let place = w.agent(actor).expect("actor exists").place;
             if let Some(a) = w.agent_mut(actor) {
@@ -568,18 +634,18 @@ pub fn apply(
             }
             let _ = place;
             (true, EventKind::Transfer, Some(format!("to {target}")))
-        }
+        },
         Plan::Promise { to } => {
             if let Some(a) = w.agent_mut(actor) {
                 a.promise = Some(Promise {
                     to: to.clone(),
-                    text: speech.to_string(),
+                    text: speech.to_owned(),
                     made_turn: turn,
                     kept: None,
                 });
             }
             (true, EventKind::Promise, Some(format!("to {to}")))
-        }
+        },
         Plan::DrawWater { amount } => {
             if let Some(a) = w.agent_mut(actor) {
                 a.water += amount;
@@ -588,7 +654,7 @@ pub fn apply(
             let st = w.place_state_mut(Place::Well);
             st.water = st.water.saturating_sub(amount);
             (true, EventKind::Harvest, Some(format!("+{amount} water")))
-        }
+        },
         Plan::Chop { amount } => {
             let place = w.agent(actor).expect("actor exists").place;
             if let Some(a) = w.agent_mut(actor) {
@@ -599,7 +665,7 @@ pub fn apply(
             let st = w.place_state_mut(place);
             st.wood = st.wood.saturating_sub(amount);
             (true, EventKind::Harvest, Some(format!("+{amount} wood")))
-        }
+        },
         Plan::GatherHerbs { amount } => {
             let place = w.agent(actor).expect("actor exists").place;
             if let Some(a) = w.agent_mut(actor) {
@@ -610,7 +676,7 @@ pub fn apply(
             let st = w.place_state_mut(place);
             st.herbs = st.herbs.saturating_sub(amount);
             (true, EventKind::Harvest, Some(format!("+{amount} herbs")))
-        }
+        },
         Plan::CraftTool { use_carried_wood } => {
             let place = w.agent(actor).expect("actor exists").place;
             if use_carried_wood {
@@ -627,7 +693,7 @@ pub fn apply(
                 a.standing = (a.standing + 0.1).min(4.0);
             }
             (true, EventKind::Craft, Some("crafted tool".into()))
-        }
+        },
         Plan::TendField => {
             let has_water = w.agent(actor).is_some_and(|a| a.water > 0);
             if let Some(a) = w.agent_mut(actor) {
@@ -641,8 +707,11 @@ pub fn apply(
             st.fertility = (st.fertility + 0.25).min(2.0);
             st.food = (st.food + 1).min(12);
             (true, EventKind::Harvest, Some("tended soil".into()))
-        }
-        Plan::Heal { target, use_carried_herb } => {
+        },
+        Plan::Heal {
+            target,
+            use_carried_herb,
+        } => {
             let place = w.agent(actor).expect("actor exists").place;
             if use_carried_herb {
                 if let Some(a) = w.agent_mut(actor) {
@@ -668,7 +737,7 @@ pub fn apply(
                 }
             }
             (true, EventKind::Heal, Some(format!("healed {target}")))
-        }
+        },
         Plan::TradeMarket => {
             if let Some(a) = w.agent_mut(actor) {
                 if a.wood > 0 {
@@ -691,7 +760,7 @@ pub fn apply(
             let st = w.place_state_mut(Place::Market);
             st.coin = (st.coin + 1).min(20);
             (true, EventKind::Trade, Some("bartered at market".into()))
-        }
+        },
         Plan::PrayShrine => {
             if let Some(a) = w.agent_mut(actor) {
                 a.stress = (a.stress - 0.8).max(0.0);
@@ -699,7 +768,7 @@ pub fn apply(
                 a.devotion = (a.devotion + 0.3).min(4.0);
             }
             (true, EventKind::Prayer, Some("prayed at the shrine".into()))
-        }
+        },
         Plan::RepairPlace { use_carried_wood } => {
             let place = w.agent(actor).expect("actor exists").place;
             if use_carried_wood {
@@ -717,8 +786,12 @@ pub fn apply(
                 a.warmth = (a.warmth + 2).min(4);
                 a.standing = (a.standing + 0.15).min(4.0);
             }
-            (true, EventKind::Repair, Some(format!("repaired {}", place.id())))
-        }
+            (
+                true,
+                EventKind::Repair,
+                Some(format!("repaired {}", place.id())),
+            )
+        },
         Plan::Console { target } => {
             if let Some(a) = w.agent_mut(actor) {
                 a.skills.counsel = (a.skills.counsel + 1).min(5);
@@ -730,7 +803,7 @@ pub fn apply(
                 t.adjust_trust(actor, 0.45);
             }
             (true, EventKind::Bond, Some(format!("consoled {target}")))
-        }
+        },
     };
 
     if accepted {
@@ -756,19 +829,24 @@ pub fn apply(
                 if let Some(x) = w.agent_mut(&l) {
                     x.adjust_trust(actor, delta);
                     x.record_fact(actor, text.clone(), turn, 0.9);
-                    x.remember(Memory::new(turn, text.clone(), salience, MemoryKind::Witnessed));
+                    x.remember(Memory::new(
+                        turn,
+                        text.clone(),
+                        salience,
+                        MemoryKind::Witnessed,
+                    ));
                 }
             }
         }
 
         w.push_event(Event {
             turn,
-            actor: actor.to_string(),
+            actor: actor.to_owned(),
             place,
             kind,
             action: intent.action.clone(),
-            text: speech.to_string(),
-            social: Some(social.id().to_string()),
+            text: speech.to_owned(),
+            social: Some(social.id().to_owned()),
             intensity: None,
             grounded: None,
             fidelity: None,
@@ -792,8 +870,8 @@ pub fn apply(
     } else {
         w.push_event(Event {
             turn,
-            actor: actor.to_string(),
-            place: w.agent(actor).map(|a| a.place).unwrap_or(Place::Granary),
+            actor: actor.to_owned(),
+            place: w.agent(actor).map_or(Place::Granary, |a| a.place),
             kind: EventKind::Confusion,
             action: intent.action.clone(),
             text: note.clone().unwrap_or_else(|| "confused".into()),
@@ -813,20 +891,21 @@ pub fn apply(
 }
 
 impl SocialAct {
-    pub fn id(self) -> &'static str {
+    #[must_use]
+    pub const fn id(self) -> &'static str {
         match self {
-            SocialAct::None => "none",
-            SocialAct::Promise => "promise",
-            SocialAct::Gift => "gift",
-            SocialAct::Accusation => "accusation",
-            SocialAct::Threat => "threat",
-            SocialAct::Gossip => "gossip",
-            SocialAct::Plea => "plea",
-            SocialAct::Gratitude => "gratitude",
-            SocialAct::Counsel => "counsel",
-            SocialAct::TradeOffer => "trade_offer",
-            SocialAct::Blessing => "blessing",
-            SocialAct::Forgiveness => "forgiveness",
+            Self::None => "none",
+            Self::Promise => "promise",
+            Self::Gift => "gift",
+            Self::Accusation => "accusation",
+            Self::Threat => "threat",
+            Self::Gossip => "gossip",
+            Self::Plea => "plea",
+            Self::Gratitude => "gratitude",
+            Self::Counsel => "counsel",
+            Self::TradeOffer => "trade_offer",
+            Self::Blessing => "blessing",
+            Self::Forgiveness => "forgiveness",
         }
     }
 }

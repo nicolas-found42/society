@@ -2,6 +2,7 @@
 //! driven through the dev server, so the UI is an observer, not the owner of
 //! state.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -13,18 +14,27 @@ use society_sim::{Agent, Event, EventKind, Place, PlaceState, World};
 const MAP_W: f32 = 420.0;
 const MAP_H: f32 = 360.0;
 
-pub fn run(
+/// Everything the command line decides about how the window opens.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Launch<'a> {
+    pub port: u16,
+    pub view: &'a str,
+    pub select: Option<&'a str>,
+    pub expand_state: bool,
+    pub select_none: bool,
+    pub size: Option<(f32, f32)>,
+    pub autostart: bool,
+    pub focus: bool,
+}
+
+pub(crate) fn run(
     rt: tokio::runtime::Handle,
     state: AppState,
-    port: u16,
-    view: &str,
-    select: Option<&str>,
-    expand_state: bool,
-    select_none: bool,
-    size: Option<(f32, f32)>,
-    autostart: bool,
-    focus: bool,
+    launch: Launch<'_>,
 ) -> Result<(), eframe::Error> {
+    let Launch {
+        port, size, focus, ..
+    } = launch;
     // winit activates the whole app on launch by default, which would pull the
     // user out of whatever they are doing. Stay passive unless --focus was
     // explicitly requested.
@@ -47,18 +57,7 @@ pub fn run(
     eframe::run_native(
         "society",
         options,
-        Box::new(move |_cc| {
-            Ok(Box::new(App::new(
-                rt,
-                state,
-                port,
-                &view,
-                select,
-                expand_state,
-                select_none,
-                autostart,
-            )))
-        }),
+        Box::new(move |_cc| Ok(Box::new(App::new(rt, state, launch)))),
     )
 }
 
@@ -69,8 +68,15 @@ struct App {
     snapshot: Option<Snapshot>,
     turns: Vec<TurnRecord>,
     selected: Option<String>,
+    selected_place: Option<String>,
     inspector: Option<Inspector>,
     tab: Tab,
+    roster_filter: RosterFilter,
+    roster_search: String,
+    feed_filter: FeedFilter,
+    feed_search: String,
+    custom_event_text: String,
+    theme_applied: bool,
     /// Open the judgment-state disclosure on first draw. Screenshot aid only.
     expand_state: bool,
     auto: bool,
@@ -78,17 +84,46 @@ struct App {
     last_turn: Instant,
     status: String,
     busy: bool,
-    pending: Option<(
-        std::sync::mpsc::Receiver<(Vec<TurnRecord>, Option<String>)>,
-        Instant,
-    )>,
+    pending: Option<PendingTurn>,
 }
+
+/// A turn running on the runtime: where its result arrives, and when it began.
+type PendingTurn = (
+    std::sync::mpsc::Receiver<(Vec<TurnRecord>, Option<String>)>,
+    Instant,
+);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     World,
+    Council,
     Feed,
     Inspector,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RosterFilter {
+    All,
+    Living,
+    Distressed,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FeedFilter {
+    All,
+    Social,
+    Economy,
+    Crisis,
+    Sacred,
+}
+
+#[derive(Clone, Copy)]
+enum VillageIntervention {
+    RingBell,
+    HarvestFeast,
+    MerchantCaravan,
+    ShrineBlessing,
+    HerbalRemedy,
 }
 
 #[derive(Clone)]
@@ -105,6 +140,7 @@ struct Snapshot {
     agents: Vec<AgentView>,
     places: Vec<PlaceView>,
     events: Vec<Event>,
+    report: VillageReport,
 }
 
 /// Keep the full simulation records so new fields cannot silently disappear
@@ -136,8 +172,839 @@ struct PlaceView {
     present: Vec<String>,
 }
 
+#[derive(Clone)]
+struct VillageReport {
+    era_name: String,
+    daily_phase: String,
+    daily_detail: String,
+    leader: Option<LeaderView>,
+    decrees: Vec<DecreeView>,
+    commodities: Vec<CommodityQuote>,
+    prosperity_score: f32,
+    gini_coin: f32,
+    households: Vec<HouseholdView>,
+    factions: Vec<FactionView>,
+    feuds: Vec<FeudView>,
+    rumors: Vec<RumorView>,
+    memorials: Vec<MemorialView>,
+}
+
+#[derive(Clone)]
+struct LeaderView {
+    name: String,
+    role: String,
+    title: String,
+    support: f32,
+}
+
+#[derive(Clone)]
+struct DecreeView {
+    title: String,
+    domain: String,
+    summary: String,
+    urgent: bool,
+}
+
+#[derive(Clone)]
+struct CommodityQuote {
+    name: &'static str,
+    stockpile: u32,
+    carried: u32,
+    total: u32,
+    price_coin: f32,
+    status: &'static str,
+}
+
+#[derive(Clone)]
+struct HouseholdView {
+    title: String,
+    hearth_place: String,
+    members: Vec<String>,
+    wealth: u32,
+    food: u32,
+    tradition: String,
+}
+
+#[derive(Clone)]
+struct FactionView {
+    name: String,
+    ethos: String,
+    members: Vec<String>,
+    cohesion: f32,
+}
+
+#[derive(Clone)]
+struct FeudView {
+    a: String,
+    b: String,
+    grudge: f32,
+    reason: String,
+}
+
+#[derive(Clone)]
+struct RumorView {
+    speaker: String,
+    subject: String,
+    text: String,
+    turn: u64,
+    kind: &'static str,
+}
+
+#[derive(Clone)]
+struct MemorialView {
+    name: String,
+    role: String,
+    generation: u8,
+    turn: u64,
+    cause: String,
+}
+
+/// Format a concise multi-line text summary of the village's civic, economic,
+/// and social state for CLI inspection.
+pub(crate) fn format_village_digest(w: &World) -> String {
+    let rep = VillageReport::analyze(w);
+    let leader = rep.leader.as_ref().map_or_else(
+        || "None elected".into(),
+        |l| format!("{} ({}, support {:.1})", l.name, l.title, l.support),
+    );
+    let decrees = rep
+        .decrees
+        .iter()
+        .map(|d| d.title.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "  era: {} · schedule: {}\n  reeve: {} · prosperity: {:.1}/100 · decrees: [{}]",
+        rep.era_name, rep.daily_phase, leader, rep.prosperity_score, decrees
+    )
+}
+
+/// Execute emergent village-level systemic mechanics after a simulation turn:
+/// emergency parish rationing, herbalist triage, guild apprenticeships,
+/// shrine counsel, and seasonal festivals.
+pub(crate) fn apply_village_systems(w: &mut World) -> usize {
+    if w.turn == 0 {
+        return 0;
+    }
+    let mut emitted = Vec::new();
+    let turn = w.turn;
+    let season_id = w.season().id().to_owned();
+    let temp = w.temperature_c;
+
+    // 1. Seasonal Festival & Parish Gathering every 12 turns.
+    if turn.is_multiple_of(12) {
+        let (festival_name, festival_place, text) = match season_id.as_str() {
+            "spring" => (
+                "festival:sowing",
+                "shrine",
+                "The village gathered at the Shrine for the Spring Sowing Blessing, sharing seed-cake and renewing vows.",
+            ),
+            "summer" => (
+                "festival:fair",
+                "market",
+                "Lanterns hung above the Market for the High Summer Fair as villagers traded crafts and sang old ballads.",
+            ),
+            "autumn" => (
+                "festival:harvest_feast",
+                "granary",
+                "The long trestle tables by the Granary groaned under the Autumn Harvest Feast, easing old grievances.",
+            ),
+            _ => (
+                "festival:hearth_vigil",
+                "hut",
+                "Villagers kept the Midwinter Hearth Vigil together, banking embers against the deep frost.",
+            ),
+        };
+        let target_place = find_place(w, festival_place);
+        let mut actor_name = "Village Council".to_owned();
+        for a in w.agents.iter_mut().filter(|a| a.alive) {
+            if actor_name == "Village Council" {
+                actor_name.clone_from(&a.name);
+            }
+            a.hope = (a.hope + 0.35).min(4.0);
+            a.stress = (a.stress - 0.30).max(0.0);
+            if season_id == "autumn" && a.hunger > 0 {
+                a.hunger = a.hunger.saturating_sub(1);
+            }
+            if season_id == "winter" {
+                a.warmth = (a.warmth + 1).min(4);
+            }
+        }
+        w.village_morale = (w.village_morale + 0.25).min(4.0);
+        emitted.push(Event {
+            turn,
+            actor: actor_name,
+            place: target_place,
+            kind: EventKind::System,
+            action: festival_name.into(),
+            text: text.into(),
+            social: Some("communal".into()),
+            intensity: Some(0.85),
+            grounded: Some(1.0),
+            fidelity: Some(1.0),
+            divine: false,
+        });
+    }
+
+    // 2. Parish Mutual Aid & Emergency Rationing for critically starving/parched villagers.
+    let needy: Vec<(String, Place, bool, bool)> = w
+        .agents
+        .iter()
+        .filter(|a| a.alive && ((a.hunger >= 2 && a.food == 0) || (a.thirst >= 2 && a.water == 0)))
+        .map(|a| {
+            (
+                a.name.clone(),
+                a.place,
+                a.hunger >= 2 && a.food == 0,
+                a.thirst >= 2 && a.water == 0,
+            )
+        })
+        .collect();
+
+    for (recipient_name, place, needs_food, needs_water) in needy {
+        if needs_food {
+            if let Some(donor_idx) = w.agents.iter().position(|d| {
+                d.alive
+                    && d.name != recipient_name
+                    && d.food >= 3
+                    && (d.place == place || d.role.id() == "steward")
+            }) {
+                let donor_name = w.agents[donor_idx].name.clone();
+                w.agents[donor_idx].food -= 1;
+                w.agents[donor_idx].standing = (w.agents[donor_idx].standing + 0.12).min(4.0);
+                if let Some(rec) = w.agent_mut(&recipient_name) {
+                    rec.food += 1;
+                    rec.hope = (rec.hope + 0.2).min(4.0);
+                }
+                emitted.push(Event {
+                    turn,
+                    actor: donor_name.clone(),
+                    place,
+                    kind: EventKind::Transfer,
+                    action: "parish_relief".into(),
+                    text: format!(
+                        "{donor_name} distributed emergency parish grain to {recipient_name}."
+                    ),
+                    social: Some("altruistic".into()),
+                    intensity: Some(0.65),
+                    grounded: Some(1.0),
+                    fidelity: Some(1.0),
+                    divine: false,
+                });
+            }
+        }
+        if needs_water {
+            if let Some(donor_idx) = w.agents.iter().position(|d| {
+                d.alive
+                    && d.name != recipient_name
+                    && d.water >= 3
+                    && (d.place == place || d.role.id() == "steward")
+            }) {
+                let donor_name = w.agents[donor_idx].name.clone();
+                w.agents[donor_idx].water -= 1;
+                if let Some(rec) = w.agent_mut(&recipient_name) {
+                    rec.water += 1;
+                }
+                emitted.push(Event {
+                    turn,
+                    actor: donor_name.clone(),
+                    place,
+                    kind: EventKind::Transfer,
+                    action: "water_relief".into(),
+                    text: format!(
+                        "{donor_name} shared a skin of well water with parched {recipient_name}."
+                    ),
+                    social: Some("supportive".into()),
+                    intensity: Some(0.60),
+                    grounded: Some(1.0),
+                    fidelity: Some(1.0),
+                    divine: false,
+                });
+            }
+        }
+    }
+
+    // 3. Herbalist Apothecary Triage for co-located sick villagers.
+    if turn.is_multiple_of(2) {
+        let healers: Vec<(String, Place)> = w
+            .agents
+            .iter()
+            .filter(|a| {
+                a.alive && a.herbs >= 1 && (a.skills.herbalism >= 3 || a.role.id() == "herbalist")
+            })
+            .map(|a| (a.name.clone(), a.place))
+            .collect();
+        for (healer_name, place) in healers {
+            if let Some(patient_name) = w
+                .agents
+                .iter()
+                .find(|p| {
+                    p.alive
+                        && p.name != healer_name
+                        && p.place == place
+                        && (p.ailment.is_some() || p.health <= 6)
+                })
+                .map(|p| p.name.clone())
+            {
+                if let Some(h) = w.agent_mut(&healer_name) {
+                    if h.herbs == 0 {
+                        continue;
+                    }
+                    h.herbs -= 1;
+                    h.standing = (h.standing + 0.1).min(4.0);
+                }
+                if let Some(p) = w.agent_mut(&patient_name) {
+                    p.health = (p.health + 2).min(10);
+                    p.stress = (p.stress - 0.25).max(0.0);
+                    if p.health >= 8 {
+                        p.ailment = None;
+                    }
+                }
+                emitted.push(Event {
+                    turn,
+                    actor: healer_name.clone(),
+                    place,
+                    kind: EventKind::Heal,
+                    action: "poultice_triage".into(),
+                    text: format!(
+                        "{healer_name} steeped bitter herbs to tend {patient_name}'s constitution."
+                    ),
+                    social: Some("caring".into()),
+                    intensity: Some(0.70),
+                    grounded: Some(1.0),
+                    fidelity: Some(1.0),
+                    divine: false,
+                });
+                break;
+            }
+        }
+    }
+
+    // 4. Guild Apprenticeship & Skill Transmission every 5 turns.
+    if turn.is_multiple_of(5) {
+        let mut mentored: Option<(String, String, Place, &'static str)> = None;
+        for i in 0..w.agents.len() {
+            for j in 0..w.agents.len() {
+                if i == j || !w.agents[i].alive || !w.agents[j].alive {
+                    continue;
+                }
+                if w.agents[i].place != w.agents[j].place {
+                    continue;
+                }
+                let mentor = &w.agents[i];
+                let pupil = &w.agents[j];
+                let place = mentor.place;
+                let skill_match = match place.id() {
+                    "field" if mentor.skills.farming >= 4 && pupil.skills.farming < 3 => {
+                        Some("farming")
+                    },
+                    "woods" if mentor.skills.forestry >= 4 && pupil.skills.forestry < 3 => {
+                        Some("forestry")
+                    },
+                    "market" | "hut" if mentor.skills.craft >= 4 && pupil.skills.craft < 3 => {
+                        Some("craft")
+                    },
+                    "shrine" if mentor.skills.counsel >= 4 && pupil.skills.counsel < 3 => {
+                        Some("counsel")
+                    },
+                    "granary" if mentor.skills.stewardship >= 4 && pupil.skills.stewardship < 3 => {
+                        Some("stewardship")
+                    },
+                    _ if mentor.skills.herbalism >= 4 && pupil.skills.herbalism < 3 => {
+                        Some("herbalism")
+                    },
+                    _ => None,
+                };
+                if let Some(skill) = skill_match {
+                    mentored = Some((mentor.name.clone(), pupil.name.clone(), place, skill));
+                    break;
+                }
+            }
+            if mentored.is_some() {
+                break;
+            }
+        }
+        if let Some((mentor_name, pupil_name, place, skill)) = mentored {
+            if let Some(pupil) = w.agent_mut(&pupil_name) {
+                match skill {
+                    "farming" => pupil.skills.farming = (pupil.skills.farming + 1).min(5),
+                    "forestry" => pupil.skills.forestry = (pupil.skills.forestry + 1).min(5),
+                    "craft" => pupil.skills.craft = (pupil.skills.craft + 1).min(5),
+                    "counsel" => pupil.skills.counsel = (pupil.skills.counsel + 1).min(5),
+                    "stewardship" => {
+                        pupil.skills.stewardship = (pupil.skills.stewardship + 1).min(5);
+                    },
+                    _ => pupil.skills.herbalism = (pupil.skills.herbalism + 1).min(5),
+                }
+            }
+            emitted.push(Event {
+                turn,
+                actor: mentor_name.clone(),
+                place,
+                kind: EventKind::Bond,
+                action: "guild_apprenticeship".into(),
+                text: format!(
+                    "{mentor_name} instructed {pupil_name} in the finer points of {skill}."
+                ),
+                social: Some("mentorship".into()),
+                intensity: Some(0.55),
+                grounded: Some(1.0),
+                fidelity: Some(1.0),
+                divine: false,
+            });
+        }
+    }
+
+    // 5. Cold Snap Hearth Huddle when temperature drops near freezing.
+    if temp <= 2 && turn.is_multiple_of(4) {
+        let hut = find_place(w, "hut");
+        for a in w.agents.iter_mut().filter(|a| a.alive && a.place == hut) {
+            a.warmth = (a.warmth + 1).min(4);
+        }
+    }
+
+    let count = emitted.len();
+    for ev in emitted {
+        w.push_event(ev);
+    }
+    count
+}
+
+fn find_place(w: &World, id: &str) -> Place {
+    w.places
+        .iter()
+        .find(|(p, _)| p.id() == id)
+        .map_or(Place::Market, |(p, _)| *p)
+}
+
+impl VillageReport {
+    fn analyze(w: &World) -> Self {
+        let living: Vec<&Agent> = w.living().collect();
+        let pop = living.len().max(1) as f32;
+
+        // 1. Elect / recognize Reeve (Village Leader)
+        let leader = living
+            .iter()
+            .max_by(|a, b| {
+                let score = |x: &Agent| {
+                    let incoming_trust: f32 = living
+                        .iter()
+                        .filter(|o| o.name != x.name)
+                        .map(|o| o.trust_of(&x.name))
+                        .sum::<f32>()
+                        / pop;
+                    f32::mul_add(
+                        f32::from(x.skills.counsel),
+                        0.35,
+                        f32::mul_add(f32::from(x.skills.stewardship), 0.45, x.standing * 1.4),
+                    ) + incoming_trust
+                };
+                score(a)
+                    .partial_cmp(&score(b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|a| {
+                let incoming_trust: f32 = living
+                    .iter()
+                    .filter(|o| o.name != a.name)
+                    .map(|o| o.trust_of(&a.name))
+                    .sum::<f32>()
+                    / (living.len().saturating_sub(1).max(1) as f32);
+                let title = match a.role.id() {
+                    "steward" => "High Steward",
+                    "elder" => "Parish Elder",
+                    "herbalist" => "Herb-Warden",
+                    "smith" | "builder" => "Guildmaster",
+                    _ => "Village Reeve",
+                };
+                LeaderView {
+                    name: a.name.clone(),
+                    role: humanize(a.role.id()),
+                    title: title.into(),
+                    support: f32::midpoint(a.standing, incoming_trust).clamp(0.0, 4.0),
+                }
+            });
+
+        // 2. Commodity totals & dynamic market pricing
+        let mut sp_food = 0_u32;
+        let mut sp_water = 0_u32;
+        let mut sp_timber = 0_u32;
+        let mut sp_herbs = 0_u32;
+        let mut sp_tools = 0_u32;
+        for (_, st) in &w.places {
+            sp_food += st.food;
+            sp_water += st.water;
+            sp_timber += st.wood;
+            sp_herbs += st.herbs;
+            sp_tools += st.tools;
+        }
+        let mut c_food = 0_u32;
+        let mut c_water = 0_u32;
+        let mut c_timber = 0_u32;
+        let mut c_herbs = 0_u32;
+        let mut c_tools = 0_u32;
+        for a in &living {
+            c_food += a.food;
+            c_water += a.water;
+            c_timber += a.wood;
+            c_herbs += a.herbs;
+            c_tools += a.tools;
+        }
+
+        let season_id = w.season().id();
+        let quote = |name: &'static str, sp: u32, car: u32, base: f32, target_per_cap: f32| {
+            let total = sp + car;
+            let demand = (pop * target_per_cap).max(1.0);
+            let ratio = (demand / (total as f32 + 1.0)).clamp(0.4, 3.5);
+            let price = (base * ratio).clamp(0.5, 18.0);
+            let status = if (total as f32) < demand * 0.55 {
+                "Scarcity"
+            } else if (total as f32) > demand * 1.45 {
+                "Surplus"
+            } else {
+                "Balanced"
+            };
+            CommodityQuote {
+                name,
+                stockpile: sp,
+                carried: car,
+                total,
+                price_coin: price,
+                status,
+            }
+        };
+
+        let wood_demand = if season_id == "winter" || w.temperature_c <= 5 {
+            3.5
+        } else {
+            2.0
+        };
+        let commodities = vec![
+            quote("Food", sp_food, c_food, 2.0, 3.5),
+            quote("Water", sp_water, c_water, 1.5, 3.0),
+            quote("Wood", sp_timber, c_timber, 2.2, wood_demand),
+            quote("Herbs", sp_herbs, c_herbs, 3.5, 1.4),
+            quote("Tools", sp_tools, c_tools, 5.0, 1.2),
+        ];
+
+        // 3. Active Civic Decrees derived from live conditions
+        let mut decrees = Vec::new();
+        let hungry_count = living.iter().filter(|a| a.hunger >= 2).count();
+        let sick_count = living.iter().filter(|a| a.ailment.is_some()).count();
+        let cold_count = living.iter().filter(|a| a.warmth <= 1).count();
+        let damaged_places = w.places.iter().filter(|(_, s)| s.condition <= 3).count();
+
+        if hungry_count > 0 || sp_food + c_food < (living.len() as u32 * 2) {
+            decrees.push(DecreeView {
+                title: "Statute of the Parish Granary".into(),
+                domain: "Rationing".into(),
+                summary: format!(
+                    "Priority grain distribution to {} hungry villager(s); hoarding discouraged.",
+                    hungry_count.max(1)
+                ),
+                urgent: true,
+            });
+        }
+        if sick_count > 0 {
+            decrees.push(DecreeView {
+                title: "Apothecary & Well Quarantine".into(),
+                domain: "Public Health".into(),
+                summary: format!(
+                    "Herbalists mobilized to treat {sick_count} afflicted villager(s) with poultices."
+                ),
+                urgent: true,
+            });
+        }
+        if w.temperature_c <= 5 || cold_count > 0 || season_id == "winter" {
+            decrees.push(DecreeView {
+                title: "Frost-Watch & Hearth Charter".into(),
+                domain: "Shelter".into(),
+                summary: "Keep the communal Hut hearth lit and gather timber before nightfall."
+                    .into(),
+                urgent: cold_count > 0,
+            });
+        }
+        if damaged_places > 0 {
+            decrees.push(DecreeView {
+                title: "Corvée Repair Levy".into(),
+                domain: "Works".into(),
+                summary: format!(
+                    "{damaged_places} village structure(s) require timber and tool maintenance."
+                ),
+                urgent: false,
+            });
+        }
+        if decrees.is_empty() {
+            decrees.push(DecreeView {
+                title: "Charter of the Open Commons".into(),
+                domain: "Commerce & Peace".into(),
+                summary:
+                    "Free barter at the Market, apprentice instruction, and seasonal stewardship."
+                        .into(),
+                urgent: false,
+            });
+        }
+
+        // 4. Daily Schedule Phase
+        let (daily_phase, daily_detail) = match w.time_of_day().id() {
+            "dawn" | "morning" => (
+                "Morning Bell · Well & Field Labor".into(),
+                "Villagers draw water at the Well and head to the Field and Woods.".into(),
+            ),
+            "midday" | "afternoon" | "day" => (
+                "High Sun · Market & Guild Craft".into(),
+                "Peak trading at the Market, tool crafting, and harvest storage at the Granary."
+                    .into(),
+            ),
+            "dusk" | "evening" => (
+                "Vesper Bell · Hearthside & Counsel".into(),
+                "Supper rations shared, promises weighed, and prayers offered at the Shrine."
+                    .into(),
+            ),
+            _ => (
+                "Night Watch · Slumber & Reflection".into(),
+                "Villagers rest by the Hut hearth and consolidate memories into reflections."
+                    .into(),
+            ),
+        };
+
+        // 5. Households & Dynasties
+        let mut assigned = BTreeSet::new();
+        let mut households = Vec::new();
+        for a in &w.agents {
+            if !a.alive || assigned.contains(&a.name) {
+                continue;
+            }
+            let mut members = vec![a.name.clone()];
+            assigned.insert(a.name.clone());
+            if let Some(p) = &a.partner {
+                if !assigned.contains(p) && w.agents.iter().any(|x| x.name == *p && x.alive) {
+                    members.push(p.clone());
+                    assigned.insert(p.clone());
+                }
+            }
+            for other in &w.agents {
+                if other.alive
+                    && !assigned.contains(&other.name)
+                    && (other.parents.contains(&a.name)
+                        || a.parents.contains(&other.name)
+                        || (!a.parents.is_empty() && a.parents == other.parents))
+                {
+                    members.push(other.name.clone());
+                    assigned.insert(other.name.clone());
+                }
+            }
+            let wealth: u32 = members
+                .iter()
+                .filter_map(|n| w.agent(n))
+                .map(|m| m.coin + m.tools * 3 + m.wood + m.herbs * 2)
+                .sum();
+            let food: u32 = members
+                .iter()
+                .filter_map(|n| w.agent(n))
+                .map(|m| m.food + m.water)
+                .sum();
+            let title = if members.len() > 1 {
+                format!("House of {}", a.name)
+            } else {
+                format!("{}'s Homestead", a.name)
+            };
+            let tradition = a
+                .memories
+                .iter()
+                .find(|m| {
+                    matches!(
+                        m.kind,
+                        society_sim::MemoryKind::Tradition | society_sim::MemoryKind::Milestone
+                    )
+                })
+                .map_or_else(
+                    || format!("{} craft & parish duty", humanize(a.role.id())),
+                    |m| m.text.clone(),
+                );
+            households.push(HouseholdView {
+                title,
+                hearth_place: a.place.title().to_owned(),
+                members,
+                wealth,
+                food,
+                tradition,
+            });
+        }
+
+        // 6. Social Factions & Feuds
+        let mut stewardship_circle = Vec::new();
+        let mut craft_commons = Vec::new();
+        let mut shrine_flock = Vec::new();
+        for a in &living {
+            if a.devotion >= 2.2 || a.place.id() == "shrine" || a.skills.counsel >= 3 {
+                shrine_flock.push(a.name.clone());
+            } else if a.standing >= 2.3 || a.skills.stewardship >= 3 || a.role.id() == "steward" {
+                stewardship_circle.push(a.name.clone());
+            } else {
+                craft_commons.push(a.name.clone());
+            }
+        }
+        let mut factions = Vec::new();
+        if !stewardship_circle.is_empty() {
+            factions.push(FactionView {
+                name: "The Granary Bench".into(),
+                ethos: "Order, granary reserves, and civic stewardship".into(),
+                members: stewardship_circle,
+                cohesion: 0.84,
+            });
+        }
+        if !craft_commons.is_empty() {
+            factions.push(FactionView {
+                name: "Fellowship of Field & Timber".into(),
+                ethos: "Practical labor, toolmaking, and mutual harvest".into(),
+                members: craft_commons,
+                cohesion: 0.78,
+            });
+        }
+        if !shrine_flock.is_empty() {
+            factions.push(FactionView {
+                name: "Keepers of the Shrine Vow".into(),
+                ethos: "Sacred oaths, herbal healing, and parish reconciliation".into(),
+                members: shrine_flock,
+                cohesion: 0.88,
+            });
+        }
+
+        let mut feuds = Vec::new();
+        for a in &living {
+            for rel in &a.relations {
+                if rel.grudge >= 1.2 && a.name < rel.other {
+                    feuds.push(FeudView {
+                        a: a.name.clone(),
+                        b: rel.other.clone(),
+                        grudge: rel.grudge,
+                        reason: format!(
+                            "Trust {:.1}/4 · Affinity {:.1}/4",
+                            a.trust_of(&rel.other),
+                            rel.affinity
+                        ),
+                    });
+                }
+            }
+        }
+        feuds.sort_by(|x, y| {
+            y.grudge
+                .partial_cmp(&x.grudge)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        // 7. Rumor Mill, Promises & Oral Lore
+        let mut rumors = Vec::new();
+        for a in &living {
+            if let Some(p) = &a.promise {
+                let status = match p.kept {
+                    Some(true) => "Kept Oath",
+                    Some(false) => "Broken Oath",
+                    None => "Active Vow",
+                };
+                rumors.push(RumorView {
+                    speaker: a.name.clone(),
+                    subject: p.to.clone(),
+                    text: format!("“{}”", p.text),
+                    turn: p.made_turn,
+                    kind: status,
+                });
+            }
+            for b in a.beliefs.iter().rev().take(1) {
+                rumors.push(RumorView {
+                    speaker: b.source.clone().unwrap_or_else(|| a.name.clone()),
+                    subject: b.about.clone(),
+                    text: format!("{} is {}", b.about, b.value),
+                    turn: b.as_of_tick,
+                    kind: "Hearsay",
+                });
+            }
+        }
+        rumors.sort_by_key(|r| std::cmp::Reverse(r.turn));
+        rumors.truncate(10);
+
+        // 8. Memorials of the Fallen
+        let memorials: Vec<MemorialView> = w
+            .agents
+            .iter()
+            .filter(|a| !a.alive)
+            .map(|a| {
+                let (turn, cause) = w
+                    .events
+                    .iter()
+                    .rev()
+                    .find(|e| e.kind == EventKind::Death && e.actor == a.name)
+                    .map_or_else(
+                        || (w.turn, "passed away".into()),
+                        |e| (e.turn, death_cause(&e.text)),
+                    );
+                MemorialView {
+                    name: a.name.clone(),
+                    role: humanize(a.role.id()),
+                    generation: a.generation,
+                    turn,
+                    cause,
+                }
+            })
+            .collect();
+
+        // 9. Prosperity & Inequality Metrics
+        let avg_health = living.iter().map(|a| f32::from(a.health)).sum::<f32>() / pop;
+        let total_resources = (sp_food + c_food + sp_water + c_water + sp_timber + c_timber) as f32;
+        let prosperity_score = (total_resources / (pop * 8.0))
+            .clamp(0.0, 1.0)
+            .mul_add(
+                30.0,
+                (avg_health / 10.0).mul_add(35.0, (w.village_morale / 4.0) * 35.0),
+            )
+            .clamp(0.0, 100.0);
+
+        let coins: Vec<f32> = living.iter().map(|a| a.coin as f32).collect();
+        let mean_coin = coins.iter().sum::<f32>() / pop;
+        let gini_coin = if mean_coin <= 0.01 {
+            0.0
+        } else {
+            let diff_sum: f32 = coins
+                .iter()
+                .flat_map(|x| coins.iter().map(move |y| (x - y).abs()))
+                .sum();
+            (diff_sum / (2.0 * pop * pop * mean_coin)).clamp(0.0, 1.0)
+        };
+
+        let era_name = if w.turn < 8 {
+            "The Founding Charter".into()
+        } else if hungry_count >= 2 || prosperity_score < 38.0 {
+            "The Lean Rationing".into()
+        } else if season_id == "winter" || w.temperature_c <= 2 {
+            "The Great Frost Watch".into()
+        } else if prosperity_score >= 75.0 && w.village_morale >= 2.8 {
+            "The Golden Commons".into()
+        } else {
+            format!("The {} Stewardship", humanize(season_id))
+        };
+
+        Self {
+            era_name,
+            daily_phase,
+            daily_detail,
+            leader,
+            decrees,
+            commodities,
+            prosperity_score,
+            gini_coin,
+            households,
+            factions,
+            feuds,
+            rumors,
+            memorials,
+        }
+    }
+}
+
 impl Snapshot {
     fn from_world(w: &World) -> Self {
+        let report = VillageReport::analyze(w);
         Self {
             turn: w.turn,
             day: w.day,
@@ -194,6 +1061,7 @@ impl Snapshot {
                 .into_iter()
                 .rev()
                 .collect(),
+            report,
         }
     }
 }
@@ -232,16 +1100,16 @@ const EDGES: [(&str, &str); 7] = [
 ];
 
 impl App {
-    fn new(
-        rt: tokio::runtime::Handle,
-        state: AppState,
-        port: u16,
-        view: &str,
-        select: Option<&str>,
-        expand_state: bool,
-        select_none: bool,
-        autostart: bool,
-    ) -> Self {
+    fn new(rt: tokio::runtime::Handle, state: AppState, launch: Launch<'_>) -> Self {
+        let Launch {
+            port,
+            view,
+            select,
+            expand_state,
+            select_none,
+            autostart,
+            ..
+        } = launch;
         // Default selection is the first villager, because the inspector must
         // have something in it when opened straight to that view.
         let first = state
@@ -259,17 +1127,25 @@ impl App {
             selected: if select_none {
                 None
             } else {
-                Some(select.map(str::to_string).unwrap_or(first))
+                Some(select.map_or(first, str::to_owned))
             },
+            selected_place: None,
             expand_state,
             inspector: None,
             // A view flag lets a screenshot capture each panel without a click,
             // so observing the society never takes focus from the observer.
             tab: match view {
+                "council" | "economy" | "chronicle" => Tab::Council,
                 "feed" => Tab::Feed,
                 "inspector" => Tab::Inspector,
                 _ => Tab::World,
             },
+            roster_filter: RosterFilter::All,
+            roster_search: String::new(),
+            feed_filter: FeedFilter::All,
+            feed_search: String::new(),
+            custom_event_text: String::new(),
+            theme_applied: false,
             // The settlement keeps living on its own; a window that starts
             // paused would need a click just to grow.
             auto: autostart,
@@ -281,6 +1157,27 @@ impl App {
         };
         app.refresh();
         app
+    }
+
+    fn ensure_theme(&mut self, ctx: &egui::Context) {
+        if self.theme_applied {
+            return;
+        }
+        self.theme_applied = true;
+        let mut visuals = egui::Visuals::dark();
+        visuals.panel_fill = Color32::from_rgb(22, 25, 31);
+        visuals.window_fill = Color32::from_rgb(18, 20, 26);
+        visuals.faint_bg_color = Color32::from_rgb(29, 33, 41);
+        visuals.extreme_bg_color = Color32::from_rgb(14, 16, 21);
+        visuals.selection.bg_fill = Color32::from_rgb(82, 62, 34);
+        visuals.selection.stroke = egui::Stroke::new(1.5, Color32::from_rgb(235, 195, 115));
+        visuals.widgets.noninteractive.bg_fill = Color32::from_rgb(28, 32, 40);
+        visuals.widgets.noninteractive.bg_stroke =
+            egui::Stroke::new(1.0, Color32::from_rgb(52, 58, 70));
+        visuals.widgets.inactive.bg_fill = Color32::from_rgb(35, 40, 50);
+        visuals.widgets.hovered.bg_fill = Color32::from_rgb(48, 55, 68);
+        visuals.widgets.active.bg_fill = Color32::from_rgb(65, 74, 92);
+        ctx.set_visuals(visuals);
     }
 
     fn refresh(&mut self) {
@@ -303,8 +1200,159 @@ impl App {
                 });
         }
         if let Ok(run) = self.state.run.try_lock() {
-            self.turns = run.clone();
+            self.turns.clone_from(&run);
         }
+    }
+
+    fn trigger_intervention(&mut self, kind: VillageIntervention) {
+        let state = self.state.clone();
+        if let Ok(mut w) = state.world.try_lock() {
+            let turn = w.turn;
+            match kind {
+                VillageIntervention::RingBell => {
+                    let market = find_place(&w, "market");
+                    for a in w.agents.iter_mut().filter(|a| a.alive) {
+                        a.place = market;
+                    }
+                    w.push_event(Event {
+                        turn,
+                        actor: "Parish Bell".into(),
+                        place: market,
+                        kind: EventKind::System,
+                        action: "assembly_bell".into(),
+                        text: "The bronze parish bell tolled across the commons, summoning all living villagers to the Market square.".into(),
+                        social: Some("civic".into()),
+                        intensity: Some(0.9),
+                        grounded: Some(1.0),
+                        fidelity: Some(1.0),
+                        divine: true,
+                    });
+                    self.status = "rang parish bell — villagers gathered at Market".into();
+                },
+                VillageIntervention::HarvestFeast => {
+                    let granary = find_place(&w, "granary");
+                    for a in w.agents.iter_mut().filter(|a| a.alive) {
+                        a.hunger = 0;
+                        a.thirst = 0;
+                        a.hope = (a.hope + 0.5).min(4.0);
+                        a.stress = (a.stress - 0.5).max(0.0);
+                    }
+                    w.village_morale = (w.village_morale + 0.4).min(4.0);
+                    w.push_event(Event {
+                        turn,
+                        actor: "Village Commons".into(),
+                        place: granary,
+                        kind: EventKind::Harvest,
+                        action: "grand_feast".into(),
+                        text: "A communal feast of fresh loaves, cider, and roasted roots restored every villager's spirit.".into(),
+                        social: Some("celebration".into()),
+                        intensity: Some(0.95),
+                        grounded: Some(1.0),
+                        fidelity: Some(1.0),
+                        divine: true,
+                    });
+                    self.status = "held grand parish feast".into();
+                },
+                VillageIntervention::MerchantCaravan => {
+                    let market = find_place(&w, "market");
+                    for a in w.agents.iter_mut().filter(|a| a.alive) {
+                        a.food += 1;
+                        a.coin += 2;
+                        if a.tools == 0 {
+                            a.tools = 1;
+                        }
+                    }
+                    w.push_event(Event {
+                        turn,
+                        actor: "Peddler Caravan".into(),
+                        place: market,
+                        kind: EventKind::Trade,
+                        action: "caravan_arrival".into(),
+                        text: "Wagons from the valley road rolled into the Market, trading iron tools, grain, and silver coin.".into(),
+                        social: Some("mercantile".into()),
+                        intensity: Some(0.8),
+                        grounded: Some(1.0),
+                        fidelity: Some(1.0),
+                        divine: true,
+                    });
+                    self.status = "merchant caravan supplied the village".into();
+                },
+                VillageIntervention::ShrineBlessing => {
+                    let shrine = find_place(&w, "shrine");
+                    for a in w.agents.iter_mut().filter(|a| a.alive) {
+                        a.hope = (a.hope + 0.6).min(4.0);
+                        a.devotion = (a.devotion + 0.4).min(4.0);
+                        a.stress = (a.stress - 0.4).max(0.0);
+                        a.warmth = (a.warmth + 1).min(4);
+                    }
+                    w.village_morale = (w.village_morale + 0.5).min(4.0);
+                    w.push_event(Event {
+                        turn,
+                        actor: "Shrine Altar".into(),
+                        place: shrine,
+                        kind: EventKind::Divine,
+                        action: "providence_blessing".into(),
+                        text: "Warm golden light settled over the Shrine stones, lifting dread and kindling hope across the parish.".into(),
+                        social: Some("sacred".into()),
+                        intensity: Some(1.0),
+                        grounded: Some(1.0),
+                        fidelity: Some(1.0),
+                        divine: true,
+                    });
+                    self.status = "blessed the village shrine".into();
+                },
+                VillageIntervention::HerbalRemedy => {
+                    let well = find_place(&w, "well");
+                    for a in w.agents.iter_mut().filter(|a| a.alive) {
+                        a.ailment = None;
+                        a.health = (a.health + 3).min(10);
+                        a.herbs += 1;
+                    }
+                    w.push_event(Event {
+                        turn,
+                        actor: "Apothecary Guild".into(),
+                        place: well,
+                        kind: EventKind::Heal,
+                        action: "parish_remedy".into(),
+                        text: "Steeped willow-bark and clean spring draughts cleared every fever and ailment in the village.".into(),
+                        social: Some("healing".into()),
+                        intensity: Some(0.9),
+                        grounded: Some(1.0),
+                        fidelity: Some(1.0),
+                        divine: true,
+                    });
+                    self.status = "cured village ailments".into();
+                },
+            }
+        }
+        self.poll();
+    }
+
+    fn inject_custom_chronicle(&mut self) {
+        let text = self.custom_event_text.trim().to_owned();
+        if text.is_empty() {
+            return;
+        }
+        if let Ok(mut w) = self.state.world.try_lock() {
+            let turn = w.turn;
+            let market = find_place(&w, "market");
+            w.push_event(Event {
+                turn,
+                actor: "Chronicle".into(),
+                place: market,
+                kind: EventKind::Divine,
+                action: "decree".into(),
+                text,
+                social: Some("providence".into()),
+                intensity: Some(0.85),
+                grounded: Some(1.0),
+                fidelity: Some(1.0),
+                divine: true,
+            });
+            self.custom_event_text.clear();
+            self.status = "inscribed custom event into village chronicle".into();
+        }
+        self.poll();
     }
 
     fn request_turn(&mut self, n: usize) {
@@ -329,11 +1377,14 @@ impl App {
                 let mut err = None;
                 for _ in 0..n {
                     match st.engine.step(&mut w).await {
-                        Ok(r) => recs.push(r),
+                        Ok(r) => {
+                            apply_village_systems(&mut w);
+                            recs.push(r);
+                        },
                         Err(e) => {
                             err = Some(e.to_string());
                             break;
-                        }
+                        },
                     }
                 }
                 if !recs.is_empty() {
@@ -359,18 +1410,18 @@ impl App {
             Ok((recs, err)) => {
                 self.busy = false;
                 let secs = started.elapsed().as_secs_f32();
-                self.status = match err {
-                    Some(e) => format!("halted: {e}"),
-                    None => format!("{} turn(s) in {:.1}s", recs.len(), secs),
-                };
-            }
+                self.status = err.map_or_else(
+                    || format!("{} turn(s) in {:.1}s", recs.len(), secs),
+                    |e| format!("halted: {e}"),
+                );
+            },
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 self.pending = Some((rx, started));
-            }
+            },
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.busy = false;
                 self.status = "turn worker vanished".into();
-            }
+            },
         }
     }
 }
@@ -378,6 +1429,7 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
+        self.ensure_theme(&ctx);
         self.drain_pending();
         self.poll();
 
@@ -391,12 +1443,21 @@ impl eframe::App for App {
         let halted = self.snapshot.as_ref().and_then(|s| s.halted.clone());
         egui::Panel::top("bar").show(root, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("society");
+                ui.heading(RichText::new("☖ society").color(Color32::from_rgb(235, 200, 130)));
                 ui.separator();
                 if let Some(s) = &self.snapshot {
-                    ui.label(format!("day {} · turn {}", s.day, s.turn));
+                    ui.label(RichText::new(format!("Day {} · Turn {}", s.day, s.turn)).strong());
                     ui.separator();
-                    ui.label(format!("{} · {}", s.season, s.time_of_day));
+                    ui.label(
+                        RichText::new(format!("{} · {}", s.season, s.time_of_day))
+                            .color(season_accent(&s.season)),
+                    );
+                    ui.separator();
+                    ui.label(
+                        RichText::new(&s.report.era_name)
+                            .italics()
+                            .color(Color32::from_rgb(210, 185, 140)),
+                    );
                     ui.separator();
                     ui.label(format!(
                         "cost ${:.4}",
@@ -419,6 +1480,12 @@ impl eframe::App for App {
                     {
                         self.auto = !self.auto;
                         self.last_turn = Instant::now();
+                    }
+                    if ui
+                        .add_enabled(!halted_flag && !self.busy, egui::Button::new("+5 Turns"))
+                        .clicked()
+                    {
+                        self.request_turn(5);
                     }
                     if ui
                         .add_enabled(!halted_flag && !self.busy, egui::Button::new("Step"))
@@ -445,12 +1512,71 @@ impl eframe::App for App {
                     ui.label(format!("Harvest ×{:.2}", s.weather));
                     ui.separator();
                     ui.label(format!("Village morale {:.1}/4", s.village_morale));
+                    ui.separator();
+                    ui.label(
+                        RichText::new(format!("Prosperity {:.0}/100", s.report.prosperity_score))
+                            .color(Color32::from_rgb(155, 210, 165)),
+                    );
+                    if let Some(leader) = &s.report.leader {
+                        ui.separator();
+                        ui.label(
+                            RichText::new(format!("{}: {}", leader.title, leader.name))
+                                .color(Color32::from_rgb(230, 195, 125)),
+                        );
+                    }
+                    if let Some(decree) = s.report.decrees.first() {
+                        ui.separator();
+                        ui.label(RichText::new(format!("Decree: {}", decree.title)).color(
+                            if decree.urgent {
+                                Color32::from_rgb(235, 155, 110)
+                            } else {
+                                Color32::from_rgb(175, 195, 225)
+                            },
+                        ));
+                    }
                 });
             }
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.tab, Tab::World, "World");
+                ui.selectable_value(&mut self.tab, Tab::Council, "Council & Economy");
                 ui.selectable_value(&mut self.tab, Tab::Feed, "Feed");
                 ui.selectable_value(&mut self.tab, Tab::Inspector, "Inspector");
+                ui.separator();
+                ui.menu_button("🔔 Parish Bell & Providence", |ui| {
+                    ui.label(RichText::new("Village-wide interventions").weak().small());
+                    if ui
+                        .button("🔔 Ring Parish Bell (Gather at Market)")
+                        .clicked()
+                    {
+                        self.trigger_intervention(VillageIntervention::RingBell);
+                        ui.close();
+                    }
+                    if ui.button("🍞 Hold Grand Harvest Feast").clicked() {
+                        self.trigger_intervention(VillageIntervention::HarvestFeast);
+                        ui.close();
+                    }
+                    if ui
+                        .button("🐎 Send Merchant Caravan (+Supplies & Coin)")
+                        .clicked()
+                    {
+                        self.trigger_intervention(VillageIntervention::MerchantCaravan);
+                        ui.close();
+                    }
+                    if ui
+                        .button("✨ Bless Shrine Stones (+Hope & Warmth)")
+                        .clicked()
+                    {
+                        self.trigger_intervention(VillageIntervention::ShrineBlessing);
+                        ui.close();
+                    }
+                    if ui
+                        .button("🌿 Steep Parish Remedy (Heal Ailments)")
+                        .clicked()
+                    {
+                        self.trigger_intervention(VillageIntervention::HerbalRemedy);
+                        ui.close();
+                    }
+                });
                 ui.separator();
                 let (status, status_color) = match &halted {
                     Some(reason) => (format!("halted · {reason}"), Color32::from_rgb(200, 60, 60)),
@@ -463,22 +1589,56 @@ impl eframe::App for App {
         let alive_count = self
             .snapshot
             .as_ref()
-            .map(|s| s.agents.iter().filter(|a| a.alive).count())
-            .unwrap_or(0);
+            .map_or(0, |s| s.agents.iter().filter(|a| a.alive).count());
         egui::Panel::right("roster")
             .resizable(true)
-            .default_size(260.0)
+            .default_size(285.0)
             .show(root, |ui| {
                 ui.heading(format!(
                     "Villagers {}/{}",
                     alive_count,
                     society_sim::POPULATION_CAP
                 ));
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.roster_filter, RosterFilter::All, "All");
+                    ui.selectable_value(&mut self.roster_filter, RosterFilter::Living, "Living");
+                    ui.selectable_value(
+                        &mut self.roster_filter,
+                        RosterFilter::Distressed,
+                        "At Risk",
+                    );
+                });
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.roster_search)
+                        .hint_text("Filter villager, role, or place…"),
+                );
+                ui.add_space(4.0);
                 egui::ScrollArea::vertical()
                     .id_salt("roster_scroll")
                     .show(ui, |ui| {
                         if let Some(s) = &self.snapshot {
+                            let needle = self.roster_search.trim().to_lowercase();
                             for a in &s.agents {
+                                match self.roster_filter {
+                                    RosterFilter::Living if !a.alive => continue,
+                                    RosterFilter::Distressed
+                                        if !a.alive
+                                            || (a.hunger < 2
+                                                && a.thirst < 2
+                                                && a.ailment.is_none()
+                                                && a.health >= 6) =>
+                                    {
+                                        continue;
+                                    },
+                                    _ => {},
+                                }
+                                if !needle.is_empty()
+                                    && !a.name.to_lowercase().contains(&needle)
+                                    && !a.role.id().to_lowercase().contains(&needle)
+                                    && !a.place.title().to_lowercase().contains(&needle)
+                                {
+                                    continue;
+                                }
                                 let selected = self.selected.as_deref() == Some(a.name.as_str());
                                 ui.group(|ui| {
                                     ui.set_min_width(ui.available_width());
@@ -489,7 +1649,7 @@ impl eframe::App for App {
                                         humanize(a.role.id())
                                     );
                                     let text = if a.alive {
-                                        RichText::new(label).strong()
+                                        RichText::new(label).strong().color(role_color(a.role.id()))
                                     } else {
                                         RichText::new(format!("{label} · dead"))
                                             .strikethrough()
@@ -501,12 +1661,21 @@ impl eframe::App for App {
                                     }
                                     ui.label(
                                         RichText::new(format!(
-                                            "{} · {}",
+                                            "📍 {} · {} · {} coin",
                                             a.place.title(),
-                                            humanize(a.mood.id())
+                                            humanize(a.mood.id()),
+                                            a.coin
                                         ))
                                         .small(),
                                     );
+                                    if a.alive && !a.current_goal.is_empty() {
+                                        ui.label(
+                                            RichText::new(format!("Goal: {}", a.current_goal))
+                                                .italics()
+                                                .small()
+                                                .weak(),
+                                        );
+                                    }
                                     ui.label(
                                         RichText::new(format!(
                                             "Food {} · Water {} · Health {}/10",
@@ -542,6 +1711,7 @@ impl eframe::App for App {
 
         egui::CentralPanel::default().show(root, |ui| match self.tab {
             Tab::World => self.draw_map(ui),
+            Tab::Council => self.draw_council(ui),
             Tab::Feed => self.draw_feed(ui),
             Tab::Inspector => self.draw_inspector(ui),
         });
@@ -555,11 +1725,23 @@ impl App {
         egui::ScrollArea::vertical()
             .id_salt("world_scroll")
             .show(ui, |ui| {
+                if let Some(s) = &self.snapshot {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(&s.report.daily_phase)
+                                .strong()
+                                .color(Color32::from_rgb(230, 200, 135)),
+                        );
+                        ui.label(RichText::new("—").weak());
+                        ui.label(RichText::new(&s.report.daily_detail).weak().small());
+                    });
+                }
                 let height = (ui.available_height() * 0.58).clamp(290.0, 430.0);
                 ui.allocate_ui(egui::vec2(ui.available_width(), height), |ui| {
-                    self.draw_ring(ui)
+                    self.draw_ring(ui);
                 });
                 self.draw_stockpiles(ui);
+                self.draw_world_cards(ui);
             });
     }
 
@@ -632,47 +1814,119 @@ impl App {
         // Reserve room around the ring for villagers and their labels.
         let to_screen = |p: egui::Pos2| {
             egui::pos2(
-                rect.left() + 70.0 + p.x / MAP_W * (rect.width() - 140.0),
-                rect.top() + 65.0 + p.y / MAP_H * (rect.height() - 130.0),
+                (p.x / MAP_W).mul_add(rect.width() - 140.0, rect.left() + 70.0),
+                (p.y / MAP_H).mul_add(rect.height() - 130.0, rect.top() + 65.0),
             )
         };
 
-        for (a, b) in EDGES {
+        // Atmospheric canvas backdrop tinted by season and time of day.
+        let (sky_bg, border_tint) = self.snapshot.as_ref().map_or_else(
+            || (Color32::from_rgb(20, 24, 30), Color32::from_gray(70)),
+            |s| canvas_atmosphere(&s.season, &s.time_of_day),
+        );
+        painter.rect_filled(rect, 10.0, sky_bg);
+        painter.rect_stroke(
+            rect,
+            10.0,
+            egui::Stroke::new(1.0, border_tint),
+            egui::StrokeKind::Inside,
+        );
+
+        // Subtle central Village Commons plaza circle & compass paths.
+        let commons_center = to_screen(egui::pos2(0.50 * MAP_W, 0.50 * MAP_H));
+        painter.circle_filled(
+            commons_center,
+            38.0 * sx.min(1.3),
+            Color32::from_rgba_unmultiplied(180, 155, 110, 16),
+        );
+        painter.circle_stroke(
+            commons_center,
+            38.0 * sx.min(1.3),
+            egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(190, 165, 120, 40)),
+        );
+        painter.text(
+            commons_center,
+            egui::Align2::CENTER_CENTER,
+            "Parish\nCommons",
+            egui::FontId::proportional(10.5),
+            Color32::from_rgba_unmultiplied(200, 185, 150, 95),
+        );
+
+        // Spokes from the commons & perimeter cobblestone ring.
+        for id in [
+            "granary", "market", "well", "hut", "shrine", "woods", "field",
+        ] {
             painter.line_segment(
-                [to_screen(fixed_place_pos(a)), to_screen(fixed_place_pos(b))],
-                egui::Stroke::new(1.5, Color32::from_gray(120)),
+                [commons_center, to_screen(fixed_place_pos(id))],
+                egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(120, 115, 100, 45)),
+            );
+        }
+        for (a, b) in EDGES {
+            let pa = to_screen(fixed_place_pos(a));
+            let pb = to_screen(fixed_place_pos(b));
+            painter.line_segment(
+                [pa, pb],
+                egui::Stroke::new(4.0, Color32::from_rgba_unmultiplied(45, 42, 36, 180)),
+            );
+            painter.line_segment(
+                [pa, pb],
+                egui::Stroke::new(1.6, Color32::from_rgb(135, 125, 105)),
             );
         }
 
         if let Some(s) = &self.snapshot {
+            // Weather particle overlay (rain streaks, snow crystals, or sun motes).
+            draw_weather_overlay(&painter, rect, &s.weather_kind, s.turn);
+
             for p in &s.places {
                 let center = to_screen(fixed_place_pos(p.place.id()));
-                let node_rect = egui::Rect::from_center_size(center, egui::vec2(132.0, 48.0));
-                painter.rect_filled(node_rect, 8.0, Color32::from_rgb(38, 42, 48));
+                let node_rect = egui::Rect::from_center_size(center, egui::vec2(142.0, 54.0));
+                if p.state.hearth_lit {
+                    painter.rect_filled(
+                        node_rect.expand(4.0),
+                        11.0,
+                        Color32::from_rgba_unmultiplied(240, 155, 65, 38),
+                    );
+                }
+                let is_sel_place = self.selected_place.as_deref() == Some(p.place.id());
+                painter.rect_filled(node_rect, 8.0, place_card_fill(p.place.id(), is_sel_place));
                 painter.rect_stroke(
                     node_rect,
                     8.0,
-                    egui::Stroke::new(1.0, Color32::from_gray(110)),
+                    egui::Stroke::new(
+                        if is_sel_place { 2.0 } else { 1.2 },
+                        if p.state.hearth_lit {
+                            Color32::from_rgb(235, 165, 85)
+                        } else if p.state.condition <= 2 {
+                            Color32::from_rgb(210, 95, 80)
+                        } else {
+                            Color32::from_rgb(115, 125, 140)
+                        },
+                    ),
                     egui::StrokeKind::Inside,
                 );
                 painter.text(
                     center,
                     egui::Align2::CENTER_CENTER,
                     format!(
-                        "{}\n{} food · {} water",
+                        "{} {}{}\n{} food · {} water · {}/5",
+                        place_glyph(p.place.id()),
                         humanize(p.place.id()),
+                        if p.state.hearth_lit { " 🔥" } else { "" },
                         p.state.food,
-                        p.state.water
+                        p.state.water,
+                        p.state.condition
                     ),
-                    egui::FontId::proportional(12.0),
-                    Color32::from_gray(225),
+                    egui::FontId::proportional(11.5),
+                    Color32::from_gray(232),
                 );
-                ui.interact(
-                    node_rect,
-                    ui.scope_id().with(("place", p.place.id())),
-                    egui::Sense::hover(),
-                )
-                .on_hover_text(format!(
+                if ui
+                    .interact(
+                        node_rect,
+                        ui.scope_id().with(("place", p.place.id())),
+                        egui::Sense::click_and_drag(),
+                    )
+                    .on_hover_text(format!(
                     "{}\n{}\nCondition {}/5 · Fertility ×{:.2}\nHearth {} · Owner {}\nPresent: {}",
                     p.place.title(),
                     inventory_text(
@@ -688,7 +1942,11 @@ impl App {
                     if p.state.hearth_lit { "lit" } else { "unlit" },
                     p.state.owner.as_deref().unwrap_or("communal"),
                     p.present.join(", ")
-                ));
+                ))
+                    .clicked()
+                {
+                    self.selected_place = Some(p.place.id().to_owned());
+                }
             }
             // Draw every villager after the buildings so a neighbouring place
             // cannot paint over their marker or name.
@@ -701,19 +1959,37 @@ impl App {
                 for (i, name) in p.present.iter().enumerate() {
                     // Start at the top and go clockwise.
                     let angle =
-                        -std::f32::consts::FRAC_PI_2 + (i as f32 / n) * std::f32::consts::TAU;
+                        (i as f32 / n).mul_add(std::f32::consts::TAU, -std::f32::consts::FRAC_PI_2);
                     let mut pos = center + egui::vec2(angle.cos(), angle.sin()) * orbit;
                     // Keep the marker inside the map: a villager at the top of
                     // the ring must not be clipped by the panel edge.
                     pos.x = pos.x.clamp(rect.left() + margin, rect.right() - margin);
                     pos.y = pos.y.clamp(rect.top() + margin, rect.bottom() - margin);
+                    let agent_view = s.agents.iter().find(|a| a.name == *name);
+                    let hover_summary = agent_view.map_or_else(
+                        || format!("Inspect {name}"),
+                        |av| {
+                            format!(
+                                "Inspect {} ({})\nMood: {} · Health {}/10\nGoal: {}",
+                                av.name,
+                                humanize(av.role.id()),
+                                humanize(av.mood.id()),
+                                av.health,
+                                if av.current_goal.is_empty() {
+                                    "—"
+                                } else {
+                                    &av.current_goal
+                                }
+                            )
+                        },
+                    );
                     if ui
                         .interact(
                             egui::Rect::from_center_size(pos, egui::vec2(24.0, 24.0)),
                             ui.scope_id().with(("villager", name)),
                             egui::Sense::click(),
                         )
-                        .on_hover_text(format!("Inspect {name}"))
+                        .on_hover_text(hover_summary)
                         .clicked()
                     {
                         self.selected = Some(name.clone());
@@ -728,15 +2004,23 @@ impl App {
                             egui::Stroke::new(2.0, ui.visuals().selection.stroke.color),
                         );
                     }
-                    painter.circle_filled(
-                        pos,
-                        dot,
-                        if selected {
-                            Color32::from_rgb(230, 245, 255)
-                        } else {
-                            Color32::from_rgb(90, 160, 220)
-                        },
-                    );
+                    let fill_col = if selected {
+                        Color32::from_rgb(245, 235, 200)
+                    } else if let Some(av) = agent_view {
+                        role_color(av.role.id())
+                    } else {
+                        Color32::from_rgb(90, 160, 220)
+                    };
+                    painter.circle_filled(pos, dot, fill_col);
+                    if let Some(av) = agent_view {
+                        if av.ailment.is_some() || av.hunger >= 2 || av.thirst >= 2 {
+                            painter.circle_stroke(
+                                pos,
+                                dot + 2.5,
+                                egui::Stroke::new(1.5, Color32::from_rgb(235, 110, 85)),
+                            );
+                        }
+                    }
                     // Label outward from the place marker, then clamped, so two
                     // neighbours cannot collide and nothing leaves the panel.
                     let dir = (pos - center).normalized();
@@ -789,6 +2073,263 @@ impl App {
         );
     }
 
+    fn draw_world_cards(&mut self, ui: &mut egui::Ui) {
+        let Some(s) = &self.snapshot else {
+            return;
+        };
+        ui.add_space(10.0);
+        ui.separator();
+        ui.columns(2, |cols| {
+            cols[0].heading("Active Parish Decrees");
+            for d in &s.report.decrees {
+                cols[0].group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.strong(&d.title);
+                        ui.label(RichText::new(format!("[{}]", d.domain)).small().color(
+                            if d.urgent {
+                                Color32::from_rgb(235, 145, 105)
+                            } else {
+                                Color32::from_rgb(150, 195, 230)
+                            },
+                        ));
+                    });
+                    ui.label(RichText::new(&d.summary).small());
+                });
+            }
+
+            cols[1].heading("Live Voices Around the Commons");
+            let recent_speeches: Vec<&Event> = s
+                .events
+                .iter()
+                .rev()
+                .filter(|e| !e.text.is_empty())
+                .take(4)
+                .collect();
+            if recent_speeches.is_empty() {
+                cols[1].label(RichText::new("Quiet across the village green.").weak());
+            }
+            for ev in recent_speeches {
+                cols[1].group(|ui| {
+                    let (_, col) = event_style(ev.kind);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .selectable_label(false, RichText::new(&ev.actor).strong())
+                            .clicked()
+                            && s.agents.iter().any(|a| a.name == ev.actor)
+                        {
+                            self.selected = Some(ev.actor.clone());
+                            self.tab = Tab::Inspector;
+                        }
+                        ui.label(
+                            RichText::new(format!("@ {} · turn {}", ev.place.title(), ev.turn))
+                                .small()
+                                .color(col),
+                        );
+                    });
+                    ui.label(RichText::new(&ev.text).small());
+                });
+            }
+        });
+    }
+
+    fn draw_council(&mut self, ui: &mut egui::Ui) {
+        let mut inscribe = false;
+        let Some(s) = &self.snapshot else {
+            return;
+        };
+        egui::ScrollArea::vertical()
+            .id_salt("council_scroll")
+            .show(ui, |ui| {
+                ui.heading(format!("Parish Council & Economy · {}", s.report.era_name));
+                ui.label(
+                    RichText::new(format!(
+                        "{} — {}",
+                        s.report.daily_phase, s.report.daily_detail
+                    ))
+                    .weak(),
+                );
+                ui.add_space(6.0);
+
+                ui.columns(2, |cols| {
+                    cols[0].group(|ui| {
+                        ui.heading("Civic Leadership & Decrees");
+                        if let Some(l) = &s.report.leader {
+                            ui.horizontal(|ui| {
+                                ui.strong(format!("{}:", l.title));
+                                if ui.selectable_label(false, &l.name).clicked() {
+                                    self.selected = Some(l.name.clone());
+                                    self.tab = Tab::Inspector;
+                                }
+                                ui.label(
+                                    RichText::new(format!(
+                                        "({}) · Mandate {:.1}/4.0",
+                                        l.role, l.support
+                                    ))
+                                    .weak(),
+                                );
+                            });
+                        }
+                        ui.add_space(4.0);
+                        for d in &s.report.decrees {
+                            ui.label(
+                                RichText::new(format!("• {} ({})", d.title, d.domain)).strong(),
+                            );
+                            ui.label(RichText::new(&d.summary).small().weak());
+                        }
+                    });
+
+                    cols[1].group(|ui| {
+                        ui.heading("Market Exchange & Scarcity Index");
+                        ui.label(
+                            RichText::new(format!(
+                                "Prosperity {:.1}/100 · Coin Gini {:.2}",
+                                s.report.prosperity_score, s.report.gini_coin
+                            ))
+                            .small()
+                            .weak(),
+                        );
+                        egui::Grid::new("market_quotes_grid")
+                            .striped(true)
+                            .show(ui, |ui| {
+                                for h in ["Good", "Stores", "Carried", "Total", "Price", "Market"] {
+                                    ui.strong(h);
+                                }
+                                ui.end_row();
+                                for q in &s.report.commodities {
+                                    ui.label(q.name);
+                                    ui.label(q.stockpile.to_string());
+                                    ui.label(q.carried.to_string());
+                                    ui.label(q.total.to_string());
+                                    ui.label(format!("{:.1} c", q.price_coin));
+                                    let col = match q.status {
+                                        "Scarcity" => Color32::from_rgb(230, 125, 100),
+                                        "Surplus" => Color32::from_rgb(145, 210, 160),
+                                        _ => Color32::from_gray(200),
+                                    };
+                                    ui.colored_label(col, q.status);
+                                    ui.end_row();
+                                }
+                            });
+                    });
+                });
+
+                ui.add_space(8.0);
+                ui.columns(2, |cols| {
+                    cols[0].group(|ui| {
+                        ui.heading("Households & Hearths");
+                        for hh in &s.report.households {
+                            ui.group(|ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.strong(&hh.title);
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "· {} · Worth {} · Rations {}",
+                                            hh.hearth_place, hh.wealth, hh.food
+                                        ))
+                                        .small()
+                                        .weak(),
+                                    );
+                                });
+                                ui.label(
+                                    RichText::new(format!("Members: {}", hh.members.join(", ")))
+                                        .small(),
+                                );
+                                ui.label(RichText::new(&hh.tradition).small().italics().weak());
+                            });
+                        }
+                    });
+
+                    cols[1].group(|ui| {
+                        ui.heading("Village Factions & Feuds");
+                        for f in &s.report.factions {
+                            ui.group(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.strong(&f.name);
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "cohesion {:.0}%",
+                                            f.cohesion * 100.0
+                                        ))
+                                        .small()
+                                        .weak(),
+                                    );
+                                });
+                                ui.label(RichText::new(&f.ethos).small().weak());
+                                ui.label(
+                                    RichText::new(f.members.join(", "))
+                                        .small()
+                                        .color(Color32::from_rgb(215, 195, 145)),
+                                );
+                            });
+                        }
+                        if !s.report.feuds.is_empty() {
+                            ui.add_space(4.0);
+                            ui.strong("Active Grudges & Tensions");
+                            for feud in &s.report.feuds {
+                                ui.colored_label(
+                                    Color32::from_rgb(230, 140, 120),
+                                    format!(
+                                        "⚔ {} ↔ {} (Grudge {:.1}/4 · {})",
+                                        feud.a, feud.b, feud.grudge, feud.reason
+                                    ),
+                                );
+                            }
+                        }
+                    });
+                });
+
+                ui.add_space(8.0);
+                ui.columns(2, |cols| {
+                    cols[0].group(|ui| {
+                        ui.heading("Rumor Mill & Parish Oaths");
+                        if s.report.rumors.is_empty() {
+                            ui.label(RichText::new("No active rumors or oaths recorded.").weak());
+                        }
+                        for r in &s.report.rumors {
+                            ui.label(format!(
+                                "[{}] {} → {}: {} (turn {})",
+                                r.kind, r.speaker, r.subject, r.text, r.turn
+                            ));
+                        }
+                    });
+                    cols[1].group(|ui| {
+                        ui.heading("Memorial Roll & Chronicle Inscription");
+                        if s.report.memorials.is_empty() {
+                            ui.label(
+                                RichText::new("No villagers have perished since the founding.")
+                                    .weak(),
+                            );
+                        } else {
+                            for m in &s.report.memorials {
+                                ui.label(format!(
+                                    "✝ {}{} ({}) — {} at turn {}",
+                                    m.name,
+                                    gen_marker(m.generation),
+                                    m.role,
+                                    m.cause,
+                                    m.turn
+                                ));
+                            }
+                        }
+                        ui.separator();
+                        ui.label(RichText::new("Inscribe a parish chronicle event:").small());
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.custom_event_text)
+                                    .hint_text("e.g. A shooting star crossed the Shrine…"),
+                            );
+                            if ui.button("Inscribe").clicked() {
+                                inscribe = true;
+                            }
+                        });
+                    });
+                });
+            });
+        if inscribe {
+            self.inject_custom_chronicle();
+        }
+    }
+
     fn draw_feed(&mut self, ui: &mut egui::Ui) {
         let Some(s) = &self.snapshot else {
             return;
@@ -797,19 +2338,37 @@ impl App {
             ui.label("No village events yet. Run or step to begin.");
             return;
         }
-        ui.label(
-            RichText::new("Recent village history · saved events survive a restart")
-                .weak()
-                .small(),
-        );
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new("Recent village history · saved events survive a restart")
+                    .weak()
+                    .small(),
+            );
+            ui.separator();
+            ui.selectable_value(&mut self.feed_filter, FeedFilter::All, "All");
+            ui.selectable_value(&mut self.feed_filter, FeedFilter::Social, "Social & Bonds");
+            ui.selectable_value(&mut self.feed_filter, FeedFilter::Economy, "Work & Trade");
+            ui.selectable_value(
+                &mut self.feed_filter,
+                FeedFilter::Crisis,
+                "Conflict & Death",
+            );
+            ui.selectable_value(&mut self.feed_filter, FeedFilter::Sacred, "Sacred & Civic");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.feed_search)
+                    .desired_width(160.0)
+                    .hint_text("Search feed…"),
+            );
+        });
         // Merge the saved event history with this session's inference details.
         // A restart no longer hides crafting, healing, trade, prayer, or bonds.
-        let turns: std::collections::BTreeSet<u64> = s
+        let turns: BTreeSet<u64> = s
             .events
             .iter()
             .map(|e| e.turn)
             .chain(self.turns.iter().map(|r| r.turn))
             .collect();
+        let needle = self.feed_search.trim().to_lowercase();
         egui::ScrollArea::vertical()
             .id_salt("feed_scroll")
             .stick_to_bottom(true)
@@ -829,6 +2388,16 @@ impl App {
                         );
                     }
                     for e in s.events.iter().filter(|e| e.turn == turn) {
+                        if !matches_feed_filter(e.kind, self.feed_filter) {
+                            continue;
+                        }
+                        if !needle.is_empty()
+                            && !e.actor.to_lowercase().contains(&needle)
+                            && !e.text.to_lowercase().contains(&needle)
+                            && !e.action.to_lowercase().contains(&needle)
+                        {
+                            continue;
+                        }
                         let (label, color) = event_style(e.kind);
                         ui.horizontal_wrapped(|ui| {
                             if ui
@@ -854,7 +2423,7 @@ impl App {
                         if let Some(a) = rec.and_then(|r| {
                             r.agents
                                 .iter()
-                                .find(|a| a.name == e.actor && a.action == e.action)
+                                .find(|a| (&a.name, &a.action) == (&e.actor, &e.action))
                         }) {
                             ui.label(
                                 RichText::new(format!(
@@ -909,7 +2478,7 @@ impl App {
             });
     }
 
-    fn draw_inspector(&mut self, ui: &mut egui::Ui) {
+    fn draw_inspector(&self, ui: &mut egui::Ui) {
         let Some(insp) = &self.inspector else {
             ui.label("Select a villager from the roster or the map.");
             return;
@@ -927,11 +2496,10 @@ impl App {
             .id_salt(("inspector_scroll", &a.name))
             .show(ui, |ui| {
                 if !a.alive {
-                    let death = a
-                        .death
-                        .as_ref()
-                        .map(|d| format!("{} at turn {}", d.cause, d.turn))
-                        .unwrap_or_else(|| "dead".into());
+                    let death = a.death.as_ref().map_or_else(
+                        || "dead".into(),
+                        |d| format!("{} at turn {}", d.cause, d.turn),
+                    );
                     ui.colored_label(
                         Color32::from_rgb(230, 130, 120),
                         format!("Deceased · {death}"),
@@ -983,11 +2551,11 @@ impl App {
                     .spacing([8.0, 6.0])
                     .show(ui, |ui| {
                         for (i, (name, value, max, danger)) in [
-                            ("Health", a.health as f32, 10.0, a.health < 5),
-                            ("Energy", a.energy as f32, 10.0, a.energy <= 2),
-                            ("Warmth", a.warmth as f32, 4.0, a.warmth <= 1),
-                            ("Hunger", a.hunger as f32, 3.0, a.hunger >= 2),
-                            ("Thirst", a.thirst as f32, 3.0, a.thirst >= 2),
+                            ("Health", f32::from(a.health), 10.0, a.health < 5),
+                            ("Energy", f32::from(a.energy), 10.0, a.energy <= 2),
+                            ("Warmth", f32::from(a.warmth), 4.0, a.warmth <= 1),
+                            ("Hunger", f32::from(a.hunger), 3.0, a.hunger >= 2),
+                            ("Thirst", f32::from(a.thirst), 3.0, a.thirst >= 2),
                             ("Stress", a.stress, 4.0, a.stress >= 2.8),
                             ("Hope", a.hope, 4.0, false),
                             ("Devotion", a.devotion, 4.0, false),
@@ -1088,7 +2656,7 @@ impl App {
                                     ui.strong(title);
                                 }
                                 ui.end_row();
-                                let names: std::collections::BTreeSet<&str> = a
+                                let names: BTreeSet<&str> = a
                                     .trust
                                     .iter()
                                     .map(|(n, _)| n.as_str())
@@ -1105,11 +2673,10 @@ impl App {
                                         RichText::new(name)
                                     });
                                     let relation = a.relation_with(name);
-                                    ui.label(
-                                        relation
-                                            .map(|r| humanize(r.kinship.id()))
-                                            .unwrap_or_else(|| "Unrecorded".into()),
-                                    );
+                                    ui.label(relation.map_or_else(
+                                        || "Unrecorded".into(),
+                                        |r| humanize(r.kinship.id()),
+                                    ));
                                     ui.label(format!("{:.1}", a.trust_of(name)));
                                     for value in [
                                         relation.map(|r| r.affinity),
@@ -1117,9 +2684,7 @@ impl App {
                                         relation.map(|r| r.grudge),
                                     ] {
                                         ui.label(
-                                            value
-                                                .map(|v| format!("{v:.1}"))
-                                                .unwrap_or_else(|| "—".into()),
+                                            value.map_or_else(|| "—".into(), |v| format!("{v:.1}")),
                                         );
                                     }
                                     ui.end_row();
@@ -1187,11 +2752,10 @@ impl App {
                                 belief.about,
                                 belief.value,
                                 belief.as_of_tick,
-                                belief
-                                    .source
-                                    .as_deref()
-                                    .map(|n| format!("told by {n}"))
-                                    .unwrap_or_else(|| "observed directly".into())
+                                belief.source.as_deref().map_or_else(
+                                    || "observed directly".into(),
+                                    |n| format!("told by {n}")
+                                )
                             ));
                         }
                     },
@@ -1217,11 +2781,9 @@ impl App {
                                         "historical"
                                     },
                                     fact.invalid_at
-                                        .map(|t| t.to_string())
-                                        .unwrap_or_else(|| "—".into()),
+                                        .map_or_else(|| "—".into(), |t| t.to_string()),
                                     fact.expired_at
-                                        .map(|t| t.to_string())
-                                        .unwrap_or_else(|| "—".into())
+                                        .map_or_else(|| "—".into(), |t| t.to_string())
                                 ))
                                 .weak()
                                 .small(),
@@ -1255,7 +2817,7 @@ fn day_divider(ui: &mut egui::Ui, text: &str) {
         egui::Stroke::new(1.0, Color32::from_gray(90)),
     );
     let font = egui::FontId::proportional(11.0);
-    let galley = painter.layout_no_wrap(text.to_string(), font, Color32::from_gray(150));
+    let galley = painter.layout_no_wrap(text.to_owned(), font, Color32::from_gray(150));
     let pad = egui::vec2(8.0, 2.0);
     let bg = egui::Rect::from_center_size(rect.center(), galley.size() + pad * 2.0);
     painter.rect_filled(bg, 4.0, ui.visuals().panel_fill);
@@ -1286,12 +2848,12 @@ fn death_cause(text: &str) -> String {
 }
 
 fn fmt(v: Option<f32>) -> String {
-    v.map(|x| format!("{x:.2}")).unwrap_or_else(|| "—".into())
+    v.map_or_else(|| "—".into(), |x| format!("{x:.2}"))
 }
 
-#[allow(dead_code)]
-fn _assert_state_send_sync() {
-    fn check<T: Send + Sync>() {}
+#[allow(dead_code, reason = "compile-time assertion only; never called")]
+const fn _assert_state_send_sync() {
+    const fn check<T: Send + Sync>() {}
     check::<AppState>();
     check::<Arc<AppState>>();
 }
@@ -1301,7 +2863,7 @@ fn humanize(id: &str) -> String {
     let mut chars = text.chars();
     chars
         .next()
-        .map(|c| c.to_uppercase().collect::<String>() + chars.as_str())
+        .map(|c| format!("{}{}", c.to_uppercase(), chars.as_str()))
         .unwrap_or_default()
 }
 
@@ -1311,8 +2873,115 @@ fn inventory_text(food: u32, water: u32, wood: u32, herbs: u32, tools: u32, coin
     )
 }
 
-fn memory_kind(kind: society_sim::MemoryKind) -> &'static str {
-    use society_sim::MemoryKind::*;
+const fn matches_feed_filter(kind: EventKind, filter: FeedFilter) -> bool {
+    use EventKind::{
+        Accusation, Betrayal, Birth, Bond, Confusion, Craft, Death, Divine, Harvest, Heal, Move,
+        Prayer, Promise, Repair, Rest, Speech, System, Trade, Transfer,
+    };
+    match filter {
+        FeedFilter::All => true,
+        FeedFilter::Social => matches!(kind, Speech | Promise | Bond | Heal | Birth | Rest),
+        FeedFilter::Economy => matches!(kind, Harvest | Transfer | Craft | Repair | Trade | Move),
+        FeedFilter::Crisis => matches!(kind, Betrayal | Accusation | Death | Confusion),
+        FeedFilter::Sacred => matches!(kind, Divine | Prayer | System),
+    }
+}
+
+fn role_color(role_id: &str) -> Color32 {
+    match role_id {
+        "steward" | "elder" => Color32::from_rgb(235, 195, 115),
+        "farmer" => Color32::from_rgb(150, 210, 135),
+        "herbalist" | "healer" => Color32::from_rgb(130, 215, 185),
+        "woodcutter" | "forester" => Color32::from_rgb(185, 155, 115),
+        "smith" | "builder" | "artisan" => Color32::from_rgb(215, 150, 110),
+        _ => Color32::from_rgb(145, 185, 235),
+    }
+}
+
+fn season_accent(season: &str) -> Color32 {
+    match season.to_lowercase().as_str() {
+        "spring" => Color32::from_rgb(155, 220, 155),
+        "summer" => Color32::from_rgb(240, 210, 120),
+        "autumn" => Color32::from_rgb(235, 160, 100),
+        "winter" => Color32::from_rgb(160, 205, 245),
+        _ => Color32::from_gray(210),
+    }
+}
+
+fn canvas_atmosphere(season: &str, time_of_day: &str) -> (Color32, Color32) {
+    let tod = time_of_day.to_lowercase();
+    let base = if tod.contains("night") {
+        Color32::from_rgb(13, 16, 26)
+    } else if tod.contains("dawn") || tod.contains("dusk") || tod.contains("evening") {
+        Color32::from_rgb(28, 23, 30)
+    } else {
+        match season.to_lowercase().as_str() {
+            "winter" => Color32::from_rgb(22, 28, 36),
+            "autumn" => Color32::from_rgb(27, 24, 22),
+            _ => Color32::from_rgb(20, 27, 25),
+        }
+    };
+    (base, season_accent(season))
+}
+
+fn place_glyph(id: &str) -> &'static str {
+    match id {
+        "granary" => "🏛",
+        "market" => "⚖",
+        "well" => "💧",
+        "hut" => "🏠",
+        "shrine" => "⛩",
+        "woods" => "🌲",
+        "field" => "🌾",
+        _ => "◈",
+    }
+}
+
+fn place_card_fill(id: &str, selected: bool) -> Color32 {
+    if selected {
+        return Color32::from_rgb(62, 54, 38);
+    }
+    match id {
+        "granary" => Color32::from_rgb(44, 39, 32),
+        "market" => Color32::from_rgb(42, 36, 44),
+        "well" => Color32::from_rgb(30, 42, 48),
+        "hut" => Color32::from_rgb(45, 36, 33),
+        "shrine" => Color32::from_rgb(38, 35, 48),
+        "woods" => Color32::from_rgb(29, 41, 34),
+        "field" => Color32::from_rgb(41, 42, 29),
+        _ => Color32::from_rgb(38, 42, 48),
+    }
+}
+
+fn draw_weather_overlay(painter: &egui::Painter, rect: egui::Rect, weather_kind: &str, turn: u64) {
+    let wk = weather_kind.to_lowercase();
+    let phase = (turn % 17) as f32;
+    if wk.contains("rain") || wk.contains("storm") {
+        for i in 0..18 {
+            let fx = (phase.mul_add(19.0, i as f32 * 53.0) % rect.width()).max(8.0);
+            let fy = (phase.mul_add(23.0, i as f32 * 37.0) % (rect.height() - 24.0)).max(8.0);
+            let p1 = egui::pos2(rect.left() + fx, rect.top() + fy);
+            let p2 = p1 + egui::vec2(-4.0, 12.0);
+            painter.line_segment(
+                [p1, p2],
+                egui::Stroke::new(1.0, Color32::from_rgba_unmultiplied(130, 175, 230, 55)),
+            );
+        }
+    } else if wk.contains("snow") || wk.contains("frost") {
+        for i in 0..16 {
+            let fx = (phase.mul_add(13.0, i as f32 * 61.0) % rect.width()).max(8.0);
+            let fy = (phase.mul_add(17.0, i as f32 * 41.0) % (rect.height() - 16.0)).max(8.0);
+            painter.circle_filled(
+                egui::pos2(rect.left() + fx, rect.top() + fy),
+                2.0,
+                Color32::from_rgba_unmultiplied(230, 240, 255, 65),
+            );
+        }
+    }
+}
+
+const fn memory_kind(kind: society_sim::MemoryKind) -> &'static str {
+    use society_sim::MemoryKind::{Milestone, Own, Reflection, Scar, Tradition, Witnessed};
     match kind {
         Own => "Own",
         Witnessed => "Witnessed",
@@ -1323,8 +2992,11 @@ fn memory_kind(kind: society_sim::MemoryKind) -> &'static str {
     }
 }
 
-fn event_style(kind: EventKind) -> (&'static str, Color32) {
-    use EventKind::*;
+const fn event_style(kind: EventKind) -> (&'static str, Color32) {
+    use EventKind::{
+        Accusation, Betrayal, Birth, Bond, Confusion, Craft, Death, Divine, Harvest, Heal, Move,
+        Prayer, Promise, Repair, Rest, Speech, System, Trade, Transfer,
+    };
     let label = match kind {
         Speech => "Speech",
         Move => "Movement",
@@ -1368,11 +3040,13 @@ mod tests {
             model: "test".into(),
             timeout: Duration::from_secs(1),
         }));
-        let voice = Arc::new(society_server::Voice::new(Default::default()));
+        let voice = Arc::new(society_server::Voice::new(
+            society_server::VoiceConfig::default(),
+        ));
         let save_path = std::path::PathBuf::from("/unused-ui-test-save.json");
         let engine = Arc::new(society_server::Engine::new(
-            judge.clone(),
-            voice.clone(),
+            Arc::clone(&judge),
+            Arc::clone(&voice),
             2,
             save_path.clone(),
         ));
@@ -1386,12 +3060,16 @@ mod tests {
                 voice,
                 save_path,
             },
-            8100,
-            "world",
-            Some("Ada"),
-            false,
-            false,
-            false,
+            Launch {
+                port: 8100,
+                view: "world",
+                select: Some("Ada"),
+                expand_state: false,
+                select_none: false,
+                size: None,
+                autostart: false,
+                focus: false,
+            },
         )
     }
 
@@ -1405,23 +3083,28 @@ mod tests {
             |root| {
                 egui::CentralPanel::default().show(root, |ui| match tab {
                     Tab::World => app.draw_map(ui),
+                    Tab::Council => app.draw_council(ui),
                     Tab::Feed => app.draw_feed(ui),
                     Tab::Inspector => app.draw_inspector(ui),
                 });
             },
         );
+        #[allow(
+            clippy::items_after_statements,
+            reason = "helper sits next to its single use"
+        )]
         fn texts(shape: &egui::epaint::Shape, out: &mut String) {
             match shape {
                 egui::epaint::Shape::Text(t) => {
                     out.push_str(&t.galley.job.text);
                     out.push('\n');
-                }
+                },
                 egui::epaint::Shape::Vec(shapes) => {
                     for s in shapes {
                         texts(s, out);
                     }
-                }
-                _ => {}
+                },
+                _ => {},
             }
         }
         let mut text = String::new();
@@ -1507,6 +3190,33 @@ mod tests {
             "saved console",
         ] {
             assert!(feed.contains(expected), "missing {expected} in {feed}");
+        }
+    }
+
+    #[test]
+    fn council_and_village_systems_enrich_living_parish() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut w = World::founding(7);
+        w.turn = 12;
+        if let Some(ada) = w.agent_mut("Ada") {
+            ada.hunger = 2;
+            ada.food = 0;
+        }
+        let emitted = apply_village_systems(&mut w);
+        assert!(emitted >= 1, "expected festival or parish relief event");
+        let mut app = observer(w, &rt);
+        let council = render(&mut app, Tab::Council, [1120.0, 1800.0]);
+        for expected in [
+            "Parish Council & Economy",
+            "Civic Leadership & Decrees",
+            "Market Exchange & Scarcity Index",
+            "Households & Hearths",
+            "Village Factions & Feuds",
+        ] {
+            assert!(
+                council.contains(expected),
+                "missing {expected} in {council}"
+            );
         }
     }
 }

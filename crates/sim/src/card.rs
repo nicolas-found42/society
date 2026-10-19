@@ -4,15 +4,26 @@
 //! * `judgment_state` — structured JSON for the judgment layer. Field names are
 //!   semantically load-bearing (measured: `here` vs `food_here` flips the
 //!   decision), so they are a published contract, not an implementation detail.
-//! * `agent_card` — terse prose for a 0.6B model. No narration, no restating,
-//!   one line requested.
+//! * `agent_card` — terse prose for the voice model. No narration, no
+//!   restating, one line requested.
+
+use std::fmt::Write as _;
 
 use serde_json::{json, Map, Value};
 
 use crate::action::affordances;
-use crate::world::{Agent, Place, World, ADJACENCY};
+use crate::world::{Agent, Place, World};
 
 /// The exact JSON handed to the judgment layer for one agent's turn.
+///
+/// # Panics
+///
+/// Panics if a villager listed as present is missing from the world.
+#[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one sequential rule table; splitting hides the order"
+)]
 pub fn judgment_state(w: &World, a: &Agent) -> Value {
     let here = w.place_state(a.place);
     let present: Map<String, Value> = w
@@ -28,7 +39,7 @@ pub fn judgment_state(w: &World, a: &Agent) -> Value {
                     "role": other.role.id(),
                     "mood": other.mood.id(),
                     "health_of_10": other.health,
-                    "ailment": other.ailment.map(|x| x.id()),
+                    "ailment": other.ailment.map(super::world::Ailment::id),
                 }),
             )
         })
@@ -84,7 +95,7 @@ pub fn judgment_state(w: &World, a: &Agent) -> Value {
             "stress_of_4": round2(a.stress),
             "hope_of_4": round2(a.hope),
             "devotion_of_4": round2(a.devotion),
-            "ailment": a.ailment.map(|x| x.id()),
+            "ailment": a.ailment.map(super::world::Ailment::id),
         },
         "inventory": {
             "food": a.food,
@@ -136,13 +147,18 @@ pub fn judgment_state(w: &World, a: &Agent) -> Value {
     })
 }
 
-/// Terse card for the small model. The model writes one line; it must not
+/// Terse card for the voice model. The model writes one line; it must not
 /// restate this card, and it is told so.
+///
+/// # Panics
+///
+/// Panics if a villager listed as present is missing from the world.
+#[must_use]
 pub fn agent_card(w: &World, a: &Agent, decision: &str) -> String {
     let here = w.place_state(a.place);
     let others = w.present(a.place, &a.name);
     let present = if others.is_empty() {
-        "nobody".to_string()
+        "nobody".to_owned()
     } else {
         others
             .iter()
@@ -161,7 +177,7 @@ pub fn agent_card(w: &World, a: &Agent, decision: &str) -> String {
             .join(", ")
     };
     // Dedupe: identical memories (broadcast events, repeated lines) make nine
-    // agents converge on one prompt, and the small model then parrots them.
+    // agents converge on one prompt, and the voice model then parrots them.
     let mut seen = std::collections::HashSet::new();
     let mut own = Vec::new();
     let mut other = Vec::new();
@@ -180,15 +196,16 @@ pub fn agent_card(w: &World, a: &Agent, decision: &str) -> String {
     mems.extend(other.into_iter().take(1));
 
     let mut s = String::new();
-    s.push_str(&format!(
-        "You are {}, the village {} ({}). Mood: {}.\n",
+    let _ = writeln!(
+        s,
+        "You are {}, the village {} ({}). Mood: {}.",
         a.name,
         a.role.id(),
         a.persona,
         a.mood.id()
-    ));
-    s.push_str(&format!(
-        "Season: {}, {} ({}°C). In the {}. You carry {} food, {} water, {} wood, {} herbs, {} tools.\n",
+    );
+    let _ = writeln!(s,
+        "Season: {}, {} ({}°C). In the {}. You carry {} food, {} water, {} wood, {} herbs, {} tools.",
         w.season().id(),
         w.time_of_day().id(),
         w.temperature_c,
@@ -198,19 +215,22 @@ pub fn agent_card(w: &World, a: &Agent, decision: &str) -> String {
         a.wood,
         a.herbs,
         a.tools
-    ));
-    s.push_str(&format!(
-        "Local stores: {} food, {} water, {} wood, {} herbs. People here: {}.\n",
-        here.food,
-        here.water,
-        here.wood,
-        here.herbs,
-        present
-    ));
-    s.push_str(&format!(
-        "Hunger {}/3, Thirst {}/3, Energy {}/10, Warmth {}/4, Standing {}/4. Goal: {}.\n",
-        a.hunger, a.thirst, a.energy, a.warmth, round1(a.standing), a.current_goal
-    ));
+    );
+    let _ = writeln!(
+        s,
+        "Local stores: {} food, {} water, {} wood, {} herbs. People here: {}.",
+        here.food, here.water, here.wood, here.herbs, present
+    );
+    let _ = writeln!(
+        s,
+        "Hunger {}/3, Thirst {}/3, Energy {}/10, Warmth {}/4, Standing {}/4. Goal: {}.",
+        a.hunger,
+        a.thirst,
+        a.energy,
+        a.warmth,
+        round1(a.standing),
+        a.current_goal
+    );
     if !mems.is_empty() {
         s.push_str("You remember (context, not a script; never repeat these words):\n");
         for m in &mems {
@@ -218,12 +238,13 @@ pub fn agent_card(w: &World, a: &Agent, decision: &str) -> String {
             s.push('\n');
         }
     }
-    s.push_str(&format!("You have decided to {decision}.\n"));
+    let _ = writeln!(s, "You have decided to {decision}.");
     s.push_str("Say one line aloud. Do not describe the situation or count your food unless you are making a demand or an offer.");
     s
 }
 
 /// Rich world summary and dashboard for the observer UI and chronicler.
+#[must_use]
 pub fn world_brief(w: &World, max_events: usize) -> String {
     render_village_ui(w, max_events)
 }
@@ -241,26 +262,31 @@ fn meter(val: u32, max: u32, width: usize) -> String {
 
 /// Full Unicode dashboard rendering of the entire village state, ring topology,
 /// stockpiles, villager vitals, social bonds, and recent chronicle.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one sequential rule table; splitting hides the order"
+)]
+#[must_use]
 pub fn render_village_ui(w: &World, max_events: usize) -> String {
     let season = w.season();
     let tod = w.time_of_day();
-    let total_food: u32 = w.places.iter().map(|(_, s)| s.food).sum::<u32>()
-        + w.living().map(|a| a.food).sum::<u32>();
+    let total_food: u32 =
+        w.places.iter().map(|(_, s)| s.food).sum::<u32>() + w.living().map(|a| a.food).sum::<u32>();
     let total_water: u32 = w.places.iter().map(|(_, s)| s.water).sum::<u32>()
         + w.living().map(|a| a.water).sum::<u32>();
-    let total_wood: u32 = w.places.iter().map(|(_, s)| s.wood).sum::<u32>()
-        + w.living().map(|a| a.wood).sum::<u32>();
+    let total_timber: u32 =
+        w.places.iter().map(|(_, s)| s.wood).sum::<u32>() + w.living().map(|a| a.wood).sum::<u32>();
     let total_herbs: u32 = w.places.iter().map(|(_, s)| s.herbs).sum::<u32>()
         + w.living().map(|a| a.herbs).sum::<u32>();
     let total_tools: u32 = w.places.iter().map(|(_, s)| s.tools).sum::<u32>()
         + w.living().map(|a| a.tools).sum::<u32>();
-    let total_coin: u32 = w.places.iter().map(|(_, s)| s.coin).sum::<u32>()
-        + w.living().map(|a| a.coin).sum::<u32>();
+    let total_coin: u32 =
+        w.places.iter().map(|(_, s)| s.coin).sum::<u32>() + w.living().map(|a| a.coin).sum::<u32>();
 
     let mut s = String::new();
     s.push_str("╔══════════════════════════════════════════════════════════════════════════════════════════════╗\n");
-    s.push_str(&format!(
-        "║  {} {:<8} │ {} {:<9} │ Day {:<2} Turn {:<3} │ {} {:<13} {:>3}°C (x{:.1}) │ Pop {:>2}/{:<2} ║\n",
+    let _ = writeln!(s,
+        "║  {} {:<8} │ {} {:<9} │ Day {:<2} Turn {:<3} │ {} {:<13} {:>3}°C (x{:.1}) │ Pop {:>2}/{:<2} ║",
         season.icon(),
         season.id().to_uppercase(),
         tod.icon(),
@@ -273,12 +299,11 @@ pub fn render_village_ui(w: &World, max_events: usize) -> String {
         w.weather,
         w.living().count(),
         crate::world::POPULATION_CAP
-    ));
+    );
     s.push_str("╠══════════════════════════════════════════════════════════════════════════════════════════════╣\n");
-    s.push_str(&format!(
-        "║  VILLAGE COMMONS │ 🌾 Food {:>2}  💧 Water {:>2}  🪵 Wood {:>2}  🌿 Herbs {:>2}  ⚒ Tools {:>2}  🪙 Coin {:>2}   ║\n",
-        total_food, total_water, total_wood, total_herbs, total_tools, total_coin
-    ));
+    let _ = writeln!(s,
+        "║  VILLAGE COMMONS │ 🌾 Food {total_food:>2}  💧 Water {total_water:>2}  🪵 Wood {total_timber:>2}  🌿 Herbs {total_herbs:>2}  ⚒ Tools {total_tools:>2}  🪙 Coin {total_coin:>2}   ║"
+    );
     s.push_str("╚══════════════════════════════════════════════════════════════════════════════════════════════╝\n");
 
     s.push_str(&render_place_map(w));
@@ -295,12 +320,13 @@ pub fn render_village_ui(w: &World, max_events: usize) -> String {
             .as_ref()
             .map(|o| format!(" [held:{o}]"))
             .unwrap_or_default();
-        s.push_str(&format!(
-            "│ {} {:<8} {} [{}] │ 🌾{:>2} 💧{:>2} 🪵{:>2} 🌿{:>2} ⚒{:>1} 🪙{:>2}{} │ {}\n",
+        let _ = writeln!(
+            s,
+            "│ {} {:<8} {} [{}] │ 🌾{:>2} 💧{:>2} 🪵{:>2} 🌿{:>2} ⚒{:>1} 🪙{:>2}{} │ {}",
             p.icon(),
             p.id(),
             hearth,
-            meter(st.condition as u32, 5, 5),
+            meter(u32::from(st.condition), 5, 5),
             st.food,
             st.water,
             st.wood,
@@ -309,11 +335,11 @@ pub fn render_village_ui(w: &World, max_events: usize) -> String {
             st.coin,
             owner_tag,
             if who.is_empty() {
-                "nobody".to_string()
+                "nobody".to_owned()
             } else {
                 who.join(", ")
             }
-        ));
+        );
     }
     s.push_str("└──────────────────────────────────────────────────────────────────────────────────────────────┘\n");
 
@@ -321,8 +347,8 @@ pub fn render_village_ui(w: &World, max_events: usize) -> String {
     s.push_str("│ Name   Role       At       Mood         Vitals (Full/Hydr/Eng/Wrm/HP)  Carry (F/W/Wd/H/T)   │\n");
     s.push_str("├──────────────────────────────────────────────────────────────────────────────────────────────┤\n");
     for a in w.living() {
-        let fullness = 3u8.saturating_sub(a.hunger);
-        let hydration = 3u8.saturating_sub(a.thirst);
+        let fullness = 3_u8.saturating_sub(a.hunger);
+        let hydration = 3_u8.saturating_sub(a.thirst);
         let ailment_str = a
             .ailment
             .map(|al| format!(" !{}", al.id()))
@@ -332,8 +358,8 @@ pub fn render_village_ui(w: &World, max_events: usize) -> String {
             .as_ref()
             .map(|p| format!(" ♥{p}"))
             .unwrap_or_default();
-        s.push_str(&format!(
-            "│ {:<6} {} {:<9} {:<8} {} {:<9} [{}/{}/{}e/{}w/{:>2}hp]  {:>1}f {:>1}w {:>1}wd {:>1}h {:>1}t │ st:{:.1}{}{}\n",
+        let _ = writeln!(s,
+            "│ {:<6} {} {:<9} {:<8} {} {:<9} [{}/{}/{}e/{}w/{:>2}hp]  {:>1}f {:>1}w {:>1}wd {:>1}h {:>1}t │ st:{:.1}{}{}",
             a.name,
             a.role.icon(),
             a.role.id(),
@@ -353,7 +379,7 @@ pub fn render_village_ui(w: &World, max_events: usize) -> String {
             a.standing,
             partner_str,
             ailment_str
-        ));
+        );
     }
     s.push_str("└──────────────────────────────────────────────────────────────────────────────────────────────┘\n");
 
@@ -361,7 +387,13 @@ pub fn render_village_ui(w: &World, max_events: usize) -> String {
         let start = w.events.len().saturating_sub(max_events);
         s.push_str("\n┌─ VILLAGE CHRONICLE ──────────────────────────────────────────────────────────────────────────┐\n");
         for e in &w.events[start..] {
-            s.push_str(&format!("│ [t{:>3}] {:<8} │ {}\n", e.turn, format!("{:?}", e.kind), e.line()));
+            let _ = writeln!(
+                s,
+                "│ [t{:>3}] {:<8} │ {}",
+                e.turn,
+                format!("{:?}", e.kind),
+                e.line()
+            );
         }
         s.push_str("└──────────────────────────────────────────────────────────────────────────────────────────────┘\n");
     }
@@ -369,17 +401,12 @@ pub fn render_village_ui(w: &World, max_events: usize) -> String {
 }
 
 /// Renders a visual topological ring map of the 7 village locations.
+#[must_use]
 pub fn render_place_map(w: &World) -> String {
     let badge = |p: Place| -> String {
         let st = w.place_state(p);
         let count = w.living().filter(|a| a.place == p).count();
-        format!(
-            "[{} {:<7} 🌾{:>2} 👤{}]",
-            p.icon(),
-            p.id(),
-            st.food,
-            count
-        )
+        format!("[{} {:<7} 🌾{:>2} 👤{}]", p.icon(), p.id(), st.food, count)
     };
     format!(
         "\n          {}\n               ╱              ╲\n  {}          {}\n       │                              │\n  {}          {}\n               ╲              ╱\n          {} ──── {}\n",
@@ -394,37 +421,41 @@ pub fn render_place_map(w: &World) -> String {
 }
 
 /// Detailed dossier card for inspecting a single villager's psyche, skills, kinship, and beliefs.
+#[must_use]
 pub fn render_villager_inspector(w: &World, name: &str) -> Option<String> {
     let a = w.agent(name)?;
     let (top_skill, top_lvl) = a.skills.top_skill();
     let mut s = String::new();
-    s.push_str(&format!(
-        "┏━━ VILLAGER DOSSIER: {} ({} {}) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n",
+    let _ = writeln!(
+        s,
+        "┏━━ VILLAGER DOSSIER: {} ({} {}) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓",
         a.name,
         a.role.icon(),
         a.role.id().to_uppercase()
-    ));
-    s.push_str(&format!("┃ Persona: {}\n", a.persona));
-    s.push_str(&format!(
-        "┃ Location: {} ({}) │ Generation: {} │ Born Turn: {} │ Alive: {}\n",
+    );
+    let _ = writeln!(s, "┃ Persona: {}", a.persona);
+    let _ = writeln!(
+        s,
+        "┃ Location: {} ({}) │ Generation: {} │ Born Turn: {} │ Alive: {}",
         a.place.title(),
         a.place.id(),
         a.generation,
         a.born_turn,
         a.alive
-    ));
-    s.push_str(&format!(
-        "┃ Mood: {} {} │ Stress: {:.1}/4 │ Hope: {:.1}/4 │ Devotion: {:.1}/4 │ Standing: {:.1}/4\n",
+    );
+    let _ =
+        writeln!(s,
+        "┃ Mood: {} {} │ Stress: {:.1}/4 │ Hope: {:.1}/4 │ Devotion: {:.1}/4 │ Standing: {:.1}/4",
         a.mood.icon(),
         a.mood.id(),
         a.stress,
         a.hope,
         a.devotion,
         a.standing
-    ));
-    s.push_str(&format!("┃ Active Drive: {}\n", a.current_goal));
-    s.push_str(&format!(
-        "┃ Skills: Farming {} · Forestry {} · Herbalism {} · Craft {} · Stewardship {} · Counsel {} (Best: {} {})\n",
+    );
+    let _ = writeln!(s, "┃ Active Drive: {}", a.current_goal);
+    let _ = writeln!(s,
+        "┃ Skills: Farming {} · Forestry {} · Herbalism {} · Craft {} · Stewardship {} · Counsel {} (Best: {} {})",
         a.skills.farming,
         a.skills.forestry,
         a.skills.herbalism,
@@ -433,7 +464,7 @@ pub fn render_villager_inspector(w: &World, name: &str) -> Option<String> {
         a.skills.counsel,
         top_skill,
         top_lvl
-    ));
+    );
     if !a.relations.is_empty() {
         let rels: Vec<String> = a
             .relations
@@ -448,13 +479,16 @@ pub fn render_villager_inspector(w: &World, name: &str) -> Option<String> {
                 )
             })
             .collect();
-        s.push_str(&format!("┃ Ties: {}\n", rels.join(" | ")));
+        let _ = writeln!(s, "┃ Ties: {}", rels.join(" | "));
     }
-    s.push_str("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n");
+    s.push_str(
+        "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n",
+    );
     Some(s)
 }
 
 /// Renders a compact social & kinship summary across all living villagers.
+#[must_use]
 pub fn render_social_matrix(w: &World) -> String {
     let mut s = String::from("SOCIAL BONDS & KINSHIP:\n");
     for a in w.living() {
@@ -465,18 +499,14 @@ pub fn render_social_matrix(w: &World) -> String {
             .map(|r| format!("{}[{}]", r.other, r.kinship.id()))
             .collect();
         if !highlights.is_empty() {
-            s.push_str(&format!("  {:<6} -> {}\n", a.name, highlights.join(", ")));
+            let _ = writeln!(s, "  {:<6} -> {}", a.name, highlights.join(", "));
         }
     }
     s
 }
 
-pub fn adjacency_table() -> &'static [(&'static str, [&'static str; 2])] {
-    &ADJACENCY
-}
-
 fn round2(x: f32) -> f64 {
-    (x * 100.0).round() as f64 / 100.0
+    f64::from((x * 100.0).round()) / 100.0
 }
 
 /// Same quantisation for anything embedded in prose.
@@ -484,8 +514,9 @@ fn round1(x: f32) -> f32 {
     (x * 10.0).round() / 10.0
 }
 
-/// Places an agent could reach in `n` moves, used by the observer UI only.
-pub fn reachable(from: Place, n: usize) -> Vec<Place> {
+/// Places an agent could reach in `n` moves.
+#[cfg(test)]
+fn reachable(from: Place, n: usize) -> Vec<Place> {
     let mut seen = vec![from];
     let mut frontier = vec![from];
     for _ in 0..n {

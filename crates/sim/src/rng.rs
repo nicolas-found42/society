@@ -1,4 +1,4 @@
-/// Deterministic PRNG (SplitMix64). Keeps the crate dependency-free and makes
+/// Deterministic PRNG (`SplitMix64`). Keeps the crate dependency-free and makes
 /// every run reproducible from a seed.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Rng {
@@ -6,13 +6,14 @@ pub struct Rng {
 }
 
 impl Rng {
-    pub fn new(seed: u64) -> Self {
+    #[must_use]
+    pub const fn new(seed: u64) -> Self {
         Self {
             state: seed ^ 0x9E37_79B9_7F4A_7C15,
         }
     }
 
-    pub fn next_u64(&mut self) -> u64 {
+    pub const fn next_u64(&mut self) -> u64 {
         self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.state;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -22,17 +23,17 @@ impl Rng {
 
     /// Uniform in [0, 1).
     pub fn next_f32(&mut self) -> f32 {
-        (self.next_u64() >> 40) as f32 / (1u64 << 24) as f32
+        (self.next_u64() >> 40) as f32 / (1_u64 << 24) as f32
     }
 
-    pub fn below(&mut self, n: usize) -> usize {
+    pub const fn below(&mut self, n: usize) -> usize {
         if n == 0 {
             return 0;
         }
         (self.next_u64() % n as u64) as usize
     }
 
-    pub fn range_u32(&mut self, min: u32, max_inclusive: u32) -> u32 {
+    pub const fn range_u32(&mut self, min: u32, max_inclusive: u32) -> u32 {
         if max_inclusive <= min {
             return min;
         }
@@ -44,7 +45,7 @@ impl Rng {
         if max <= min {
             return min;
         }
-        min + self.next_f32() * (max - min)
+        self.next_f32().mul_add(max - min, min)
     }
 
     pub fn chance(&mut self, p: f32) -> bool {
@@ -58,7 +59,7 @@ impl Rng {
         }
     }
 
-    pub fn pick<'a, T>(&mut self, items: &'a [T]) -> Option<&'a T> {
+    pub const fn pick<'a, T>(&mut self, items: &'a [T]) -> Option<&'a T> {
         if items.is_empty() {
             None
         } else {

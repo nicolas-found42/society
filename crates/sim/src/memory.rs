@@ -1,7 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use crate::world::Place;
-
 /// A memory the agent carries. `salience` is written once, by the judgment
 /// layer, at the moment the memory is formed; age decay happens in code.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -77,11 +75,13 @@ impl Memory {
         }
     }
 
+    #[must_use]
     pub fn with_valence(mut self, valence: f32) -> Self {
         self.valence = round2(valence.clamp(-1.0, 1.0));
         self
     }
 
+    #[must_use]
     pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
         let t = tag.into();
         if !self.tags.contains(&t) {
@@ -91,30 +91,33 @@ impl Memory {
     }
 
     /// Salience after age decay. Permanent memories never decay.
+    #[must_use]
     pub fn weight(&self, now: u64, half_life: f32) -> f32 {
         if self.permanent {
             return self.salience;
         }
         let age = now.saturating_sub(self.turn) as f32;
-        round2(self.salience * 0.5f32.powf(age / half_life))
+        round2(self.salience * 0.5_f32.powf(age / half_life))
     }
 
     /// Rank-based recency in `(0,1]`, matching the implementation rather than
     /// the paper: `0.99^rank` with rank taken from the last-access ordering.
+    #[must_use]
     pub fn recency(rank: usize) -> f32 {
-        0.99f32.powi(rank as i32 + 1)
+        0.99_f32.powi(rank as i32 + 1)
     }
 
     /// Three-term blend. Weights are the shipped GA values, not the paper's
     /// all-ones: relevance dominates, importance next, recency last.
+    #[must_use]
     pub fn blend(recency: f32, relevance: f32, importance: f32) -> f32 {
-        0.5 * recency + 3.0 * relevance + 2.0 * importance
+        2.0_f32.mul_add(importance, 3.0_f32.mul_add(relevance, 0.5 * recency))
     }
 }
 
 /// A belief the agent holds about the world. Divergence from truth and
-/// staleness are *derived*, never stored (ToMi `oracle.py`).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// staleness are *derived*, never stored (`ToMi` `oracle.py`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Belief {
     pub about: String,
     pub value: i32,
@@ -125,14 +128,25 @@ pub struct Belief {
 
 impl Belief {
     pub fn observed(about: impl Into<String>, value: i32, tick: u64) -> Self {
-        Self { about: about.into(), value, as_of_tick: tick, source: None }
+        Self {
+            about: about.into(),
+            value,
+            as_of_tick: tick,
+            source: None,
+        }
     }
 
     pub fn told(about: impl Into<String>, value: i32, tick: u64, by: impl Into<String>) -> Self {
-        Self { about: about.into(), value, as_of_tick: tick, source: Some(by.into()) }
+        Self {
+            about: about.into(),
+            value,
+            as_of_tick: tick,
+            source: Some(by.into()),
+        }
     }
 
-    pub fn is_stale(&self, now: u64, max_age: u64) -> bool {
+    #[must_use]
+    pub const fn is_stale(&self, now: u64, max_age: u64) -> bool {
         now.saturating_sub(self.as_of_tick) > max_age
     }
 }
@@ -151,6 +165,7 @@ pub struct Fact {
 }
 
 impl Fact {
+    #[must_use]
     pub fn live(&self, now: u64) -> bool {
         self.invalid_at.is_none_or(|t| t > now) && self.expired_at.is_none()
     }
@@ -162,12 +177,6 @@ pub const MEMORY_CAP: usize = 8;
 /// Reflection fires on accumulated poignancy, not a clock. Each stored event
 /// spends its salience from this budget; at zero the agent consolidates.
 pub const REFLECTION_BUDGET: f32 = 150.0;
-
-/// Places are referenced by id in memory text; kept here so `memory` does not
-/// depend on `world` for its public surface.
-pub fn place_id(p: Place) -> &'static str {
-    p.id()
-}
 
 #[cfg(test)]
 mod tests {
@@ -184,9 +193,9 @@ mod tests {
     #[test]
     fn blend_prefers_relevance() {
         // Same inputs: relevance must move the score more than recency.
-        let rec_heavy = Memory::blend(1.0, 0.0, 0.0);
-        let rel_heavy = Memory::blend(0.0, 1.0, 0.0);
-        assert!(rel_heavy > rec_heavy);
+        let by_recency = Memory::blend(1.0, 0.0, 0.0);
+        let by_relevance = Memory::blend(0.0, 1.0, 0.0);
+        assert!(by_relevance > by_recency);
     }
 
     #[test]

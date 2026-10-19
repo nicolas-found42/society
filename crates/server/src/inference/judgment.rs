@@ -19,13 +19,15 @@ pub struct JudgeConfig {
 }
 
 impl JudgeConfig {
+    /// # Errors
+    ///
+    /// Returns `JudgmentError::MissingKey` when `OPENROUTER_API_KEY` is unset.
     pub fn from_env() -> Result<Self, JudgmentError> {
-        let api_key = std::env::var("OPENROUTER_API_KEY")
-            .map_err(|_| JudgmentError::MissingKey)?;
-        let endpoint = std::env::var("SOCIETY_JEV_ENDPOINT")
-            .unwrap_or_else(|_| DEFAULT_ENDPOINT.to_string());
-        let model = std::env::var("SOCIETY_JEV_MODEL")
-            .unwrap_or_else(|_| MODEL.to_string());
+        let api_key =
+            std::env::var("OPENROUTER_API_KEY").map_err(|_missing| JudgmentError::MissingKey)?;
+        let endpoint =
+            std::env::var("SOCIETY_JEV_ENDPOINT").unwrap_or_else(|_| DEFAULT_ENDPOINT.to_owned());
+        let model = std::env::var("SOCIETY_JEV_MODEL").unwrap_or_else(|_| MODEL.to_owned());
         Ok(Self {
             endpoint,
             api_key,
@@ -46,10 +48,10 @@ pub enum JudgmentError {
 impl std::fmt::Display for JudgmentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            JudgmentError::MissingKey => write!(f, "OPENROUTER_API_KEY is not set"),
-            JudgmentError::Transport(e) => write!(f, "judgment transport: {e}"),
-            JudgmentError::Status(c, body) => write!(f, "judgment HTTP {c}: {body}"),
-            JudgmentError::Malformed(e) => write!(f, "judgment response malformed: {e}"),
+            Self::MissingKey => write!(f, "OPENROUTER_API_KEY is not set"),
+            Self::Transport(e) => write!(f, "judgment transport: {e}"),
+            Self::Status(c, body) => write!(f, "judgment HTTP {c}: {body}"),
+            Self::Malformed(e) => write!(f, "judgment response malformed: {e}"),
         }
     }
 }
@@ -74,35 +76,101 @@ pub enum Judgment {
     },
 }
 
+/// Captures an agent's inner hesitation when their runner-up action had nearly
+/// the same probability as the chosen action.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Dilemma {
+    pub chosen: String,
+    pub alternative: String,
+    pub chosen_prob: f32,
+    pub alternative_prob: f32,
+}
+
 impl Judgment {
+    #[must_use]
     pub fn choice(&self) -> Option<&str> {
         match self {
-            Judgment::Choice { choice, .. } => Some(choice),
+            Self::Choice { choice, .. } => Some(choice),
             _ => None,
         }
     }
 
-    pub fn noul(&self) -> Option<f32> {
+    #[must_use]
+    pub const fn noul(&self) -> Option<f32> {
         match self {
-            Judgment::Noul { noul } => Some(*noul),
+            Self::Noul { noul } => Some(*noul),
             _ => None,
         }
     }
 
-    pub fn score(&self) -> Option<f32> {
+    #[must_use]
+    pub const fn score(&self) -> Option<f32> {
         match self {
-            Judgment::Score { score, .. } => Some(*score),
+            Self::Score { score, .. } => Some(*score),
             _ => None,
         }
     }
 
-    pub fn confidence(&self) -> Option<f32> {
+    #[must_use]
+    pub const fn confidence(&self) -> Option<f32> {
         match self {
-            Judgment::Choice { confidence, .. } | Judgment::Score { confidence, .. } => {
-                Some(*confidence)
-            }
-            Judgment::Noul { .. } => None,
+            Self::Choice { confidence, .. } | Self::Score { confidence, .. } => Some(*confidence),
+            Self::Noul { .. } => None,
         }
+    }
+
+    /// Sorted `(option, probability)` pairs in descending order for a choice.
+    #[must_use]
+    pub fn top_alternatives(&self) -> Vec<(String, f32)> {
+        match self {
+            Self::Choice { probabilities, .. } => {
+                let mut pairs: Vec<(String, f32)> = probabilities
+                    .iter()
+                    .filter_map(|(k, v)| v.as_f64().map(|p| (k.clone(), p as f32)))
+                    .collect();
+                pairs.sort_by(|a, b| {
+                    b.1.partial_cmp(&a.1)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.0.cmp(&b.0))
+                });
+                pairs
+            },
+            _ => Vec::new(),
+        }
+    }
+
+    /// Shannon entropy (in nats) of a choice distribution, measuring how torn
+    /// the decision was across all legal affordances.
+    #[must_use]
+    pub fn entropy(&self) -> Option<f32> {
+        match self {
+            Self::Choice { probabilities, .. } => {
+                let h: f32 = probabilities
+                    .values()
+                    .filter_map(|v| v.as_f64().map(|p| p as f32))
+                    .filter(|&p| p > 1e-6)
+                    .map(|p| -p * p.ln())
+                    .sum();
+                Some(h)
+            },
+            _ => None,
+        }
+    }
+
+    /// Returns `Some(Dilemma)` when the runner-up choice is within `margin`
+    /// probability of the winning choice and holds at least `0.20` mass.
+    #[must_use]
+    pub fn dilemma(&self, margin: f32) -> Option<Dilemma> {
+        let chosen = self.choice()?;
+        let ranked = self.top_alternatives();
+        let (_, top_p) = ranked.first()?;
+        let (alt, alt_p) = ranked.iter().find(|(k, _)| k != chosen)?;
+        ((*top_p - *alt_p).abs() <= margin && *alt_p >= 0.20).then(|| Dilemma {
+            chosen: chosen.to_owned(),
+            alternative: alt.clone(),
+            chosen_prob: *top_p,
+            alternative_prob: *alt_p,
+        })
     }
 }
 
@@ -120,12 +188,13 @@ pub struct Answer {
 }
 
 impl Answer {
+    #[must_use]
     pub fn get(&self, id: &str) -> Option<Judgment> {
         let v = self.answers.get(id)?;
         let ty = v.get("type")?.as_str()?;
         match ty {
             "choice" => Some(Judgment::Choice {
-                choice: v.get("choice")?.as_str()?.to_string(),
+                choice: v.get("choice")?.as_str()?.to_owned(),
                 probabilities: v
                     .get("probabilities")
                     .and_then(|p| p.as_object())
@@ -138,10 +207,7 @@ impl Answer {
             }),
             "score" => Some(Judgment::Score {
                 score: v.get("score")?.as_f64()? as f32,
-                confidence: v
-                    .get("confidence")
-                    .and_then(|c| c.as_f64())
-                    .unwrap_or(0.0) as f32,
+                confidence: v.get("confidence").and_then(Value::as_f64).unwrap_or(0.0) as f32,
             }),
             _ => None,
         }
@@ -155,6 +221,10 @@ pub struct Judge {
 }
 
 impl Judge {
+    /// # Panics
+    ///
+    /// Panics if the HTTP client cannot be built.
+    #[must_use]
     pub fn new(cfg: JudgeConfig) -> Self {
         let client = reqwest::Client::builder()
             .timeout(cfg.timeout)
@@ -163,12 +233,19 @@ impl Judge {
         Self { cfg, client }
     }
 
+    /// # Errors
+    ///
+    /// Returns `JudgmentError::MissingKey` when `OPENROUTER_API_KEY` is unset.
     pub fn from_env() -> Result<Self, JudgmentError> {
         Ok(Self::new(JudgeConfig::from_env()?))
     }
 
     /// One batched request. All questions see the same state and are answered
     /// independently; this is the only call shape the simulator uses.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `JudgmentError` on transport failure or an unusable response.
     pub async fn ask(
         &self,
         state: Value,
@@ -208,11 +285,11 @@ impl Judge {
         let usage = v.get("usage").cloned().unwrap_or(Value::Null);
         Ok(Answer {
             answers,
-            model: v.get("model").and_then(|m| m.as_str()).map(str::to_string),
-            cost: usage.get("cost").and_then(|c| c.as_f64()).unwrap_or(0.0),
+            model: v.get("model").and_then(|m| m.as_str()).map(str::to_owned),
+            cost: usage.get("cost").and_then(Value::as_f64).unwrap_or(0.0),
             input_tokens: usage
                 .get("input_tokens")
-                .and_then(|c| c.as_u64())
+                .and_then(Value::as_u64)
                 .unwrap_or(0),
             latency_ms: started.elapsed().as_millis() as u64,
             state: body["state"].clone(),
@@ -222,6 +299,10 @@ impl Judge {
 
     /// Prove the layer is reachable before the society starts. Cheap, one
     /// question, and a hard failure: there is no degraded mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `JudgmentError` if the layer cannot answer the probe question.
     pub async fn probe(&self) -> Result<(), JudgmentError> {
         let mut qs = Map::new();
         qs.insert(
@@ -244,8 +325,10 @@ fn truncate(s: &str, n: usize) -> String {
 }
 
 /// Build a choice question from the exact action ids the simulator offers.
+///
 /// Order is left as given; measurement showed no ordering effect once the
 /// state is well-formed, so the caller's order is the auditable one.
+#[must_use]
 pub fn action_question(instructions: &str, actions: &[String]) -> Value {
     let mut criteria = Map::new();
     for a in actions {
@@ -254,13 +337,39 @@ pub fn action_question(instructions: &str, actions: &[String]) -> Value {
     json!({ "type": "choice", "instructions": instructions, "criteria": criteria })
 }
 
+/// Build a choice question with explicit per-option descriptions.
+#[must_use]
+pub fn choice_question(instructions: &str, options: &[(&str, &str)]) -> Value {
+    let mut criteria = Map::new();
+    for (key, desc) in options {
+        criteria.insert((*key).to_owned(), json!(desc));
+    }
+    json!({ "type": "choice", "instructions": instructions, "criteria": criteria })
+}
+
+/// Build a 5-point ordinal score question.
+#[must_use]
+pub fn score_question(instructions: &str, labels: [&str; 5]) -> Value {
+    json!({ "type": "score", "instructions": instructions, "criteria": labels })
+}
+
+/// Build a boolean/credibility `noul` question.
+#[must_use]
+pub fn noul_question(instructions: &str) -> Value {
+    json!({ "type": "noul", "instructions": instructions })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn action_question_enumerates_every_affordance() {
-        let acts = vec!["speak".to_string(), "take".to_string(), "go:market".to_string()];
+        let acts = vec![
+            "speak".to_owned(),
+            "take".to_owned(),
+            "go:market".to_owned(),
+        ];
         let q = action_question("Which?", &acts);
         let c = q["criteria"].as_object().unwrap();
         assert_eq!(c.len(), 3);
@@ -286,10 +395,12 @@ mod tests {
             questions: Value::Null,
         };
         match ans.get("i").unwrap() {
-            Judgment::Choice { choice, confidence, .. } => {
+            Judgment::Choice {
+                choice, confidence, ..
+            } => {
                 assert_eq!(choice, "take");
                 assert!((confidence - 0.7).abs() < 1e-6);
-            }
+            },
             _ => panic!("wrong variant"),
         }
     }
@@ -308,5 +419,37 @@ mod tests {
             questions: Value::Null,
         };
         assert!(ans.get("i").is_none());
+    }
+
+    #[test]
+    fn detects_dilemma_when_top_two_actions_are_close() {
+        let mut probs = Map::new();
+        probs.insert("give:Bo".into(), json!(0.44));
+        probs.insert("eat".into(), json!(0.39));
+        probs.insert("speak".into(), json!(0.17));
+        let j = Judgment::Choice {
+            choice: "give:Bo".into(),
+            probabilities: probs,
+            confidence: 0.42,
+        };
+        let d = j
+            .dilemma(0.12)
+            .expect("close split should surface a dilemma");
+        assert_eq!(d.chosen, "give:Bo");
+        assert_eq!(d.alternative, "eat");
+        assert!(j.entropy().unwrap() > 0.9);
+    }
+
+    #[test]
+    fn clear_favorite_produces_no_dilemma() {
+        let mut probs = Map::new();
+        probs.insert("eat".into(), json!(0.85));
+        probs.insert("speak".into(), json!(0.15));
+        let j = Judgment::Choice {
+            choice: "eat".into(),
+            probabilities: probs,
+            confidence: 0.9,
+        };
+        assert!(j.dilemma(0.12).is_none());
     }
 }
