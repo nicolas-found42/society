@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 use egui::{Color32, RichText};
+use society_server::engine::AgentTurn;
 use society_server::{AppState, TurnRecord};
 use society_sim::{Agent, Event, EventKind, Place, PlaceState, World};
 
@@ -2425,18 +2426,7 @@ impl App {
                                 .iter()
                                 .find(|a| (&a.name, &a.action) == (&e.actor, &e.action))
                         }) {
-                            ui.label(
-                                RichText::new(format!(
-                                    "{} · social {} · fidelity {} · grounded {} · intensity {}",
-                                    if a.accepted { "Accepted" } else { "Rejected" },
-                                    humanize(&a.social),
-                                    fmt(a.fidelity),
-                                    fmt(a.grounded),
-                                    fmt(a.intensity)
-                                ))
-                                .weak()
-                                .small(),
-                            );
+                            ui.label(RichText::new(turn_meta(a)).weak().small());
                             if let Some(note) = &a.note {
                                 ui.label(RichText::new(note).small().color(color));
                             }
@@ -2468,9 +2458,22 @@ impl App {
                                 humanize(&a.action),
                                 if a.accepted { "Accepted" } else { "Rejected" }
                             ));
-                            ui.label(&a.say);
-                            if let Some(note) = &a.note {
-                                ui.label(RichText::new(note).weak().small());
+                            // This row has no gate-score metadata line, but the
+                            // judgment layer's labels still belong to the turn.
+                            if let Some(labels) = turn_labels(a) {
+                                ui.label(RichText::new(labels).weak().small());
+                            }
+                            match turn_words(a) {
+                                TurnWords::Spoken { say, note } => {
+                                    ui.label(say);
+                                    if let Some(note) = note {
+                                        ui.label(RichText::new(note).weak().small());
+                                    }
+                                },
+                                TurnWords::Silent { note } => {
+                                    ui.label(RichText::new(note).weak().small());
+                                },
+                                TurnWords::Nothing => {},
                             }
                         }
                     }
@@ -2851,6 +2854,81 @@ fn fmt(v: Option<f32>) -> String {
     v.map_or_else(|| "—".into(), |x| format!("{x:.2}"))
 }
 
+/// The per-turn metadata line: verdict and gate scores, then the judgment
+/// layer's own labels. Optional fields are omitted, not rendered blank, so a
+/// turn saved before they existed still reads as one line.
+#[must_use]
+fn turn_meta(a: &AgentTurn) -> String {
+    let base = format!(
+        "{} · social {} · fidelity {} · grounded {} · intensity {}",
+        if a.accepted { "Accepted" } else { "Rejected" },
+        humanize(&a.social),
+        fmt(a.fidelity),
+        fmt(a.grounded),
+        fmt(a.intensity)
+    );
+    match turn_labels(a) {
+        Some(labels) => format!("{base} · {labels}"),
+        None => base,
+    }
+}
+
+/// The judgment layer's labels for a turn: motive, register, addressee.
+///
+/// `why` used to be the voice model's own rationale and is now the motive
+/// label chosen in code, so it is worth showing; `register` and `addressee`
+/// were computed but never rendered. Absent fields are omitted rather than
+/// rendered blank, which keeps a turn saved before they existed readable.
+#[must_use]
+fn turn_labels(a: &AgentTurn) -> Option<String> {
+    let mut labels = Vec::new();
+    if !a.why.trim().is_empty() {
+        labels.push(format!("Motive: {}", a.why.trim()));
+    }
+    if let Some(register) = &a.register {
+        labels.push(format!("Register: {register}"));
+    }
+    if let Some(addressee) = &a.addressee {
+        labels.push(format!("To: {addressee}"));
+    }
+    if labels.is_empty() {
+        None
+    } else {
+        Some(labels.join(" · "))
+    }
+}
+
+/// What the feed prints for one turn's words.
+///
+/// A villager can now be committed silent: the voice model's line was a
+/// verbatim copy of the card it was given, so it was dropped and `say` is
+/// empty while `note` explains why. An empty `say` must not become an empty
+/// label; the note takes the line's place (and keeps the muted style the note
+/// already has), never both.
+#[derive(Debug, PartialEq, Eq)]
+enum TurnWords<'a> {
+    /// The spoken line, with the note beneath it when the turn carried one.
+    Spoken { say: &'a str, note: Option<&'a str> },
+    /// A silent turn: the note replaces the missing line.
+    Silent { note: &'a str },
+    /// Neither words nor a reason to print.
+    Nothing,
+}
+
+#[must_use]
+fn turn_words(a: &AgentTurn) -> TurnWords<'_> {
+    if a.say.trim().is_empty() {
+        a.note
+            .as_deref()
+            .map_or(TurnWords::Nothing, |note| TurnWords::Silent { note })
+    } else {
+        TurnWords::Spoken {
+            say: a.say.as_str(),
+            note: a.note.as_deref(),
+        }
+    }
+}
+
 #[allow(dead_code, reason = "compile-time assertion only; never called")]
 const fn _assert_state_send_sync() {
     const fn check<T: Send + Sync>() {}
@@ -3218,5 +3296,128 @@ mod tests {
                 "missing {expected} in {council}"
             );
         }
+    }
+
+    /// A committed turn with no matching event, so the feed takes the
+    /// eventless row path: the one that prints the villager's words.
+    fn feed_with_turn(say: &str, note: Option<&str>) -> String {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let w = World::founding(7);
+        let mut app = observer(w, &rt);
+        app.turns.push(TurnRecord {
+            turn: 3,
+            day: 1,
+            intent_call: None,
+            gate_call: None,
+            agents: vec![AgentTurn {
+                name: "Ada".into(),
+                action: "speak".into(),
+                accepted: true,
+                note: note.map(str::to_owned),
+                say: say.into(),
+                why: "hunger".into(),
+                social: "speak".into(),
+                fidelity: Some(0.8),
+                grounded: Some(0.7),
+                intensity: Some(1.5),
+                confidence: Some(0.9),
+                latency_ms: 12,
+                model: "test".into(),
+                state: serde_json::Value::Null,
+                addressee: Some("Bo".into()),
+                register: Some("wary and guarded".into()),
+                dilemma: None,
+            }],
+            births: Vec::new(),
+        });
+        render(&mut app, Tab::Feed, [1120.0, 1200.0])
+    }
+
+    /// A turn with the two fields the observer could not see before, and no
+    /// words: the state the engine commits when it drops a copied line.
+    fn silent_turn(note: Option<&str>) -> AgentTurn {
+        AgentTurn {
+            name: "Ada".into(),
+            action: "speak".into(),
+            accepted: true,
+            note: note.map(str::to_owned),
+            say: String::new(),
+            why: "hunger".into(),
+            social: "speak".into(),
+            fidelity: Some(0.8),
+            grounded: Some(0.7),
+            intensity: Some(1.5),
+            confidence: Some(0.9),
+            latency_ms: 12,
+            model: "test".into(),
+            state: serde_json::Value::Null,
+            addressee: Some("Bo".into()),
+            register: Some("wary and guarded".into()),
+            dilemma: None,
+        }
+    }
+
+    #[test]
+    fn silent_turn_renders_its_note_instead_of_an_empty_line() {
+        let note = "dropped a line copied verbatim from the card";
+        let feed = feed_with_turn("", Some(note));
+        // The note takes the missing line's place, printed once and not twice.
+        assert_eq!(feed.matches(note).count(), 1, "{feed}");
+        // The words drawn for that turn are the note: the last thing the row
+        // shows is the note, where the line would have been. (The flat text
+        // dump also contains blank lines between sections, so the property
+        // under test is the row's own text, not the absence of blanks.)
+        let header = feed
+            .lines()
+            .position(|l| l.contains("Ada · Speak · Accepted"))
+            .expect("the villager's row");
+        let row: Vec<&str> = feed
+            .lines()
+            .skip(header)
+            .take_while(|l| !l.trim().is_empty())
+            .collect();
+        assert_eq!(row.last().copied(), Some(note), "{feed}");
+        let turn = silent_turn(Some(note));
+        assert_eq!(turn_words(&turn), TurnWords::Silent { note });
+        // The judgment layer's labels are visible on the turn row.
+        assert!(feed.contains("Motive: hunger"), "{feed}");
+        assert!(feed.contains("Register: wary and guarded"), "{feed}");
+        assert!(feed.contains("To: Bo"), "{feed}");
+    }
+
+    #[test]
+    fn spoken_turn_renders_its_line() {
+        let say = "the granary is short again";
+        let note = "accepted after the gate";
+        let feed = feed_with_turn(say, Some(note));
+        assert!(feed.contains(say), "{feed}");
+        assert!(feed.contains(note), "{feed}");
+        let mut turn = silent_turn(Some(note));
+        turn.say = say.into();
+        assert_eq!(
+            turn_words(&turn),
+            TurnWords::Spoken {
+                say,
+                note: Some(note)
+            }
+        );
+    }
+
+    #[test]
+    fn turn_metadata_prints_judgment_labels_and_omits_absent_ones() {
+        let turn = silent_turn(Some("silent"));
+        assert_eq!(
+            turn_meta(&turn),
+            "Accepted · social Speak · fidelity 0.80 · grounded 0.70 · intensity 1.50 \
+             · Motive: hunger · Register: wary and guarded · To: Bo"
+        );
+        let mut bare = turn;
+        bare.why = String::new();
+        bare.register = None;
+        bare.addressee = None;
+        assert_eq!(
+            turn_meta(&bare),
+            "Accepted · social Speak · fidelity 0.80 · grounded 0.70 · intensity 1.50"
+        );
     }
 }

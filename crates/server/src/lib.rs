@@ -9,6 +9,7 @@
     reason = "milliseconds, confidences and counts that are small by construction"
 )]
 
+pub mod copy;
 pub mod devserver;
 pub mod engine;
 pub mod inference;
