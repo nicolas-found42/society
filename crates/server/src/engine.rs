@@ -3,10 +3,12 @@
 //!
 //! Turn shape (each step is one batched Jev call, not one per agent):
 //!   1. code enumerates legal actions per living agent
-//!   2. Jev chooses intent + register + addressee for all agents at once
+//!   2. Jev chooses intent for all agents at once; code derives the register
+//!      from mood and the card's addressee from trust
 //!   3. voice renders one line per agent, concurrently under an AIMD cap
 //!   4. Jev gates all lines at once: fidelity, grounding, social act
-//!   5. code applies effects in a fixed order and settles the turn
+//!   5. code reads the addressee and the intensity out of the line, applies
+//!      effects in a fixed order and settles the turn
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -16,12 +18,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use society_sim::{
     affordances, agent_card, apply, judgment_state, Event, EventKind, Intent, Memory, MemoryKind,
-    Outcome, Place, Role, SocialAct, World,
+    Mood, Outcome, Place, Role, SocialAct, World,
 };
 
 use crate::copy::{is_copy, is_paraphrase};
 use crate::inference::judgment::{
-    action_question, choice_question, noul_question, score_question, Answer, Dilemma, Judge,
+    action_question, choice_question, noul_question, Answer, Dilemma, Judge,
 };
 use crate::inference::voice::{Line, Voice, VoiceError};
 
@@ -82,10 +84,10 @@ pub struct AgentTurn {
     pub model: String,
     /// The exact questions Jev saw, for the inspector.
     pub state: Value,
-    /// Whom the villager addressed at their location, if anyone.
+    /// Whom the line addressed at the villager's location, if anyone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addressee: Option<String>,
-    /// Vocal register chosen by Jev for this turn.
+    /// Vocal register derived from the villager's mood for this turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub register: Option<String>,
     /// Inner hesitation when the villager was nearly split between two actions.
@@ -128,8 +130,9 @@ pub struct Engine {
     permit_limit: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-/// One villager's resolved choice: name, intent, salience, urgency, the
-/// judge's stated reason, and any dilemma it raised.
+/// One villager's resolved choice: name, intent, the judge's confidence in it,
+/// the register derived from mood, the addressee (the card's choice until the
+/// line exists, then the line's), and any dilemma it raised.
 type ResolvedIntent = (String, Intent, f32, u8, Option<String>, Option<Dilemma>);
 
 const MIN_PERMITS: usize = 2;
@@ -151,6 +154,170 @@ const REGISTERS: [&str; 5] = [
     "warm and open",
     "urgent and raw",
 ];
+
+/// The register a label the table does not hold falls back to. "plain and
+/// neutral" is the register the measurement actually observed (38 of 45 lines).
+const NEUTRAL_REGISTER: &str = "plain and neutral";
+
+/// The register index for `mood`, looked up in [`REGISTERS`].
+///
+/// Derived in code rather than asked: the five-tone question came back "plain
+/// and neutral" for 38 of 45 lines — mode-collapsed — while the answer still
+/// drove the card's "Register:" line, a ±0.05 trust delta and the witness
+/// memory text, so it was load-bearing and uninformative at once. Mood already
+/// carries the tone the question was trying to recover.
+fn register_for_mood(mood: Mood) -> u8 {
+    let label = match mood {
+        Mood::Desperate => "urgent and raw",
+        Mood::Anxious | Mood::Feverish => "wary and guarded",
+        Mood::Bitter | Mood::Grieving => "cold and clipped",
+        Mood::Weary | Mood::Determined | Mood::Content => "plain and neutral",
+        Mood::Hopeful => "warm and open",
+    };
+    register_index(label)
+}
+
+/// The label for a register ordinal. The single clamped lookup, so no caller
+/// indexes the table itself.
+fn register_label(register: u8) -> &'static str {
+    REGISTERS[register.min(4) as usize]
+}
+
+/// Index of `label` in [`REGISTERS`], so a label and its ordinal cannot drift
+/// apart the way a hand-written index would. A label the table does not hold
+/// falls back to the neutral entry, which is the register the measurement
+/// actually observed (38 of 45 lines).
+fn register_index(label: &str) -> u8 {
+    let index = REGISTERS
+        .iter()
+        .position(|r| *r == label)
+        .or_else(|| REGISTERS.iter().position(|r| *r == NEUTRAL_REGISTER))
+        .unwrap_or(0);
+    // The table holds five entries, so this cannot truncate.
+    index as u8
+}
+
+/// Base dramatic pressure per social act, before the register adjustment.
+///
+/// Accusation (3.2) and threat (3.4) are deliberately at or above the world's
+/// rumor (3.2) and threat-morale (3.0) thresholds: those branches were dead
+/// while the value came from the judge, which never went above 2.21 in 45
+/// lines.
+const fn base_intensity(social: SocialAct) -> f32 {
+    match social {
+        SocialAct::Accusation => 3.2,
+        SocialAct::Threat => 3.4,
+        SocialAct::Promise | SocialAct::Blessing | SocialAct::Plea => 2.6,
+        SocialAct::Gift | SocialAct::Gossip | SocialAct::Forgiveness => 2.4,
+        SocialAct::Counsel | SocialAct::Gratitude => 2.2,
+        SocialAct::TradeOffer => 2.0,
+        SocialAct::None => 1.0,
+    }
+}
+
+/// How far the vocal register pushes the act's base pressure.
+fn register_adjustment(register: u8) -> f32 {
+    match register_label(register) {
+        "urgent and raw" => 0.2,
+        "cold and clipped" => -0.2,
+        _ => 0.0,
+    }
+}
+
+/// Clamp to the ordinal's range and round to two decimals.
+fn clamp_intensity(value: f32) -> f32 {
+    (value.clamp(0.0, 4.0) * 100.0).round() / 100.0
+}
+
+/// The turn's dramatic pressure: the social act's base plus the register's
+/// push, clamped and rounded.
+///
+/// Derived in code rather than asked: the judge's ordinal never exceeded 2.21
+/// in 45 lines, below the rumor (3.2) and threat-morale (3.0) checks, so those
+/// world branches never fired. The act and the tone are both already decided,
+/// and they are the two things the ordinal was meant to express.
+fn derived_intensity(social: SocialAct, register: u8) -> f32 {
+    clamp_intensity(base_intensity(social) + register_adjustment(register))
+}
+
+/// The present villager `a` trusts most, ties broken by name (the smaller name
+/// wins, deterministically). `None` when nobody else is at the place.
+///
+/// This is the card's addressee. The card is built before the line exists, so
+/// it can only name a person the speaker is predisposed to address; the record
+/// resolves the line's actual addressee afterwards.
+fn most_trusted_present(world: &World, a: &society_sim::Agent) -> Option<String> {
+    most_trusted(a, world.present(a.place, &a.name).into_iter())
+}
+
+/// The candidate `a` trusts most, ties broken by the smaller name.
+fn most_trusted(
+    a: &society_sim::Agent,
+    candidates: impl Iterator<Item = String>,
+) -> Option<String> {
+    // `min_by` over reversed trust: the smallest comparator value is the
+    // highest trust, and equal trust compares by name ascending, so the
+    // smallest name wins. Names are unique, so no pair compares equal.
+    candidates.min_by(|x, y| {
+        a.trust_of(y)
+            .total_cmp(&a.trust_of(x))
+            .then_with(|| x.cmp(y))
+    })
+}
+
+/// The villager the line names, restricted to the villagers present at the
+/// speaker's place; the card's addressee when it names nobody.
+///
+/// Derived in code after the line exists: the intent batch asked this before
+/// the voice call, so the answer was a guess about a line that had not been
+/// written. A whole-word, case-insensitive mention is the only evidence the
+/// line itself carries, and several mentions fall back to the speaker's
+/// strongest tie. When the line names nobody the card's choice stands, so a
+/// silent-on-names line still lands on the person the speaker meant to reach.
+fn addressee_from_line(
+    world: &World,
+    speaker: &society_sim::Agent,
+    say: &str,
+    card_addressee: Option<String>,
+) -> Option<String> {
+    let named: Vec<String> = world
+        .present(speaker.place, &speaker.name)
+        .into_iter()
+        .filter(|name| names_whole_word(say, name))
+        .collect();
+    if named.is_empty() {
+        return card_addressee;
+    }
+    most_trusted(speaker, named.into_iter())
+}
+
+/// True when `haystack` contains `name` as a whole word, ignoring case. A name
+/// inside a longer word ("Bo" in "body") is not a mention.
+fn names_whole_word(haystack: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let hay = haystack.to_lowercase();
+    let needle = name.to_lowercase();
+    let mut from = 0;
+    while let Some(offset) = hay[from..].find(&needle) {
+        let start = from + offset;
+        let end = start + needle.len();
+        let before_ok = hay[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_alphanumeric());
+        let after_ok = hay[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_alphanumeric());
+        if before_ok && after_ok {
+            return true;
+        }
+        from = start + needle.chars().next().map_or(1, char::len_utf8);
+    }
+    false
+}
 
 /// Turns before an unfulfilled promise becomes a public breach of faith.
 const PROMISE_OVERDUE_TURNS: u64 = 8;
@@ -281,35 +448,12 @@ impl Engine {
                     &acts,
                 ),
             );
-            questions.insert(
-                format!("register_{n}"),
-                score_question(
-                    &format!("In what register does {n} speak this turn?"),
-                    [
-                        "Cold and clipped",
-                        "Wary and guarded",
-                        "Plain and neutral",
-                        "Warm and open",
-                        "Urgent and raw",
-                    ],
-                ),
-            );
-            let present = world.present(a.place, n);
-            if !present.is_empty() {
-                let mut crit = Map::new();
-                for p in &present {
-                    crit.insert(p.clone(), json!(p));
-                }
-                crit.insert("nobody".into(), json!("nobody"));
-                questions.insert(
-                    format!("address_{n}"),
-                    json!({
-                        "type": "choice",
-                        "instructions": format!("Whom at `{n}`'s place does {n} directly address?"),
-                        "criteria": crit
-                    }),
-                );
-            }
+            // No register, addressee or intensity question here: all three are
+            // meaning-free for this judge and are derived in code below. The
+            // tone question returned "plain and neutral" for 38 of 45 lines,
+            // the pressure ordinal never passed 2.21 (so the world's 3.2 rumor
+            // and 3.0 morale branches could not fire), and the addressee was
+            // asked before the line existed, so it guessed.
         }
         let intent_answer = self
             .judge
@@ -340,16 +484,13 @@ impl Engine {
             let intent = Intent::parse(chosen, a.place).ok_or_else(|| {
                 EngineError::Judgment(format!("{n} chose an unparseable action `{chosen}`"))
             })?;
-            let register = intent_answer
-                .get(&format!("register_{n}"))
-                .and_then(|j| j.score())
-                .unwrap_or(2.0)
-                .round()
-                .clamp(0.0, 4.0) as u8;
-            let addressee = intent_answer
-                .get(&format!("address_{n}"))
-                .and_then(|j| j.choice().map(str::to_owned))
-                .filter(|s| s != "nobody");
+            // The register is a function of mood, not a judgment: see
+            // `register_for_mood` for why the question was dropped.
+            let register = register_for_mood(a.mood);
+            // The card is rendered before the line exists, so it names the
+            // present villager the speaker trusts most. The record's addressee
+            // is resolved from the line itself after the voice tasks join.
+            let addressee = most_trusted_present(world, a);
             let dilemma = j.dilemma(0.12);
             intents.push((
                 n.clone(),
@@ -428,6 +569,20 @@ impl Engine {
         // completed in.
         lines.sort_by(|a, b| a.0.cmp(&b.0));
 
+        // The line exists now, so the record's addressee is read out of it
+        // instead of guessed. The card was rendered from the trust-based choice
+        // above and keeps it: the card had to be built before the voice call.
+        // A dropped or lost line has no text and keeps the card's choice.
+        for entry in &mut intents {
+            let say = lines
+                .iter()
+                .find(|(n, _)| *n == entry.0)
+                .map_or("", |(_, l)| l.say.as_str());
+            let card_addressee = entry.4.clone();
+            let a = world.agent(&entry.0).expect("living agent");
+            entry.4 = addressee_from_line(world, a, say, card_addressee);
+        }
+
         // ---- 3. gate: one batched request ----
         let mut gate_state = Map::new();
         let mut gate_q = Map::new();
@@ -449,7 +604,7 @@ impl Engine {
                     "said": line.say,
                     "why": line.why,
                     "decided": intent.action,
-                    "register": REGISTERS[(*register).min(4) as usize],
+                    "register": register_label(*register),
                     "addressed_to": addressee,
                     "dilemma": dilemma,
                     "place": a.place.id(),
@@ -510,19 +665,10 @@ impl Engine {
                     ],
                 ),
             );
-            gate_q.insert(
-                format!("intensity_{name}"),
-                score_question(
-                    &format!("How much dramatic pressure does `{name}.said` create?"),
-                    [
-                        "Flat restatement",
-                        "Mild preference",
-                        "Clear want or worry",
-                        "Strong need or accusation",
-                        "Crisis or turn",
-                    ],
-                ),
-            );
+            // No intensity question: it never exceeded 2.21 in 45 lines, so
+            // the rumor (3.2) and threat-morale (3.0) branches were
+            // unreachable. `derived_intensity` computes it from the social act
+            // the judge did answer plus the register.
         }
         // A turn where every line was dropped has nothing left to gate; asking
         // an empty batch would be a network round trip whose failure would fail
@@ -563,7 +709,7 @@ impl Engine {
             // `lines` lost the call (a 429 or a malformed reply) and keeps the
             // old silent path, which is not a copy.
             let dropped = found.is_some_and(|l| l.say.is_empty());
-            let verdict = turn_verdict(&gate_answer, &name, dropped);
+            let verdict = turn_verdict(&gate_answer, &name, dropped, found.is_some(), register);
 
             let place_before = world.agent(&name).map(|a| a.place);
             let outcome = apply(world, &name, &intent, &line.say, verdict.social);
@@ -898,12 +1044,20 @@ impl TurnVerdict {
     }
 }
 
-/// Read the gate answer for one villager.
+/// Read the gate answer for one villager. `spoken` is false when no line
+/// exists (a lost call), and `register` is the mood-derived tone the intensity
+/// derivation needs.
 ///
 /// A dropped line was never asked about, and a missing answer is `None`, which
 /// the credibility test would accept, so the drop pins `fidelity` to `Some(0.0)`
 /// explicitly.
-fn turn_verdict(gate: &Answer, name: &str, dropped: bool) -> TurnVerdict {
+fn turn_verdict(
+    gate: &Answer,
+    name: &str,
+    dropped: bool,
+    spoken: bool,
+    register: u8,
+) -> TurnVerdict {
     if dropped {
         return TurnVerdict {
             fidelity: Some(0.0),
@@ -922,18 +1076,22 @@ fn turn_verdict(gate: &Answer, name: &str, dropped: bool) -> TurnVerdict {
     let q = |t: Option<f32>| t.map(|x| (x * 100.0).round() / 100.0);
     let fidelity = q(gate.get(&format!("fidelity_{name}")).and_then(|j| j.noul()));
     let grounded = q(gate.get(&format!("grounded_{name}")).and_then(|j| j.noul()));
-    let intensity = q(gate
-        .get(&format!("intensity_{name}"))
-        .and_then(|j| j.score()));
 
     // A line that contradicts its own decision or the world is spoken but not
     // credited: it cannot move trust.
     let credible = fidelity.is_none_or(|f| f >= 0.5) && grounded.is_none_or(|g| g >= 0.4);
+    // The intensity follows the act the judge answered plus the tone code
+    // already knows; it is not a separate judgment. It is read before the
+    // credibility substitution so the record and the event describe the line
+    // that was spoken even when the gate refuses to credit its act. A line that
+    // was never spoken (a 429 or a malformed reply) has no pressure to report.
+    let intensity = spoken.then(|| derived_intensity(social, register));
+    let social = if credible { social } else { SocialAct::None };
     TurnVerdict {
         fidelity,
         grounded,
         intensity,
-        social: if credible { social } else { SocialAct::None },
+        social,
         social_label: if credible {
             social.id().to_owned()
         } else {
@@ -978,7 +1136,7 @@ fn agent_turn_record(
         model: line.model,
         state,
         addressee,
-        register: Some(REGISTERS[register.min(4) as usize].to_owned()),
+        register: Some(register_label(register).to_owned()),
         dilemma,
     }
 }
@@ -1018,7 +1176,7 @@ fn settle_social_echoes(
         return;
     }
 
-    let reg_name = REGISTERS[register.min(4) as usize];
+    let reg_name = register_label(register);
     let salience = intensity.mul_add(0.14, 0.35).clamp(0.35, 0.95);
 
     // 2. Direct addressee memory & relational trust response.
@@ -1029,8 +1187,8 @@ fn settle_social_echoes(
             "plea" => 0.05,
             "accusation" => -0.25,
             "threat" => -0.40,
-            _ if register == 3 => 0.05,
-            _ if register == 0 => -0.05,
+            _ if reg_name == "warm and open" => 0.05,
+            _ if reg_name == "cold and clipped" => -0.05,
             _ => 0.0,
         };
 
@@ -1224,7 +1382,7 @@ fn agent_card_with(
             );
         }
     }
-    let _ = writeln!(card, "Register: {}.", REGISTERS[register.min(4) as usize]);
+    let _ = writeln!(card, "Register: {}.", register_label(register));
     if let Some(t) = addressee {
         let trust = a.trust_of(t);
         let is_parent = a.parents.iter().any(|p| p == t);
@@ -1287,9 +1445,251 @@ mod tests {
 
     #[test]
     fn register_is_clamped() {
-        const R: [&str; 5] = ["a", "b", "c", "d", "e"];
-        assert_eq!(R[4], "e");
-        assert_eq!(R[0], "a");
+        assert_eq!(register_label(0), REGISTERS[0]);
+        assert_eq!(register_label(4), REGISTERS[4]);
+        // An out-of-range ordinal from an old record or a future table still
+        // renders a tone instead of panicking.
+        assert_eq!(register_label(u8::MAX), REGISTERS[4]);
+    }
+
+    #[test]
+    fn the_register_label_follows_the_mood() {
+        // Every mood the sim crate defines, with the mapping the slice fixed.
+        // The label is looked up in the shared table, so a reordering of
+        // `REGISTERS` cannot silently change what a mood sounds like.
+        let expected = [
+            (Mood::Content, "plain and neutral"),
+            (Mood::Hopeful, "warm and open"),
+            (Mood::Determined, "plain and neutral"),
+            (Mood::Anxious, "wary and guarded"),
+            (Mood::Weary, "plain and neutral"),
+            (Mood::Bitter, "cold and clipped"),
+            (Mood::Grieving, "cold and clipped"),
+            (Mood::Feverish, "wary and guarded"),
+            (Mood::Desperate, "urgent and raw"),
+        ];
+        assert_eq!(expected.len(), 9, "one case per Mood variant");
+        for (mood, label) in expected {
+            let index = register_for_mood(mood);
+            assert_eq!(register_label(index), label, "{mood:?}");
+            assert_eq!(REGISTERS[index as usize], label, "{mood:?}");
+        }
+    }
+
+    #[test]
+    fn the_register_still_moves_trust_by_a_twentieth() {
+        let mut w = World::founding(7);
+        w.agent_mut("Ada").unwrap().place = Place::Well;
+        w.agent_mut("Bo").unwrap().place = Place::Well;
+        let warm = register_index("warm and open");
+        let cold = register_index("cold and clipped");
+
+        settle_social_echoes(
+            &mut w,
+            1,
+            "Ada",
+            Some(Place::Well),
+            "speak",
+            "Good morning, Bo.",
+            "",
+            SocialAct::None,
+            warm,
+            Some("Bo"),
+            1.0,
+        );
+        let up = w.agent("Bo").unwrap().trust_of("Ada");
+        settle_social_echoes(
+            &mut w,
+            2,
+            "Ada",
+            Some(Place::Well),
+            "speak",
+            "Move aside, Bo.",
+            "",
+            SocialAct::None,
+            cold,
+            Some("Bo"),
+            1.0,
+        );
+        let down = w.agent("Bo").unwrap().trust_of("Ada");
+
+        assert!((up - 2.05).abs() < 1e-4, "{up}");
+        assert!((down - 2.00).abs() < 1e-4, "{down}");
+        assert!((up - down - 0.05).abs() < 1e-4, "{up} {down}");
+    }
+
+    /// Ada shares the well with Bo and Cor, trusting Cor most. Everyone else is
+    /// moved away so the founding seed's random placements cannot join them.
+    fn addressee_world() -> World {
+        let mut w = World::founding(7);
+        let names: Vec<String> = w.living().map(|a| a.name.clone()).collect();
+        for name in names {
+            w.agent_mut(&name).unwrap().place = Place::Woods;
+        }
+        w.agent_mut("Ada").unwrap().place = Place::Well;
+        w.agent_mut("Bo").unwrap().place = Place::Well;
+        w.agent_mut("Cor").unwrap().place = Place::Well;
+        w.agent_mut("Ada").unwrap().set_trust("Bo", 1.0);
+        w.agent_mut("Ada").unwrap().set_trust("Cor", 3.0);
+        w
+    }
+
+    #[test]
+    fn a_line_naming_one_present_villager_addresses_that_villager() {
+        let w = addressee_world();
+        let ada = w.agent("Ada").unwrap();
+        // Naming the less-trusted villager still wins: the line decides, not
+        // the card's preference.
+        assert_eq!(
+            addressee_from_line(&w, ada, "Bo, the well is low.", None).as_deref(),
+            Some("Bo")
+        );
+        // Case-insensitive and whole-word: the name in lower case is a mention.
+        assert_eq!(
+            addressee_from_line(&w, ada, "cor, wait for me.", None).as_deref(),
+            Some("Cor")
+        );
+    }
+
+    #[test]
+    fn a_line_naming_several_present_villagers_addresses_the_most_trusted() {
+        let mut w = addressee_world();
+        let ada = w.agent("Ada").unwrap();
+        assert_eq!(
+            addressee_from_line(&w, ada, "Bo, Cor, listen to me.", None).as_deref(),
+            Some("Cor")
+        );
+
+        // Equal trust: the smaller name wins, so the choice is deterministic.
+        w.agent_mut("Ada").unwrap().set_trust("Bo", 3.0);
+        let ada = w.agent("Ada").unwrap();
+        assert_eq!(
+            addressee_from_line(&w, ada, "Cor and Bo, listen.", None).as_deref(),
+            Some("Bo")
+        );
+    }
+
+    #[test]
+    fn a_name_inside_a_longer_word_is_not_a_mention() {
+        let w = addressee_world();
+        let ada = w.agent("Ada").unwrap();
+        // "Bo" appears inside "body" and "nobody"; neither is the villager.
+        assert_eq!(
+            addressee_from_line(&w, ada, "Nobody moves a body today.", Some("Cor".into()))
+                .as_deref(),
+            Some("Cor")
+        );
+    }
+
+    #[test]
+    fn a_line_naming_nobody_keeps_the_cards_addressee() {
+        let w = addressee_world();
+        let ada = w.agent("Ada").unwrap();
+        assert_eq!(
+            addressee_from_line(&w, ada, "The well is low.", Some("Cor".into())).as_deref(),
+            Some("Cor")
+        );
+    }
+
+    #[test]
+    fn the_cards_addressee_is_the_most_trusted_present_villager() {
+        let w = addressee_world();
+        let ada = w.agent("Ada").unwrap();
+        let addressee = most_trusted_present(&w, ada);
+        assert_eq!(addressee.as_deref(), Some("Cor"));
+
+        let register = register_for_mood(ada.mood);
+        let card = agent_card_with(&w, ada, "speak", register, addressee.as_deref(), None);
+        assert!(card.contains("You are speaking directly to Cor"), "{card}");
+        assert!(!card.contains("You are speaking directly to Bo"), "{card}");
+    }
+
+    #[test]
+    fn a_villager_alone_has_no_card_addressee() {
+        let mut w = World::founding(7);
+        let names: Vec<String> = w.living().map(|a| a.name.clone()).collect();
+        for name in names.iter().filter(|n| *n != "Ada") {
+            w.agent_mut(name).unwrap().place = Place::Woods;
+        }
+        w.agent_mut("Ada").unwrap().place = Place::Well;
+        let ada = w.agent("Ada").unwrap();
+        assert_eq!(most_trusted_present(&w, ada), None);
+    }
+
+    #[test]
+    fn an_accusation_reaches_the_rumor_threshold() {
+        // The judge's ordinal never passed 2.21 in 45 lines, so the world's
+        // rumor branch (intensity >= 3.2) was dead. The act's base is the
+        // threshold; the tone can push it up or, only when cold, back down to
+        // 3.0 — where the act's own rumor arm still fires.
+        assert!(base_intensity(SocialAct::Accusation) >= 3.2);
+        let plain = register_index("plain and neutral");
+        let warm = register_index("warm and open");
+        let urgent = register_index("urgent and raw");
+        for register in [plain, warm, urgent] {
+            assert!(
+                derived_intensity(SocialAct::Accusation, register) >= 3.2,
+                "register {register}"
+            );
+        }
+        let cold = register_index("cold and clipped");
+        assert!((derived_intensity(SocialAct::Accusation, cold) - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_threat_reaches_the_morale_threshold() {
+        // The morale branch (intensity >= 3.0) was unreachable for the same
+        // reason; a threat's base is 3.4 and the coldest register only takes
+        // 0.2 off, so every register clears it.
+        for register in 0..=4 {
+            assert!(
+                derived_intensity(SocialAct::Threat, register) > 3.0,
+                "register {register}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_register_shifts_the_intensity_by_the_stated_amount() {
+        let plain = register_index("plain and neutral");
+        let warm = register_index("warm and open");
+        let urgent = register_index("urgent and raw");
+        let cold = register_index("cold and clipped");
+
+        let base = derived_intensity(SocialAct::Promise, plain);
+        assert!((base - 2.6).abs() < 1e-6, "{base}");
+        assert!((derived_intensity(SocialAct::Promise, warm) - base).abs() < 1e-6);
+        assert!((derived_intensity(SocialAct::Promise, urgent) - base - 0.2).abs() < 1e-6);
+        assert!((base - derived_intensity(SocialAct::Promise, cold) - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_intensity_is_clamped_and_rounded() {
+        assert!((clamp_intensity(6.0) - 4.0).abs() < 1e-6);
+        assert!(clamp_intensity(-1.0).abs() < 1e-6);
+        assert!((clamp_intensity(2.345) - 2.35).abs() < 1e-6);
+        // Every act/register pair the derivation can produce stays in range.
+        for register in 0..=4 {
+            for social in [
+                SocialAct::None,
+                SocialAct::Promise,
+                SocialAct::Gift,
+                SocialAct::Accusation,
+                SocialAct::Threat,
+                SocialAct::Gossip,
+                SocialAct::Plea,
+                SocialAct::Gratitude,
+                SocialAct::Counsel,
+                SocialAct::TradeOffer,
+                SocialAct::Blessing,
+                SocialAct::Forgiveness,
+            ] {
+                let value = derived_intensity(social, register);
+                assert!((0.0..=4.0).contains(&value), "{social:?} {register}");
+                let rounded = (value * 100.0).round() / 100.0;
+                assert!((rounded - value).abs() < 1e-5, "{value}");
+            }
+        }
     }
 
     fn engine_with_permits(permits: usize) -> Engine {
@@ -1653,7 +2053,7 @@ mod tests {
         w.agent_mut("Bo").unwrap().place = Place::Well;
         let trust_before = w.agent("Ada").unwrap().trust_of("Bo");
 
-        let verdict = turn_verdict(&empty_gate(), "Ada", true);
+        let verdict = turn_verdict(&empty_gate(), "Ada", true, true, 2);
         let intent = Intent::parse("draw_water", Place::Well).unwrap();
         let outcome = apply(&mut w, "Ada", &intent, "", verdict.social);
         let event = w.events.last_mut().unwrap();
