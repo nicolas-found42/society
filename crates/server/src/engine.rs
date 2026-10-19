@@ -452,8 +452,15 @@ impl Engine {
             );
             gate_q.insert(
                 format!("fidelity_{name}"),
+                // Contradiction, not alignment: the old "does it carry out the
+                // decision" wording rewarded parroting the action id (measured:
+                // the identical string "draw_water" scored 0.96 when the
+                // decision was `draw_water`, 0.25 when it was `speak`) and
+                // punished a line that simply did not mention the action.
                 noul_question(&format!(
-                    "Does `{name}.said` carry out `{name}.decided` without contradicting it?"
+                    "Does `{name}.said` contradict what `{name}` decided or did this turn \
+                     (`{name}.decided`)? A line that merely fails to mention the decision is \
+                     not a contradiction; a line that states the opposite of it is."
                 )),
             );
             gate_q.insert(
@@ -947,7 +954,9 @@ fn agent_card_with(
     addressee: Option<&str>,
     dilemma: Option<&Dilemma>,
 ) -> String {
-    let mut card = agent_card(w, a, &decision.replace("go:", "leave for "));
+    // The sim crate renders the decision itself through `action_phrase`; any
+    // rewrite here lands on top of that phrase ("leave for leave for market").
+    let mut card = agent_card(w, a, decision);
     let _ = writeln!(
         card,
         "Village atmosphere: {} ({}) · {} ({} °C) · morale {:.2}.",
@@ -960,9 +969,8 @@ fn agent_card_with(
     if let Some(owner) = &w.place_state(a.place).owner {
         let _ = writeln!(card, "This place ({}) is claimed by {owner}.", a.place.id());
     }
-    if !a.current_goal.trim().is_empty() {
-        let _ = writeln!(card, "Current drive: {}.", a.current_goal);
-    }
+    // The goal is printed by the sim card, framed as context. Repeating it here
+    // put the same string in the card twice, and the voice model copies it.
     if let Some(p) = &a.promise {
         if p.kept.is_none() {
             let age = w.turn.saturating_sub(p.made_turn);
@@ -993,18 +1001,19 @@ fn agent_card_with(
         );
     }
     if let Some(d) = dilemma {
+        // Prose, not ids: a raw id in the card is a string the model copies.
         let _ = writeln!(
             card,
-            "Inner conflict: you chose `{}` ({:.0}%), but nearly chose `{}` ({:.0}%).",
-            d.chosen,
+            "Inner conflict: you chose {} ({:.0}%), but nearly chose {} ({:.0}%).",
+            society_sim::action_phrase(&d.chosen),
             d.chosen_prob * 100.0,
-            d.alternative,
+            society_sim::action_phrase(&d.alternative),
             d.alternative_prob * 100.0
         );
     }
     let recent = recent_place_dialogue(w, a.place, 3);
     if !recent.is_empty() {
-        card.push_str("Recent speech at this place:\n");
+        card.push_str("Recent speech at this place (answer them; never reuse their words):\n");
         for line in recent {
             let _ = writeln!(card, "  - {line}");
         }
@@ -1157,5 +1166,91 @@ mod tests {
         assert!(card.contains("Unkept promise to Bo"));
         assert!(card.contains("Inner conflict"));
         assert!(card.contains("You promised me grain before the frost."));
+    }
+
+    /// A founding world with a fixed goal and a place owner, so card assertions
+    /// do not depend on the seed's random placements.
+    fn card_world() -> World {
+        let mut w = World::founding(7);
+        w.place_state_mut(Place::Market).owner = Some("Sable".into());
+        w.agent_mut("Ada").unwrap().place = Place::Market;
+        w.agent_mut("Bo").unwrap().place = Place::Market;
+        w.agent_mut("Ada").unwrap().current_goal = "Secure winter grain".into();
+        w
+    }
+
+    #[test]
+    fn a_card_does_not_offer_the_decision_as_a_copyable_id() {
+        let w = card_world();
+        let ada = w.agent("Ada").unwrap();
+        let card = agent_card_with(&w, ada, "draw_water", 4, None, None);
+        assert!(card.contains("draw water from the well"), "{card}");
+        assert!(!card.contains("draw_water"), "{card}");
+    }
+
+    #[test]
+    fn a_place_decision_is_rendered_once_as_prose() {
+        let w = card_world();
+        let ada = w.agent("Ada").unwrap();
+        let card = agent_card_with(&w, ada, "go:market", 4, None, None);
+        assert!(card.contains("leave for market"), "{card}");
+        assert!(!card.contains("leave for leave for"), "{card}");
+        assert!(!card.contains("go:market"), "{card}");
+    }
+
+    #[test]
+    fn the_dilemma_is_rendered_as_prose_not_ids() {
+        let w = card_world();
+        let ada = w.agent("Ada").unwrap();
+        let d = Dilemma {
+            chosen: "draw_water".into(),
+            alternative: "console".into(),
+            chosen_prob: 0.33,
+            alternative_prob: 0.29,
+        };
+        let card = agent_card_with(&w, ada, "draw_water", 4, None, Some(&d));
+        assert!(
+            card.contains("you chose draw water from the well (33%)"),
+            "{card}"
+        );
+        assert!(
+            card.contains("nearly chose console someone here (29%)"),
+            "{card}"
+        );
+        assert!(!card.contains("draw_water"), "{card}");
+        assert!(!card.contains('`'), "{card}");
+    }
+
+    #[test]
+    fn the_recent_dialogue_block_asks_for_an_answer_not_a_reuse() {
+        let mut w = card_world();
+        w.push_event(Event {
+            turn: 11,
+            actor: "Bo".into(),
+            place: Place::Market,
+            kind: EventKind::Speech,
+            action: "speak".into(),
+            text: "The well is low.".into(),
+            social: None,
+            intensity: Some(2.0),
+            grounded: Some(1.0),
+            fidelity: Some(1.0),
+            divine: false,
+        });
+        let ada = w.agent("Ada").unwrap();
+        let card = agent_card_with(&w, ada, "draw_water", 4, None, None);
+        assert!(
+            card.contains("Recent speech at this place (answer them; never reuse their words):"),
+            "{card}"
+        );
+        assert!(card.contains("The well is low."), "{card}");
+    }
+
+    #[test]
+    fn the_goal_appears_exactly_once() {
+        let w = card_world();
+        let ada = w.agent("Ada").unwrap();
+        let card = agent_card_with(&w, ada, "draw_water", 4, None, None);
+        assert_eq!(card.matches("Secure winter grain").count(), 1, "{card}");
     }
 }
