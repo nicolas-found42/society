@@ -2876,9 +2876,10 @@ fn turn_meta(a: &AgentTurn) -> String {
 /// The judgment layer's labels for a turn: motive, register, addressee.
 ///
 /// `why` used to be the voice model's own rationale and is now the motive
-/// label chosen in code, so it is worth showing; `register` and `addressee`
-/// were computed but never rendered. Absent fields are omitted rather than
-/// rendered blank, which keeps a turn saved before they existed readable.
+/// label the judgment layer chose, so it is worth showing; `register` and
+/// `addressee` are derived in code and were computed but never rendered.
+/// Absent fields are omitted rather than rendered blank, which keeps a turn
+/// saved before they existed readable.
 #[must_use]
 fn turn_labels(a: &AgentTurn) -> Option<String> {
     let mut labels = Vec::new();

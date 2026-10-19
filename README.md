@@ -105,21 +105,46 @@ Two failure modes are designed around explicitly:
 ## The turn
 
 ```
-code: enumerate legal actions per living villager
-  └─ Jev: one batched request → intent + register + addressee for everyone
+code: enumerate legal actions per living villager, then a shortlist of them
+  └─ Jev: one batched request → intent + motive for everyone
       └─ voice × 9: one line each, concurrent, AIMD-capped
-          └─ Jev: one batched request → fidelity, grounding, social act, intensity
+          └─ Jev: one batched request → fidelity, grounding, social act
               └─ code: validate, apply, settle, log
 ```
+
+The register, the addressee and the intensity are not asked: they are
+meaning-free for the judge (the tone question came back "plain and neutral"
+for 38 of 45 lines while still moving trust, the pressure ordinal never
+passed 2.21 so the rumor and morale branches could not fire, and the
+addressee was asked before the line existed, so it guessed). Code derives
+them, and the motive — the one thing the judge can answer that code cannot —
+is asked instead.
+
+The judge is offered a shortlist of the legal actions, one per kind of act
+(need, social, work, rest, move) minus whatever the villager has just done
+for two turns running, instead of all of them: a menu of eighteen is not a
+choice, and an unchanging menu invites the same answer twice. A legal action
+outside the shortlist stays legal and is still accepted — the menu is a
+prompt, not the law.
+
+A line that copies the card is not spoken. The 350M model copies: given a
+card of salient strings it returns the nearest one, and that line went into
+memory and came back in the next card, so the copy repeated. So the card
+carries nothing quotable — no goal, no dialogue, none of the villager's own
+lines — and a line that still copies it is dropped: the model is asked once
+more, and if the second line copies too the villager commits silent, with no
+trust move, no social effect and no memory of a line. The feed shows the
+reason.
 
 One turn for nine villagers takes **~0.7 s** with the default LFM2.5-350M voice
 models, reasoning off, on a stock Ollama daemon (measured medians: 689 ms over
 5 turns, 408 ms per line). The old default (`qwen3:0.6b`) took ~2.0 s on the
 same daemon — not because it is 3× slower per line (124 ms solo), but because
 Ollama's default single slot serializes its nine lines; with
-`OLLAMA_NUM_PARALLEL=8` it reaches ~1.0 s. Judgment costs about **$0.0012** per
-turn; a local voice model is free. Nothing is committed until every judgment
-has landed, so a mid-turn failure leaves the world untouched.
+`OLLAMA_NUM_PARALLEL=8` it reaches ~1.0 s. Judgment costs about **$0.001** per
+turn — measured $0.00072 for the intent batch and $0.00024 for the gate, 20,759
+input tokens per turn; a local voice model is free. Nothing is committed until
+every judgment has landed, so a mid-turn failure leaves the world untouched.
 
 A line that contradicts its own decision or the world is still spoken, but is
 marked `discredited` and cannot move trust. That is what makes lying *cost*
@@ -226,6 +251,14 @@ a starving villager cannot give away their last meal, memory caps never evict a
 scar, starvation kills on the third turn and leaves scars in the survivors, a
 broken promise becomes permanent, and the judgment-state field names that
 measurement showed to be load-bearing are still present.
+
+The turn's own rules are covered too: a line that copies the card is dropped
+and the villager commits silent, the register follows the mood, the addressee
+is the villager the line names, the intensity comes from the social act and
+clears the rumor threshold, the motive survives the turn while the survival
+ladder still wins over it, the shortlist is a subset of the legal actions and
+breaks a groove, and the trimmed judgment state keeps every load-bearing field
+name.
 
 Growth and persistence are tested at the two seams that matter. Births are
 driven through the pure simulation: a fed, trusting, co-located pair has a child
