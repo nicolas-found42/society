@@ -676,15 +676,27 @@ pub fn apply(
             (true, EventKind::Transfer, Some(format!("to {target}")))
         },
         Plan::Promise { to } => {
-            if let Some(a) = w.agent_mut(actor) {
-                a.promise = Some(Promise {
-                    to: to.clone(),
-                    text: speech.to_owned(),
-                    made_turn: turn,
-                    kept: None,
-                });
+            // A promise is a speech act: without words there is no promise. The
+            // copy filter drops lines that repeat the card, so an empty speech
+            // here means the model had nothing to say and the line was
+            // discarded. Storing it anyway hangs an empty quotation in the
+            // chronicle and the next card. Do not substitute a stand-in phrase
+            // either: any string the promise carries is a string the voice model
+            // reads back out of the card and copies, which is the loop this
+            // filter exists to break.
+            if speech.trim().is_empty() {
+                (false, EventKind::Confusion, Some("promised nothing".into()))
+            } else {
+                if let Some(a) = w.agent_mut(actor) {
+                    a.promise = Some(Promise {
+                        to: to.clone(),
+                        text: speech.to_owned(),
+                        made_turn: turn,
+                        kept: None,
+                    });
+                }
+                (true, EventKind::Promise, Some(format!("to {to}")))
             }
-            (true, EventKind::Promise, Some(format!("to {to}")))
         },
         Plan::DrawWater { amount } => {
             if let Some(a) = w.agent_mut(actor) {
@@ -1046,5 +1058,44 @@ mod tests {
             .expect("the actor records their own act");
         assert_eq!(own.text, "You draw water from the well.");
         assert!(!own.text.contains("draw_water"));
+    }
+
+    #[test]
+    fn a_promise_without_words_is_a_confusion() {
+        let mut w = World::founding(307);
+        let name = w.agents[0].name.clone();
+        let place = w.agent(&name).unwrap().place;
+        let other = w.agents[1].name.clone();
+        w.agent_mut(&other).unwrap().place = place;
+        let intent = Intent::parse("promise", place).unwrap();
+        // The copy filter drops a line that repeats the card, so the speech act
+        // reaches `apply` with nothing left to say.
+        let out = apply(&mut w, &name, &intent, "   ", SocialAct::None);
+        assert!(!out.accepted);
+        assert_eq!(out.kind, EventKind::Confusion);
+        assert_eq!(out.note.as_deref(), Some("promised nothing"));
+        assert!(w.agent(&name).unwrap().promise.is_none());
+    }
+
+    #[test]
+    fn a_promise_with_words_is_kept() {
+        let mut w = World::founding(307);
+        let name = w.agents[0].name.clone();
+        let place = w.agent(&name).unwrap().place;
+        let other = w.agents[1].name.clone();
+        w.agent_mut(&other).unwrap().place = place;
+        let intent = Intent::parse("promise", place).unwrap();
+        let speech = "I will bring you grain tomorrow.";
+        let out = apply(&mut w, &name, &intent, speech, SocialAct::None);
+        assert!(out.accepted);
+        assert_eq!(out.kind, EventKind::Promise);
+        let promise = w
+            .agent(&name)
+            .unwrap()
+            .promise
+            .as_ref()
+            .expect("a spoken promise is stored");
+        assert_eq!(promise.text, speech);
+        assert_eq!(promise.to, other);
     }
 }
