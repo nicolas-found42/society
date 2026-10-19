@@ -295,7 +295,6 @@ pub fn mark_reset(world: &mut World, cause: &str) {
         social: None,
         intensity: None,
         grounded: None,
-        fidelity: None,
         divine: true,
     });
 }
@@ -400,7 +399,6 @@ mod tests {
             social: None,
             intensity: Some(3.5),
             grounded: None,
-            fidelity: None,
             divine: false,
         });
         w

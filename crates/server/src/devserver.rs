@@ -16,9 +16,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use society_sim::{Event, World};
 
-use crate::engine::{Engine, EngineError, TurnRecord};
 use crate::inference::judgment::Judge;
 use crate::inference::voice::Voice;
+use crate::legacy::{Engine, EngineError, TurnRecord};
 
 pub const DEFAULT_PORT: u16 = 8100;
 
@@ -132,7 +132,7 @@ fn world_snapshot(w: &World) -> Value {
             value["id"] = json!(p.id());
             value["adjacent"] = json!(p.adjacent().iter().map(|q| q.id()).collect::<Vec<_>>());
             value["present"] = json!(w.living().filter(|a| a.place == *p).map(|a| a.name.clone()).collect::<Vec<_>>());
-            value["recent_dialogue"] = json!(crate::engine::recent_place_dialogue(w, *p, 4));
+            value["recent_dialogue"] = json!(crate::legacy::recent_place_dialogue(w, *p, 4));
             value
         }).collect::<Vec<_>>(),
         "social": build_social_fabric(w),
@@ -259,7 +259,7 @@ async fn place_detail(
         .filter(|a| a.place == *place)
         .map(agent_snapshot)
         .collect::<Vec<_>>());
-    value["recent_dialogue"] = json!(crate::engine::recent_place_dialogue(&w, *place, 10));
+    value["recent_dialogue"] = json!(crate::legacy::recent_place_dialogue(&w, *place, 10));
     Ok(Json(value))
 }
 
@@ -274,7 +274,7 @@ async fn agent_detail(
     let w = s.world.lock().await;
     let a = w.agent(&name).ok_or(StatusCode::NOT_FOUND)?;
     let mut value = agent_snapshot(a);
-    value["judgment_state"] = crate::engine::enrich_judgment_state(&w, a);
+    value["judgment_state"] = crate::legacy::enrich_judgment_state(&w, a);
     Ok(Json(value))
 }
 
@@ -483,7 +483,6 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
                 social: None,
                 intensity: None,
                 grounded: None,
-                fidelity: None,
                 divine: true,
             });
             (StatusCode::OK, json!({"ok": true, "injected": "whisper"}))
@@ -518,7 +517,6 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
                 social: None,
                 intensity: None,
                 grounded: None,
-                fidelity: None,
                 divine: true,
             });
             (
@@ -545,7 +543,6 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
                 social: None,
                 intensity: None,
                 grounded: None,
-                fidelity: None,
                 divine: true,
             });
             (
@@ -597,7 +594,6 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
                 social: Some(society_sim::SocialAct::Gossip.id().into()),
                 intensity: Some(3.2),
                 grounded: None,
-                fidelity: None,
                 divine: true,
             });
             (
@@ -659,7 +655,6 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
                 social: None,
                 intensity: Some(3.0),
                 grounded: None,
-                fidelity: None,
                 divine: true,
             });
             (
@@ -721,7 +716,6 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
                 social: None,
                 intensity: Some(3.0),
                 grounded: None,
-                fidelity: None,
                 divine: true,
             });
             (
@@ -769,7 +763,6 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
                 social: None,
                 intensity: None,
                 grounded: None,
-                fidelity: None,
                 divine: true,
             });
             (

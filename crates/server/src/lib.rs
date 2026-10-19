@@ -11,13 +11,13 @@
 
 pub mod copy;
 pub mod devserver;
-pub mod engine;
 pub mod inference;
+pub mod legacy;
 pub mod persistence;
 
 pub use devserver::{build_social_fabric, AppState, DEFAULT_PORT};
-pub use engine::{Engine, EngineError, TurnRecord};
 pub use inference::{Dilemma, Judge, Judgment, JudgmentError, Voice, VoiceConfig, VoiceError};
+pub use legacy::{Engine, EngineError, TurnRecord};
 pub use persistence::{SaveError, SaveSummary, SAVE_VERSION};
 
 use std::path::Path;

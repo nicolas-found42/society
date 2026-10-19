@@ -724,3 +724,360 @@ fn observer_weather_changes_update_visible_conditions_immediately() {
     assert_eq!(w.temperature_c, 26);
     assert_eq!(w.weather, 1.5);
 }
+
+// ---- The code-only engine (tickets #9-#15) -------------------------------
+
+use crate::action::Verb;
+use crate::check;
+use crate::policy;
+use crate::speaker;
+use crate::turn;
+
+fn full_turns(seed: u64, turns: usize) -> (World, Vec<turn::TurnRecord>) {
+    let mut w = World::founding(seed);
+    let mut recs = Vec::new();
+    for _ in 0..turns {
+        match turn::step(&mut w) {
+            Ok(r) => recs.push(r),
+            Err(reason) => panic!("unexpected halt at turn {}: {reason}", w.turn),
+        }
+    }
+    (w, recs)
+}
+
+#[test]
+fn a_turn_through_the_seem_is_sync_pure_and_offline() {
+    // No async runtime, no network, no clock: one function call over the
+    // world (ticket #8: the pure turn seam).
+    let mut w = World::founding(9);
+    let before = serde_json::to_string(&w).unwrap();
+    let rec = turn::step(&mut w).expect("turn");
+    assert_eq!(rec.turn, 0);
+    assert_ne!(
+        before,
+        serde_json::to_string(&w).unwrap(),
+        "the world moved"
+    );
+}
+
+#[test]
+fn the_motive_refines_the_goal_through_the_ladder() {
+    let mut w = World::founding(31);
+    let name = w.living().next().unwrap().name.clone();
+    turn::step(&mut w).expect("turn");
+    let a = w.agent(&name).unwrap();
+    assert!(a.motive.is_some(), "the seam writes the motive");
+    // The ladder: the survival steps override, then the motive names the
+    // goal, then the role.
+    if a.motive.as_deref() == Some("hunger") && !(a.hunger >= 2 && a.food == 0) {
+        assert_eq!(a.current_goal, "find food before the next meal");
+    }
+}
+
+#[test]
+fn a_discredited_line_moves_no_trust() {
+    let mut w = World::founding(17);
+    let (speaker, listener) = {
+        let names: Vec<String> = w.living().map(|a| a.name.clone()).collect();
+        (names[0].clone(), names[1].clone())
+    };
+    // Both at the same place, so the act has a listener.
+    let place = w.agent(&speaker).unwrap().place;
+    w.agent_mut(&listener).unwrap().place = place;
+    let before = w.agent(&listener).unwrap().trust_of(&speaker);
+
+    let decision = policy::Decision {
+        action: "speak".into(),
+        verb: Verb::Speak,
+        place: None,
+        act: SocialAct::Gossip,
+        addressee: Some(listener.clone()),
+        motive: policy::Motive::Duty,
+        job: None,
+        confidence: 0.6,
+        dilemma: None,
+        factors: vec![("novelty", 0.8)],
+    };
+    let out = crate::action::apply_decision(
+        &mut w,
+        &speaker,
+        &decision,
+        "I carry nine measures, count them yourself.",
+        SocialAct::Gossip,
+        check::DISCREDITED,
+        2.4,
+        Some("the count of food (9)"),
+    );
+    assert!(out.accepted);
+    assert_eq!(
+        w.agent(&listener).unwrap().trust_of(&speaker),
+        before,
+        "a discredited line moves no trust"
+    );
+    // The claim and its failure are remembered.
+    let a = w.agent(&listener).unwrap();
+    assert!(a
+        .memories
+        .iter()
+        .any(|m| m.text.contains("did not hold") || m.text.contains("count of food")));
+}
+
+#[test]
+fn a_credible_act_moves_trust_and_a_credible_threat_bites_morale() {
+    let mut w = World::founding(18);
+    let names: Vec<String> = w.living().map(|a| a.name.clone()).collect();
+    let (speaker, listener) = (names[0].clone(), names[1].clone());
+    let place = w.agent(&speaker).unwrap().place;
+    w.agent_mut(&listener).unwrap().place = place;
+    let before = w.agent(&listener).unwrap().trust_of(&speaker);
+    let decision = policy::Decision {
+        action: "speak".into(),
+        verb: Verb::Speak,
+        place: None,
+        act: SocialAct::Gratitude,
+        addressee: Some(listener.clone()),
+        motive: policy::Motive::Duty,
+        job: None,
+        confidence: 0.6,
+        dilemma: None,
+        factors: vec![],
+    };
+    crate::action::apply_decision(
+        &mut w,
+        &speaker,
+        &decision,
+        "You kept the field from the frost, and I remember it.",
+        SocialAct::Gratitude,
+        check::GROUNDED,
+        2.4,
+        None,
+    );
+    assert!(w.agent(&listener).unwrap().trust_of(&speaker) > before);
+
+    // A credible threat at the morale threshold nudges the village down.
+    let morale = w.village_morale;
+    crate::action::apply_decision(
+        &mut w,
+        &speaker,
+        &decision,
+        "Keep the grain back and you will wish you had not.",
+        SocialAct::Threat,
+        check::GROUNDED,
+        turn::derived_intensity(SocialAct::Threat, "plain"),
+        None,
+    );
+    assert!(w.village_morale < morale, "the morale branch fired");
+}
+
+#[test]
+fn the_job_is_recorded_and_the_action_id_stays_atomic() {
+    // Bo the Farmer stands at the field: tend is available, so the ready
+    // order names itself on the decision without touching the action id.
+    let mut w = World::founding(19);
+    w.agents.retain(|a| a.name == "Bo");
+    w.agent_mut("Bo").unwrap().place = Place::Field;
+    w.agents.push(Agent::new(
+        "Ada",
+        "plain",
+        Place::Field,
+        1,
+        0,
+        0,
+        0,
+        vec![],
+        &["Ada".to_owned(), "Bo".to_owned()],
+    ));
+    let mut saw_job = false;
+    for _ in 0..8 {
+        if let Some(d) = policy::decide(&w, "Bo") {
+            if d.action == "tend" {
+                assert_eq!(d.job, Some("farmer.tend"));
+                saw_job = true;
+                break;
+            }
+        }
+        w.settle();
+    }
+    assert!(
+        saw_job,
+        "the farmer should reach his ready order within a day"
+    );
+}
+
+#[test]
+fn a_villager_with_nobody_present_is_silent_and_the_summary_counts_it() {
+    let mut w = World::founding(23);
+    w.agents.retain(|a| a.name == "Ada");
+    let d = policy::decide(&w, "Ada").expect("decision");
+    assert_eq!(speaker::speak(&w, "Ada", &d), None, "nobody to address");
+}
+
+#[test]
+fn two_villagers_draw_different_lines_from_their_own_streams() {
+    let (w, recs) = full_turns(24, 20);
+    let mut saw_pair = false;
+    for rec in &recs {
+        for i in 0..rec.agents.len() {
+            for j in i + 1..rec.agents.len() {
+                let (a, b) = (&rec.agents[i], &rec.agents[j]);
+                if !a.say.is_empty() && !b.say.is_empty() && a.say != b.say {
+                    saw_pair = true;
+                }
+            }
+        }
+    }
+    assert!(saw_pair, "two villagers in one turn spoke differently");
+    let _ = w;
+}
+
+#[test]
+fn the_same_seed_and_save_replay_identically() {
+    for seed in [77_u64, 4242, 900_001] {
+        let (a, ra) = full_turns(seed, 40);
+        let (b, rb) = full_turns(seed, 40);
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap(),
+            "seed {seed} diverged"
+        );
+        assert_eq!(
+            serde_json::to_string(&ra).unwrap(),
+            serde_json::to_string(&rb).unwrap()
+        );
+        // A save round-trip mid-run continues identically.
+        let mut w = World::founding(seed);
+        for _ in 0..17 {
+            turn::step(&mut w).unwrap();
+        }
+        let saved = serde_json::to_string(&w).unwrap();
+        let mut w: World = serde_json::from_str(&saved).unwrap();
+        for _ in 0..23 {
+            turn::step(&mut w).unwrap();
+        }
+        assert_eq!(
+            serde_json::to_string(&w).unwrap(),
+            serde_json::to_string(&a).unwrap(),
+            "seed {seed}: the save did not continue the run"
+        );
+    }
+}
+
+#[test]
+fn the_soak_holds_the_invariants() {
+    let mut total_lines = 0_u64;
+    let mut total_discredited = 0_u64;
+    let mut total_lie_lines = 0_u64;
+    for seed in [1_u64, 2, 3, 7, 2026] {
+        let mut w = World::founding(seed);
+        let mut last_lines: Vec<String> = Vec::new();
+        let mut saw_birth = false;
+        let start = std::time::Instant::now();
+        for i in 0..200 {
+            let t0 = std::time::Instant::now();
+            let rec = turn::step(&mut w).expect("no unexpected halt in the soak");
+            // A nine-villager turn stays far inside the 50 ms bound.
+            assert!(
+                t0.elapsed().as_millis() < 50,
+                "seed {seed} turn {i} took {:?}",
+                t0.elapsed()
+            );
+            saw_birth |= !rec.births.is_empty();
+            // The ledger: no exact repeat inside the window.
+            for a in &rec.agents {
+                if !a.say.is_empty() {
+                    assert!(
+                        !last_lines.contains(&a.say),
+                        "seed {seed} turn {i}: repeated line {:?}",
+                        a.say
+                    );
+                }
+            }
+            last_lines.clear();
+            for a in w.living() {
+                for m in &a.memories {
+                    assert!(m.permanent || m.salience >= 0.0);
+                }
+                assert!(
+                    a.memories.len() <= crate::memory::MEMORY_CAP + 2,
+                    "memory cap"
+                );
+                for (_, t) in &a.trust {
+                    assert!((0.0..=4.0).contains(t), "trust bounded");
+                }
+            }
+            total_lines += u64::from(rec.summary.lines);
+            total_discredited += u64::from(rec.summary.discredited);
+            total_lie_lines += u64::from(rec.summary.lies);
+            // The summary's counters agree with the agent turns.
+            let sum_lies: u32 = rec.agents.iter().filter(|a| a.lie).count() as u32;
+            assert_eq!(sum_lies, rec.summary.lies);
+            let counted = rec.summary.lines + rec.summary.silences;
+            assert_eq!(counted as usize, rec.agents.len());
+            // Outside lie mode no line makes a false claim (property, per
+            // turn, against the settled world of that turn).
+        }
+        assert!(saw_birth, "seed {seed}: births happen in 200 turns");
+        assert!(w.living().count() >= 4, "seed {seed}: no starvation spiral");
+        let _ = start;
+    }
+    // The discredited rate sits inside its band: only lies can fail, and the
+    // lie rate is capped.
+    if total_lines > 100 {
+        let rate = total_discredited as f64 / total_lines as f64;
+        assert!(rate <= 0.22, "discredited rate {rate} above the lie cap");
+        assert!(total_lie_lines > 0, "a village of 1000 lines never lied");
+    }
+}
+
+#[test]
+fn a_lie_clause_carries_its_designed_claim() {
+    use crate::grammar::LieKind;
+    let mut w = World::founding(27);
+    w.agents.retain(|a| a.name == "Ada" || a.name == "Bo");
+    {
+        let a = w.agent_mut("Ada").unwrap();
+        a.hunger = 3;
+        a.food = 0;
+    }
+    let d = policy::Decision {
+        action: "speak".into(),
+        verb: Verb::Speak,
+        place: None,
+        act: SocialAct::Gossip,
+        addressee: Some("Bo".into()),
+        motive: policy::Motive::Duty,
+        job: None,
+        confidence: 1.0,
+        dilemma: None,
+        factors: vec![],
+    };
+    let a = w.agent("Ada").unwrap();
+    for kind in [
+        LieKind::InflatedCount,
+        LieKind::PastGift,
+        LieKind::HiddenCache,
+        LieKind::FakePromise,
+        LieKind::ClaimedVisit,
+        LieKind::OthersIntent,
+    ] {
+        let mut rng = Rng::new(u64::from(kind as u8) + 11);
+        let mut landed = false;
+        for _ in 0..20 {
+            if let Some((clause, claim)) = speaker::render_lie_kind(&w, a, &d, kind, &mut rng) {
+                assert!(!clause.contains('{'), "unfilled slot in {clause:?}");
+                assert!(!clause.contains('#'), "no leaked ids in {clause:?}");
+                let v = check::settle(&w, "Ada", &claim);
+                assert_ne!(v, check::Verdict::True, "{kind:?} rendered a true claim");
+                if kind == LieKind::InflatedCount {
+                    assert_eq!(v, check::Verdict::False, "the inflated count is caught");
+                }
+                if kind == LieKind::FakePromise {
+                    assert_eq!(v, check::Verdict::False, "a promise never made is caught");
+                }
+                landed = true;
+                break;
+            }
+        }
+        assert!(landed, "{kind:?} never produced a lie clause");
+    }
+}

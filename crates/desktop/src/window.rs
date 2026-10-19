@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 use egui::{Color32, RichText};
-use society_server::engine::AgentTurn;
+use society_server::legacy::AgentTurn;
 use society_server::{AppState, TurnRecord};
 use society_sim::{Agent, Event, EventKind, Place, PlaceState, World};
 
@@ -342,7 +342,6 @@ pub(crate) fn apply_village_systems(w: &mut World) -> usize {
             social: Some("communal".into()),
             intensity: Some(0.85),
             grounded: Some(1.0),
-            fidelity: Some(1.0),
             divine: false,
         });
     }
@@ -389,7 +388,6 @@ pub(crate) fn apply_village_systems(w: &mut World) -> usize {
                     social: Some("altruistic".into()),
                     intensity: Some(0.65),
                     grounded: Some(1.0),
-                    fidelity: Some(1.0),
                     divine: false,
                 });
             }
@@ -418,7 +416,6 @@ pub(crate) fn apply_village_systems(w: &mut World) -> usize {
                     social: Some("supportive".into()),
                     intensity: Some(0.60),
                     grounded: Some(1.0),
-                    fidelity: Some(1.0),
                     divine: false,
                 });
             }
@@ -473,7 +470,6 @@ pub(crate) fn apply_village_systems(w: &mut World) -> usize {
                     social: Some("caring".into()),
                     intensity: Some(0.70),
                     grounded: Some(1.0),
-                    fidelity: Some(1.0),
                     divine: false,
                 });
                 break;
@@ -550,7 +546,6 @@ pub(crate) fn apply_village_systems(w: &mut World) -> usize {
                 social: Some("mentorship".into()),
                 intensity: Some(0.55),
                 grounded: Some(1.0),
-                fidelity: Some(1.0),
                 divine: false,
             });
         }
@@ -1225,7 +1220,6 @@ impl App {
                         social: Some("civic".into()),
                         intensity: Some(0.9),
                         grounded: Some(1.0),
-                        fidelity: Some(1.0),
                         divine: true,
                     });
                     self.status = "rang parish bell — villagers gathered at Market".into();
@@ -1249,7 +1243,6 @@ impl App {
                         social: Some("celebration".into()),
                         intensity: Some(0.95),
                         grounded: Some(1.0),
-                        fidelity: Some(1.0),
                         divine: true,
                     });
                     self.status = "held grand parish feast".into();
@@ -1273,7 +1266,6 @@ impl App {
                         social: Some("mercantile".into()),
                         intensity: Some(0.8),
                         grounded: Some(1.0),
-                        fidelity: Some(1.0),
                         divine: true,
                     });
                     self.status = "merchant caravan supplied the village".into();
@@ -1297,7 +1289,6 @@ impl App {
                         social: Some("sacred".into()),
                         intensity: Some(1.0),
                         grounded: Some(1.0),
-                        fidelity: Some(1.0),
                         divine: true,
                     });
                     self.status = "blessed the village shrine".into();
@@ -1319,7 +1310,6 @@ impl App {
                         social: Some("healing".into()),
                         intensity: Some(0.9),
                         grounded: Some(1.0),
-                        fidelity: Some(1.0),
                         divine: true,
                     });
                     self.status = "cured village ailments".into();
@@ -1347,7 +1337,6 @@ impl App {
                 social: Some("providence".into()),
                 intensity: Some(0.85),
                 grounded: Some(1.0),
-                fidelity: Some(1.0),
                 divine: true,
             });
             self.custom_event_text.clear();
@@ -2860,10 +2849,9 @@ fn fmt(v: Option<f32>) -> String {
 #[must_use]
 fn turn_meta(a: &AgentTurn) -> String {
     let base = format!(
-        "{} · social {} · fidelity {} · grounded {} · intensity {}",
+        "{} · social {} · grounded {} · intensity {}",
         if a.accepted { "Accepted" } else { "Rejected" },
         humanize(&a.social),
-        fmt(a.fidelity),
         fmt(a.grounded),
         fmt(a.intensity)
     );
@@ -3253,7 +3241,6 @@ mod tests {
                 social: None,
                 intensity: None,
                 grounded: None,
-                fidelity: None,
                 divine: false,
             });
         }
@@ -3318,7 +3305,6 @@ mod tests {
                 say: say.into(),
                 why: "hunger".into(),
                 social: "speak".into(),
-                fidelity: Some(0.8),
                 grounded: Some(0.7),
                 intensity: Some(1.5),
                 confidence: Some(0.9),
@@ -3345,7 +3331,6 @@ mod tests {
             say: String::new(),
             why: "hunger".into(),
             social: "speak".into(),
-            fidelity: Some(0.8),
             grounded: Some(0.7),
             intensity: Some(1.5),
             confidence: Some(0.9),
@@ -3409,7 +3394,7 @@ mod tests {
         let turn = silent_turn(Some("silent"));
         assert_eq!(
             turn_meta(&turn),
-            "Accepted · social Speak · fidelity 0.80 · grounded 0.70 · intensity 1.50 \
+            "Accepted · social Speak · grounded 0.70 · intensity 1.50 \
              · Motive: hunger · Register: wary and guarded · To: Bo"
         );
         let mut bare = turn;
@@ -3418,7 +3403,7 @@ mod tests {
         bare.addressee = None;
         assert_eq!(
             turn_meta(&bare),
-            "Accepted · social Speak · fidelity 0.80 · grounded 0.70 · intensity 1.50"
+            "Accepted · social Speak · grounded 0.70 · intensity 1.50"
         );
     }
 }

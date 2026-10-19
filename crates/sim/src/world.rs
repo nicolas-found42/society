@@ -662,6 +662,10 @@ pub struct Agent {
     pub facts: Vec<Fact>,
     #[serde(default)]
     pub reflection_poignancy: f32,
+    /// Recently spoken lines with their turns. The speaker's ledger forbids
+    /// an exact repeat inside its window (spec constants: six turns).
+    #[serde(default)]
+    pub line_ledger: Vec<(u64, String)>,
 }
 
 const fn default_energy() -> u8 {
@@ -767,6 +771,7 @@ impl Agent {
             beliefs: Vec::new(),
             facts: Vec::new(),
             reflection_poignancy: 0.0,
+            line_ledger: Vec::new(),
         }
     }
 
@@ -1048,8 +1053,6 @@ pub struct Event {
     pub intensity: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grounded: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub fidelity: Option<f32>,
     pub divine: bool,
 }
 
@@ -1263,7 +1266,6 @@ impl World {
             social: None,
             intensity: None,
             grounded: None,
-            fidelity: None,
             divine: false,
         });
         w
@@ -1453,7 +1455,6 @@ impl World {
                 social: None,
                 intensity: Some(4.0),
                 grounded: None,
-                fidelity: None,
                 divine: false,
             });
             for other in self.agents.iter_mut().filter(|a| a.alive && a.name != name) {
@@ -1628,7 +1629,6 @@ impl World {
             social: None,
             intensity: Some(3.5),
             grounded: None,
-            fidelity: None,
             divine: false,
         });
         for (parent, other) in [(&mother, &father), (&father, &mother)] {
@@ -1664,7 +1664,6 @@ impl World {
             social: None,
             intensity: None,
             grounded: None,
-            fidelity: None,
             divine: false,
         });
     }

@@ -80,7 +80,6 @@ pub struct AgentTurn {
     /// writes a rationale.
     pub why: String,
     pub social: String,
-    pub fidelity: Option<f32>,
     pub grounded: Option<f32>,
     pub intensity: Option<f32>,
     pub confidence: Option<f32>,
@@ -753,7 +752,6 @@ impl Engine {
             if let Some(e) = world.events.last_mut() {
                 e.intensity = verdict.intensity;
                 e.grounded = verdict.grounded;
-                e.fidelity = verdict.fidelity;
             }
 
             if verdict.credible {
@@ -1214,7 +1212,6 @@ async fn speak_checked(
 
 /// One villager's gate readings and what they mean for the record.
 struct TurnVerdict {
-    fidelity: Option<f32>,
     grounded: Option<f32>,
     intensity: Option<f32>,
     /// The social act credited to the turn; `None` when it is discredited.
@@ -1255,7 +1252,6 @@ fn turn_verdict(
 ) -> TurnVerdict {
     if dropped {
         return TurnVerdict {
-            fidelity: Some(0.0),
             grounded: None,
             intensity: None,
             social: SocialAct::None,
@@ -1269,12 +1265,11 @@ fn turn_verdict(
         .and_then(|j| j.choice().map(SocialAct::from_id))
         .unwrap_or(SocialAct::None);
     let q = |t: Option<f32>| t.map(|x| (x * 100.0).round() / 100.0);
-    let fidelity = q(gate.get(&format!("fidelity_{name}")).and_then(|j| j.noul()));
     let grounded = q(gate.get(&format!("grounded_{name}")).and_then(|j| j.noul()));
 
     // A line that contradicts its own decision or the world is spoken but not
     // credited: it cannot move trust.
-    let credible = fidelity.is_none_or(|f| f >= 0.5) && grounded.is_none_or(|g| g >= 0.4);
+    let credible = grounded.is_none_or(|g| g >= 0.4);
     // The intensity follows the act the judge answered plus the tone code
     // already knows; it is not a separate judgment. It is read before the
     // credibility substitution so the record and the event describe the line
@@ -1283,7 +1278,6 @@ fn turn_verdict(
     let intensity = spoken.then(|| derived_intensity(social, register));
     let social = if credible { social } else { SocialAct::None };
     TurnVerdict {
-        fidelity,
         grounded,
         intensity,
         social,
@@ -1366,7 +1360,6 @@ fn agent_turn_record(
         // motive label, not a rationale the voice model wrote.
         why: motive,
         social: verdict.social_label.clone(),
-        fidelity: verdict.fidelity,
         grounded: verdict.grounded,
         intensity: verdict.intensity,
         confidence: Some(confidence),
@@ -1550,7 +1543,6 @@ fn settle_village_promises(world: &mut World) {
             social: None,
             intensity: Some(2.8),
             grounded: Some(1.0),
-            fidelity: Some(1.0),
             divine: false,
         });
     }
@@ -1991,7 +1983,6 @@ mod tests {
             social: None,
             intensity: Some(3.0),
             grounded: Some(1.0),
-            fidelity: Some(1.0),
             divine: false,
         });
 
@@ -2237,7 +2228,6 @@ mod tests {
             social: None,
             intensity: Some(2.0),
             grounded: Some(1.0),
-            fidelity: Some(1.0),
             divine: false,
         });
         let ada = w.agent("Ada").unwrap();
@@ -2335,7 +2325,6 @@ mod tests {
             social: None,
             intensity: Some(2.0),
             grounded: Some(1.0),
-            fidelity: Some(1.0),
             divine: false,
         });
         let a = w.agent("Ada").unwrap();
@@ -2368,7 +2357,6 @@ mod tests {
             social: None,
             intensity: Some(2.0),
             grounded: Some(1.0),
-            fidelity: Some(1.0),
             divine: false,
         });
         let copy = sources_for(&w, "Ada", "draw_water");
@@ -2421,9 +2409,7 @@ mod tests {
         let intent = Intent::parse("draw_water", Place::Well).unwrap();
         let outcome = apply(&mut w, "Ada", &intent, "", verdict.social);
         let event = w.events.last_mut().unwrap();
-        event.fidelity = verdict.fidelity;
         let event_text = event.text.clone();
-        let event_fidelity = event.fidelity;
 
         let record = agent_turn_record(
             "Ada".into(),
@@ -2444,7 +2430,6 @@ mod tests {
         );
 
         assert_eq!(record.say, "");
-        assert_eq!(record.fidelity, Some(0.0));
         assert_eq!(record.social, "discredited");
         assert_eq!(record.note.as_deref(), Some(DROPPED_LINE_NOTE));
         assert_eq!(record.action, "draw_water");
@@ -2457,7 +2442,6 @@ mod tests {
         // prose, not a line.
         assert!(record.accepted);
         assert_eq!(event_text, "");
-        assert_eq!(event_fidelity, Some(0.0));
         assert!(w
             .agent("Ada")
             .unwrap()

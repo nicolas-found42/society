@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
+use crate::check;
 use crate::memory::{Memory, MemoryKind};
 use crate::world::{Agent, Event, EventKind, Place, Promise, Season, World};
 
@@ -255,16 +256,14 @@ pub fn affordances(w: &World, a: &Agent) -> Vec<String> {
     v
 }
 
+/// How many turns back the novelty term looks (spec constants: "Novelty
+/// window 3 turns - existing groove-breaker").
+pub const NOVELTY_WINDOW: u64 = 3;
+
 /// The kinds of act the shortlist covers. The category decides what the menu
-/// represents, never how much a given action is worth.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Category {
-    Need,
-    Social,
-    Work,
-    Rest,
-    Move,
-}
+/// represents, never how much a given action is worth. The mapping itself is
+/// the action metadata table's; this alias keeps the shortlist's vocabulary.
+type Category = crate::catalog::Category;
 
 /// Every category, in the order the shortlist renders, so the criteria order
 /// is stable for a given state.
@@ -275,25 +274,6 @@ const CATEGORIES: [Category; 5] = [
     Category::Rest,
     Category::Move,
 ];
-
-impl Category {
-    fn of(action: &str) -> Self {
-        if action.starts_with("go:") {
-            return Self::Move;
-        }
-        match action {
-            "take" | "forage" | "draw_water" | "steal" => Self::Need,
-            // `give` is social: leaving it out of the table would make giving
-            // food unreachable from the judgment layer.
-            "speak" | "help" | "console" | "accuse" | "promise" | "give" => Self::Social,
-            "rest" => Self::Rest,
-            // chop, gather_herbs, craft, tend, heal, trade, pray, repair. The
-            // fallthrough keeps a newly legal work action represented without
-            // editing this table.
-            _ => Self::Work,
-        }
-    }
-}
 
 /// The action ids `name` took in the last three turns and in the last two,
 /// read out of the world's own event log: the world already records what
@@ -343,7 +323,7 @@ pub fn shortlist(w: &World, a: &Agent) -> Vec<String> {
 
     let mut chosen: Vec<String> = Vec::new();
     for category in CATEGORIES {
-        if let Some(rep) = representative(&legal, category, a, &recent_three) {
+        if let Some(rep) = representative(w, &legal, category, a, &recent_three) {
             chosen.push(rep);
         }
     }
@@ -369,10 +349,9 @@ pub fn shortlist(w: &World, a: &Agent) -> Vec<String> {
         if first_fresh.is_none() {
             first_fresh = Some(action.clone());
         }
-        if !chosen
-            .iter()
-            .any(|c| Category::of(c) == Category::of(action))
-        {
+        if !chosen.iter().any(|c| {
+            crate::catalog::meta_for(c).category == crate::catalog::meta_for(action).category
+        }) {
             new_option = Some(action.clone());
             break;
         }
@@ -393,6 +372,7 @@ pub fn shortlist(w: &World, a: &Agent) -> Vec<String> {
 /// One legal action of `category`: the first one the villager has not taken in
 /// the last three turns, else the first legal one.
 fn representative(
+    w: &World,
     legal: &[String],
     category: Category,
     a: &Agent,
@@ -400,10 +380,28 @@ fn representative(
 ) -> Option<String> {
     let options: Vec<&String> = legal
         .iter()
-        .filter(|action| Category::of(action) == category)
+        .filter(|action| crate::catalog::meta_for(action).category == category)
         .collect();
     if options.is_empty() {
         return None;
+    }
+
+    // A work order waiting here is the work representative: the villager's
+    // profession names what their hands are for, and the shortlist should
+    // show that one rather than the first work verb in list order.
+    if category == Category::Work {
+        if let Some(order) = crate::profession::available_orders(w, a).iter().find(|o| {
+            options
+                .iter()
+                .any(|action| Intent::parse(action, a.place).is_some_and(|i| i.verb == o.verb))
+        }) {
+            if let Some(action) = options
+                .iter()
+                .find(|action| Intent::parse(action, a.place).is_some_and(|i| i.verb == order.verb))
+            {
+                return Some((*action).clone());
+            }
+        }
     }
 
     // Survival is code's business, so the need representative is checked
@@ -575,7 +573,7 @@ enum Plan {
     clippy::too_many_lines,
     reason = "one sequential rule table; splitting hides the order"
 )]
-fn plan(w: &World, actor: &str, intent: &Intent) -> Plan {
+fn plan(w: &World, actor: &str, intent: &Intent, target: Option<&str>, yield_mult: f32) -> Plan {
     let Some(a) = w.agent(actor) else {
         return Plan::Rejected("no such agent".into());
     };
@@ -622,7 +620,7 @@ fn plan(w: &World, actor: &str, intent: &Intent) -> Plan {
             if place.can_harvest() {
                 let tool_bonus = u32::from(a.tools > 0 && a.skills.farming >= 3);
                 let base = if w.weather > 1.1 { 2 } else { 1 };
-                let yield_ = base + tool_bonus;
+                let yield_ = (((base + tool_bonus) as f32) * yield_mult).round().max(1.0) as u32;
                 Plan::Transfer {
                     food_after_carried: a.food + yield_,
                     food_after_here: here.food,
@@ -642,7 +640,10 @@ fn plan(w: &World, actor: &str, intent: &Intent) -> Plan {
                 Plan::Rejected("nobody here".into())
             } else {
                 Plan::Give {
-                    target: others[0].clone(),
+                    target: target
+                        .filter(|t| others.iter().any(|o| o == t))
+                        .unwrap_or_else(|| others[0].as_str())
+                        .to_owned(),
                 }
             }
         },
@@ -658,7 +659,10 @@ fn plan(w: &World, actor: &str, intent: &Intent) -> Plan {
                 Plan::Rejected("nobody here".into())
             } else {
                 Plan::Promise {
-                    to: others[0].clone(),
+                    to: target
+                        .filter(|t| others.iter().any(|o| o == t))
+                        .unwrap_or_else(|| others[0].as_str())
+                        .to_owned(),
                 }
             }
         },
@@ -679,11 +683,12 @@ fn plan(w: &World, actor: &str, intent: &Intent) -> Plan {
             } else if here.wood == 0 {
                 Plan::Rejected("no fallen timber left".into())
             } else {
-                let amount = if a.tools > 0 || a.skills.forestry >= 2 {
+                let base_amount = if a.tools > 0 || a.skills.forestry >= 2 {
                     here.wood.min(2)
                 } else {
                     1
                 };
+                let amount = ((base_amount as f32) * yield_mult).round().max(1.0) as u32;
                 Plan::Chop { amount }
             }
         },
@@ -693,11 +698,12 @@ fn plan(w: &World, actor: &str, intent: &Intent) -> Plan {
             } else if here.herbs == 0 {
                 Plan::Rejected("herbs are depleted here".into())
             } else {
-                let amount = if a.skills.herbalism >= 2 {
+                let base_amount = if a.skills.herbalism >= 2 {
                     here.herbs.min(2)
                 } else {
                     1
                 };
+                let amount = ((base_amount as f32) * yield_mult).round().max(1.0) as u32;
                 Plan::GatherHerbs { amount }
             }
         },
@@ -782,7 +788,10 @@ fn plan(w: &World, actor: &str, intent: &Intent) -> Plan {
                 Plan::Rejected("nobody here to console".into())
             } else {
                 Plan::Console {
-                    target: others[0].clone(),
+                    target: target
+                        .filter(|t| others.iter().any(|o| o == t))
+                        .unwrap_or_else(|| others[0].as_str())
+                        .to_owned(),
                 }
             }
         },
@@ -791,6 +800,9 @@ fn plan(w: &World, actor: &str, intent: &Intent) -> Plan {
 
 /// Validate and apply one intent. Returns what was committed. Speech is passed
 /// in because rendering already happened; this only moves state.
+///
+/// The legacy path: no addressee override, no job quality, and a line the
+/// check has not seen. The turn seam uses [`apply_decision`].
 ///
 /// # Panics
 ///
@@ -806,8 +818,90 @@ pub fn apply(
     speech: &str,
     social: SocialAct,
 ) -> Outcome {
+    apply_resolved(
+        w,
+        actor,
+        intent,
+        None,
+        speech,
+        social,
+        check::GROUNDED,
+        None,
+        None,
+        1.0,
+    )
+}
+
+/// The turn seam's apply: the decision's addressee is the target when the
+/// verb works on a person, the job's quality scales the yield, and the
+/// check's verdict gates the act's trust.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct slice of the decided turn"
+)]
+pub fn apply_decision(
+    w: &mut World,
+    actor: &str,
+    decision: &crate::policy::Decision,
+    speech: &str,
+    social: SocialAct,
+    grounded: f32,
+    intensity: f32,
+    failing: Option<&str>,
+) -> Outcome {
+    let intent = Intent {
+        action: decision.action.clone(),
+        verb: decision.verb,
+        place: decision.place,
+    };
+    // The job's quality makes a tenth more yield per point above three.
+    let job_mult = decision.job.map_or(1.0, |_| {
+        w.agent(actor).map_or(1.0, |a| {
+            crate::profession::yield_multiplier(crate::profession::maker_quality(a))
+        })
+    });
+    // The motive is written to the villager so the goal ladder refines the
+    // goal with it in the same refresh (ticket #9).
+    let motive = decision.motive.id().to_owned();
+    if let Some(a) = w.agent_mut(actor) {
+        a.motive = Some(motive);
+    }
+    apply_resolved(
+        w,
+        actor,
+        &intent,
+        decision.addressee.as_deref(),
+        speech,
+        social,
+        grounded,
+        Some(intensity),
+        failing,
+        job_mult,
+    )
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one sequential rule table; splitting hides the order"
+)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct slice of the resolved turn"
+)]
+fn apply_resolved(
+    w: &mut World,
+    actor: &str,
+    intent: &Intent,
+    target: Option<&str>,
+    speech: &str,
+    social: SocialAct,
+    grounded: f32,
+    intensity: Option<f32>,
+    failing: Option<&str>,
+    job_mult: f32,
+) -> Outcome {
     let turn = w.turn;
-    let p = plan(w, actor, intent);
+    let p = plan(w, actor, intent, target, job_mult);
 
     let (accepted, kind, note) = match p {
         Plan::Rejected(why) => (false, EventKind::Confusion, Some(why)),
@@ -1061,27 +1155,97 @@ pub fn apply(
             a.refresh_mood_and_goal(season);
         }
 
-        // Social acts colour trust for everyone in the room, whatever the verb.
+        // Social acts colour trust for everyone in the room, whatever the
+        // verb - but a discredited line moves no trust (glossary:
+        // discredited), and its failing claim is remembered instead.
+        let credible = grounded >= check::GROUNDED;
         if social != SocialAct::None {
             let listeners = w.present(place, actor);
             let delta = social.trust_delta();
             let salience = social.salience();
-            let text = if speech.is_empty() {
+            let heard = if speech.is_empty() {
                 format!("{actor} did something to you.")
             } else {
                 format!("{actor} said: \"{speech}\"")
             };
             for l in listeners {
                 if let Some(x) = w.agent_mut(&l) {
-                    x.adjust_trust(actor, delta);
-                    x.record_fact(actor, text.clone(), turn, 0.9);
+                    if credible {
+                        x.adjust_trust(actor, delta);
+                        x.record_fact(actor, heard.clone(), turn, 0.9);
+                        x.remember(Memory::new(
+                            turn,
+                            heard.clone(),
+                            salience,
+                            MemoryKind::Witnessed,
+                        ));
+                    } else {
+                        // The claim and its failure are written to the
+                        // listener's memory (ticket #13).
+                        let why = failing.unwrap_or("a claim did not hold");
+                        x.remember(
+                            Memory::new(
+                                turn,
+                                format!("{actor} said: \"{speech}\" - {why}."),
+                                salience.max(0.5),
+                                MemoryKind::Witnessed,
+                            )
+                            .with_valence(-0.4),
+                        );
+                    }
+                }
+            }
+        }
+
+        // The drama branches, ported from the old engine's social echo and
+        // gated on credibility: rumor echoes from public acts and witnessed
+        // lines, morale nudges from blessings and threats.
+        let act_label = social.id();
+        if credible
+            && (matches!(
+                social,
+                SocialAct::Gossip
+                    | SocialAct::Accusation
+                    | SocialAct::Threat
+                    | SocialAct::Promise
+                    | SocialAct::Blessing
+                    | SocialAct::Forgiveness
+            ) || intensity.is_some_and(|i| i >= crate::turn::RUMOR_THRESHOLD))
+        {
+            let witnesses: Vec<String> = w
+                .present(place, actor)
+                .into_iter()
+                .filter(|witness| Some(witness.as_str()) != target)
+                .collect();
+            for witness in witnesses {
+                if let Some(x) = w.agent_mut(&witness) {
+                    let salience = intensity
+                        .unwrap_or(2.0)
+                        .mul_add(0.14, 0.35)
+                        .clamp(0.35, 0.95);
                     x.remember(Memory::new(
                         turn,
-                        text.clone(),
-                        salience,
+                        format!(
+                            "At {}, you overheard {actor} ({act_label}): \"{speech}\"",
+                            place.id()
+                        ),
+                        (salience * 0.85).clamp(0.3, 0.9),
                         MemoryKind::Witnessed,
                     ));
                 }
+            }
+        }
+        if credible {
+            match social {
+                SocialAct::Blessing | SocialAct::Forgiveness | SocialAct::Gratitude => {
+                    w.village_morale = (w.village_morale + 0.02).clamp(0.0, 4.0);
+                },
+                SocialAct::Threat | SocialAct::Accusation
+                    if intensity.is_some_and(|i| i >= crate::turn::THREAT_MORALE_THRESHOLD) =>
+                {
+                    w.village_morale = (w.village_morale - 0.02).clamp(0.0, 4.0);
+                },
+                _ => {},
             }
         }
 
@@ -1093,9 +1257,8 @@ pub fn apply(
             action: intent.action.clone(),
             text: speech.to_owned(),
             social: Some(social.id().to_owned()),
-            intensity: None,
-            grounded: None,
-            fidelity: None,
+            intensity,
+            grounded: Some(grounded),
             divine: false,
         });
 
@@ -1124,7 +1287,6 @@ pub fn apply(
             social: None,
             intensity: None,
             grounded: None,
-            fidelity: None,
             divine: false,
         });
     }
@@ -1322,7 +1484,6 @@ mod tests {
             social: None,
             intensity: None,
             grounded: None,
-            fidelity: None,
             divine: false,
         });
     }
@@ -1356,14 +1517,19 @@ mod tests {
         let menu = shortlist(&w, a);
         let available: Vec<Category> = CATEGORIES
             .into_iter()
-            .filter(|c| legal.iter().any(|action| Category::of(action) == *c))
+            .filter(|c| {
+                legal
+                    .iter()
+                    .any(|action| crate::catalog::meta_for(action).category == *c)
+            })
             .collect();
         // Every category the place offers is represented, and the menu is a
         // handful of options, not the full legal list.
         assert_eq!(available.len(), 5, "{legal:?}");
         for category in available {
             assert!(
-                menu.iter().any(|action| Category::of(action) == category),
+                menu.iter()
+                    .any(|action| crate::catalog::meta_for(action).category == category),
                 "{category:?} missing from {menu:?}"
             );
         }
