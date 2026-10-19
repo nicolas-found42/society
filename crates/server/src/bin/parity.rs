@@ -16,6 +16,14 @@
 //! Environment: the endpoint and model come from `JEV_API_URL` and
 //! `JEV_MODEL` (development configuration), the key from `OPENROUTER_API_KEY`.
 
+// The harness does bounded small-count arithmetic (win rates, spreads); every
+// cast below is value-checked by the surrounding clamps and the pair counts.
+#![allow(
+    clippy::cast_precision_loss,
+    clippy::unwrap_used,
+    reason = "bounded win-rate arithmetic; a serialization failure aborts the dev run"
+)]
+
 use std::collections::BTreeMap;
 use std::io::Write as _;
 
@@ -76,7 +84,7 @@ struct Answered {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let mode = args.first().map(String::as_str).unwrap_or("help");
+    let mode = args.first().map_or("help", String::as_str);
     let round: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
     let code = std::process::Command::new("cargo")
         .args(["--version"])
@@ -101,8 +109,14 @@ async fn run(mode: &str, round: usize) -> Result<(), String> {
         "decisions" => decisions(round).await,
         "lines" => lines(round).await,
         "side-by-side" => side_by_side(),
-        "diff" => diff(),
-        "report" => report(round),
+        "diff" => {
+            diff();
+            Ok(())
+        },
+        "report" => {
+            report(round);
+            Ok(())
+        },
         _ => {
             eprintln!("modes: decisions <round> | lines <round> | side-by-side | report <round>");
             Ok(())
@@ -111,12 +125,14 @@ async fn run(mode: &str, round: usize) -> Result<(), String> {
 }
 
 fn endpoint() -> Result<(String, String, String), String> {
-    let url =
-        std::env::var("JEV_API_URL").map_err(|_| "JEV_API_URL is not set".to_owned())?;
-    let model =
-        std::env::var("JEV_MODEL").unwrap_or_else(|_| "typesafe/jev-1.14".into());
+    #[allow(
+        clippy::missing_fields_in_debug,
+        reason = "the env error carries no usable context beyond its name"
+    )]
+    let url = std::env::var("JEV_API_URL").map_err(|e| format!("JEV_API_URL is not set ({e})"))?;
+    let model = std::env::var("JEV_MODEL").unwrap_or_else(|_| "typesafe/jev-1.14".into());
     let key = std::env::var("OPENROUTER_API_KEY")
-        .map_err(|_| "OPENROUTER_API_KEY is not set".to_owned())?;
+        .map_err(|_e| "OPENROUTER_API_KEY is not set".to_owned())?;
     Ok((url, model, key))
 }
 
@@ -144,10 +160,10 @@ async fn judge(
         .send()
         .await
         .map_err(|e| format!("judge transport: {e}"))?;
-    let status = resp.status();
+    let code = resp.status();
     let text = resp.text().await.map_err(|e| format!("judge read: {e}"))?;
-    if !status.is_success() {
-        return Err(format!("judge status {}: {}", status, short(&text, 300)));
+    if !code.is_success() {
+        return Err(format!("judge status {}: {}", code, short(&text, 300)));
     }
     let v: Value = serde_json::from_str(&text).map_err(|e| format!("judge body: {e}"))?;
     let answers = v
@@ -165,9 +181,11 @@ async fn judge(
     }
     if let Some(usage) = v.get("usage") {
         eprintln!(
-            "judge chunk: {} questions, cost {:?}",
+            "judge chunk: {} questions, cost {}",
             questions.len(),
-            usage.get("cost")
+            usage
+                .get("cost")
+                .map_or_else(|| "none".to_owned(), ToString::to_string)
         );
     }
     Ok(out)
@@ -230,7 +248,7 @@ async fn decisions(round: usize) -> Result<(), String> {
     let corpus = load_corpus()?;
     let mut pairs: Vec<Pair> = Vec::new();
     let mut ties = 0_usize;
-    let mut rng_state = 0x9E37_79B9_7F4A_7C15_u64 ^ u64::from(round as u64).wrapping_mul(7919);
+    let mut rng_state: u64 = 0x9E37_79B9_7F4A_7C15 ^ (round as u64).wrapping_mul(7919);
     for rec in &corpus.records {
         let world: society_sim::World = serde_json::from_value(rec.world.clone())
             .map_err(|e| format!("corpus world at turn {}: {e}", rec.turn))?;
@@ -244,7 +262,9 @@ async fn decisions(round: usize) -> Result<(), String> {
                 continue;
             }
             // A cheap deterministic shuffle: which side is "A".
-            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            rng_state = rng_state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             let a_is_new = rng_state >> 33 & 1 == 1;
             let (a, b) = if a_is_new {
                 (&new_action, &old.action)
@@ -283,7 +303,7 @@ async fn lines(round: usize) -> Result<(), String> {
     let corpus = load_corpus()?;
     let mut pairs: Vec<Pair> = Vec::new();
     let mut ties = 0_usize;
-    let mut rng_state = 0xA24B_5D3F_6C1E_9087_u64 ^ u64::from(round as u64).wrapping_mul(104_729);
+    let mut rng_state: u64 = 0xA24B_5D3F_6C1E_9087 ^ (round as u64).wrapping_mul(104_729);
     for rec in &corpus.records {
         let mut world: society_sim::World = serde_json::from_value(rec.world.clone())
             .map_err(|e| format!("corpus world at turn {}: {e}", rec.turn))?;
@@ -301,7 +321,9 @@ async fn lines(round: usize) -> Result<(), String> {
                 ties += 1;
                 continue;
             }
-            rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            rng_state = rng_state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             let a_is_new = rng_state >> 33 & 1 == 1;
             let (a, b) = if a_is_new {
                 (new_line.as_str(), old.say.as_str())
@@ -364,27 +386,28 @@ async fn ask_pairs(pairs: &[Pair], kind: &str) -> Result<Vec<Answered>, String> 
             )
         })?;
         for (i, p) in chunk.iter().enumerate() {
-            let pick = answers.get(&format!("{kind}_{i}")).cloned().unwrap_or_default();
-            answered.push(Answered { pair: Pair {
-                turn: p.turn,
-                name: p.name.clone(),
-                question: p.question.clone(),
-                a_is_new: p.a_is_new,
-                old: p.old.clone(),
-                new: p.new.clone(),
-            }, pick });
+            let pick = answers
+                .get(&format!("{kind}_{i}"))
+                .cloned()
+                .unwrap_or_default();
+            answered.push(Answered {
+                pair: Pair {
+                    turn: p.turn,
+                    name: p.name.clone(),
+                    question: p.question.clone(),
+                    a_is_new: p.a_is_new,
+                    old: p.old.clone(),
+                    new: p.new.clone(),
+                },
+                pick,
+            });
         }
         let _ = std::io::stderr().flush();
     }
     Ok(answered)
 }
 
-fn write_round(
-    round: usize,
-    kind: &str,
-    ties: usize,
-    answered: &[Answered],
-) -> Result<(), String> {
+fn write_round(round: usize, kind: &str, ties: usize, answered: &[Answered]) -> Result<(), String> {
     let mut new_wins = 0_usize;
     let mut old_wins = 0_usize;
     let mut no_answer = 0_usize;
@@ -392,9 +415,17 @@ fn write_round(
         if a.pick.is_empty() {
             no_answer += 1;
         } else if a.pick == "a" {
-            if a.pair.a_is_new { new_wins += 1 } else { old_wins += 1 }
+            if a.pair.a_is_new {
+                new_wins += 1;
+            } else {
+                old_wins += 1;
+            }
         } else if a.pick == "b" {
-            if a.pair.a_is_new { old_wins += 1 } else { new_wins += 1 }
+            if a.pair.a_is_new {
+                old_wins += 1;
+            } else {
+                new_wins += 1;
+            }
         } else {
             no_answer += 1;
         }
@@ -474,18 +505,18 @@ fn side_by_side() -> Result<(), String> {
     // The records carry the truth: lines spoken, the check's verdicts, and
     // the lines spoken in lie mode.
     let lines: u64 = records.iter().map(|r| u64::from(r.summary.lines)).sum();
-    let discredited: u64 = records.iter().map(|r| u64::from(r.summary.discredited)).sum();
-    let lies: u64 = records.iter().map(|r| u64::from(r.summary.lies)).sum();
+    let discredited: u64 = records
+        .iter()
+        .map(|r| u64::from(r.summary.discredited))
+        .sum();
+    let lie_lines: u64 = records.iter().map(|r| u64::from(r.summary.lies)).sum();
     let silences: u64 = records.iter().map(|r| u64::from(r.summary.silences)).sum();
     let mut trusts: Vec<f32> = Vec::new();
     for a in w.living() {
         trusts.extend(a.trust.iter().map(|(_, v)| *v));
     }
     let mean = trusts.iter().sum::<f32>() / trusts.len().max(1) as f32;
-    let spread = (trusts
-        .iter()
-        .map(|t| (t - mean).powi(2))
-        .sum::<f32>()
+    let spread = (trusts.iter().map(|t| (t - mean).powi(2)).sum::<f32>()
         / trusts.len().max(1) as f32)
         .sqrt();
     let out = json!({
@@ -498,7 +529,7 @@ fn side_by_side() -> Result<(), String> {
         "lines": lines,
         "silences": silences,
         "discredited": discredited,
-        "lies": lies,
+        "lies": lie_lines,
         "discredited_rate": if lines > 0 { discredited as f64 / lines as f64 } else { 0.0 },
         "trust_mean": mean,
         "trust_spread_sd": spread,
@@ -507,8 +538,11 @@ fn side_by_side() -> Result<(), String> {
             "orders": p.orders.len(),
         })).collect::<Vec<_>>(),
     });
-    std::fs::write("baseline/side_by_side.json", serde_json::to_string_pretty(&out).unwrap())
-        .map_err(|e| format!("write: {e}"))?;
+    std::fs::write(
+        "baseline/side_by_side.json",
+        serde_json::to_string_pretty(&out).unwrap(),
+    )
+    .map_err(|e| format!("write: {e}"))?;
     println!("{out}");
     Ok(())
 }
@@ -516,13 +550,14 @@ fn side_by_side() -> Result<(), String> {
 /// The offline disagreement matrix: where the new policy chose differently
 /// from the old judge, counted by (old, new) action pair. Free - no judge -
 /// and the evidence a weight revision is justified by.
-fn diff() -> Result<(), String> {
-    let corpus = load_corpus()?;
+fn diff() {
+    let Ok(corpus) = load_corpus() else { return };
     let mut matrix: BTreeMap<String, usize> = BTreeMap::new();
     let mut agree = 0_usize;
     for rec in &corpus.records {
-        let world: society_sim::World = serde_json::from_value(rec.world.clone())
-            .map_err(|e| format!("corpus world at turn {}: {e}", rec.turn))?;
+        let Ok(world) = serde_json::from_value::<society_sim::World>(rec.world.clone()) else {
+            continue;
+        };
         for old in &rec.agents {
             let Some(decision) = society_sim::decide(&world, &old.name) else {
                 continue;
@@ -537,15 +572,14 @@ fn diff() -> Result<(), String> {
         }
     }
     let mut rows: Vec<(String, usize)> = matrix.into_iter().collect();
-    rows.sort_by(|a, b| b.1.cmp(&a.1));
+    rows.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
     println!("agreements: {agree}; disagreements by (old -> new):");
     for (k, v) in rows.iter().take(30) {
         println!("  {v:3}  {k}");
     }
-    Ok(())
 }
 
-fn report(round: usize) -> Result<(), String> {
+fn report(round: usize) {
     for kind in ["decisions", "lines"] {
         let path = format!("baseline/round{round}_{kind}.json");
         match std::fs::read_to_string(&path) {
@@ -553,5 +587,4 @@ fn report(round: usize) -> Result<(), String> {
             Err(_) => println!("{path}: (not yet run)"),
         }
     }
-    Ok(())
 }

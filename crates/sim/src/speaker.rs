@@ -208,6 +208,10 @@ fn render(
 /// Fill a template's slots from what the villager can observe or remember.
 /// Every filled count slot contributes its claim; a person contributes their
 /// presence.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one sequential slot table; splitting hides the scope rule"
+)]
 fn fill(
     w: &World,
     a: &Agent,

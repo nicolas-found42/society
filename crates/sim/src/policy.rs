@@ -237,15 +237,12 @@ fn term_social_need(w: &World, a: &Agent, c: &Candidate) -> f32 {
     if others.is_empty() {
         return 0.0;
     }
-    let needy =
-        |o: &String| w.agent(o).is_some_and(|x| x.hunger >= 2 || x.thirst >= 2);
+    let needy = |o: &String| w.agent(o).is_some_and(|x| x.hunger >= 2 || x.thirst >= 2);
     let ill = |o: &String| {
-        w.agent(o).is_some_and(|x| x.ailment.is_some() || x.health < 6)
-    };
-    let grieving = |o: &String| {
         w.agent(o)
-            .is_some_and(|x| x.stress >= 2.8 || x.hope < 0.8)
+            .is_some_and(|x| x.ailment.is_some() || x.health < 6)
     };
+    let grieving = |o: &String| w.agent(o).is_some_and(|x| x.stress >= 2.8 || x.hope < 0.8);
     match c.action.as_str() {
         // Feeding answers hunger; healing answers illness; consoling answers
         // grief. A console beside mere hunger answers nothing, and a heal
@@ -364,17 +361,23 @@ fn term_mood_pull(_w: &World, a: &Agent, c: &Candidate) -> f32 {
     let hungry = a.hunger >= 1 && a.food == 0;
     let peckish = a.hunger >= 1 && here_has_food_hint(c);
     let fits = if hungry || peckish {
-        matches!(c.verb, Verb::Take | Verb::Forage | Verb::Steal | Verb::Move | Verb::DrawWater)
+        matches!(
+            c.verb,
+            Verb::Take | Verb::Forage | Verb::Steal | Verb::Move | Verb::DrawWater
+        )
     } else {
         match a.mood {
-        Mood::Desperate => matches!(c.verb, Verb::Take | Verb::Forage | Verb::Steal | Verb::Move),
-        Mood::Weary => c.verb == Verb::Rest,
-        Mood::Bitter => {
-            matches!(c.verb, Verb::Accuse) || (c.verb == Verb::Speak && c.act == SocialAct::Threat)
-        },
-        Mood::Anxious => matches!(c.verb, Verb::Console | Verb::Pray),
-        Mood::Grieving => matches!(c.verb, Verb::Pray | Verb::Console),
-        Mood::Feverish => matches!(c.verb, Verb::Heal | Verb::Rest),
+            Mood::Desperate => {
+                matches!(c.verb, Verb::Take | Verb::Forage | Verb::Steal | Verb::Move)
+            },
+            Mood::Weary => c.verb == Verb::Rest,
+            Mood::Bitter => {
+                matches!(c.verb, Verb::Accuse)
+                    || (c.verb == Verb::Speak && c.act == SocialAct::Threat)
+            },
+            Mood::Anxious => matches!(c.verb, Verb::Console | Verb::Pray),
+            Mood::Grieving => matches!(c.verb, Verb::Pray | Verb::Console),
+            Mood::Feverish => matches!(c.verb, Verb::Heal | Verb::Rest),
             Mood::Hopeful => matches!(c.verb, Verb::Give | Verb::Help) || is_workish(c),
             Mood::Determined => is_workish(c),
             Mood::Content => is_workish(c) || c.verb == Verb::Speak,
@@ -386,7 +389,7 @@ fn term_mood_pull(_w: &World, a: &Agent, c: &Candidate) -> f32 {
 /// Does the candidate act where food is? The appetite fit is about the
 /// candidate's own reach, not a world scan: taking, foraging and moves read
 /// as food-seeking; the place itself decides the rest.
-fn here_has_food_hint(c: &Candidate) -> bool {
+const fn here_has_food_hint(c: &Candidate) -> bool {
     matches!(c.verb, Verb::Take | Verb::Forage | Verb::Move)
 }
 
