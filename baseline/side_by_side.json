@@ -1,0 +1,53 @@
+{
+  "note": "The new engine's outcome run at seed 7, 40 turns, reported as the new world with professions. Context only; the acceptance bar is the paired judgment.",
+  "seed": 7,
+  "turns": 40,
+  "population_end": 12,
+  "births": 3,
+  "deaths": 0,
+  "lines": 344,
+  "silences": 55,
+  "discredited": 26,
+  "lies": 26,
+  "discredited_rate": 0.0755813953488372,
+  "trust_mean": 0.9435603618621826,
+  "trust_spread_sd": 0.939099907875061,
+  "professions": [
+    {
+      "role": "farmer",
+      "orders": 3
+    },
+    {
+      "role": "woodcutter",
+      "orders": 2
+    },
+    {
+      "role": "herbalist",
+      "orders": 3
+    },
+    {
+      "role": "artisan",
+      "orders": 3
+    },
+    {
+      "role": "steward",
+      "orders": 3
+    },
+    {
+      "role": "trader",
+      "orders": 2
+    },
+    {
+      "role": "forager",
+      "orders": 3
+    },
+    {
+      "role": "watchman",
+      "orders": 0
+    },
+    {
+      "role": "elder",
+      "orders": 0
+    }
+  ]
+}

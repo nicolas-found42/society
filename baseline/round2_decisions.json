@@ -1,0 +1,12 @@
+{
+  "round": 2,
+  "kind": "decisions",
+  "pairs": 148,
+  "ties_new_engine_matched_old": 130,
+  "new_wins": 52,
+  "old_wins": 96,
+  "no_answer": 0,
+  "new_win_rate": 0.35135135135135137,
+  "noise_band_95": 0.05877649410259858,
+  "verdict": "LOSES beyond noise"
+}

@@ -1,0 +1,1890 @@
+[
+  {
+    "turn": 0,
+    "name": "Ada",
+    "old": "One measure, Cor. I will see it shared.",
+    "new": "I take grain for my hearth at woods.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 0,
+    "name": "Bo",
+    "old": "I pick some herbs, Sable. Let's not waste time.",
+    "new": "I take two measures from the store, and lest the children wake hungry.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 0,
+    "name": "Cor",
+    "old": "Two measures, Ada. I will bring more when I return.",
+    "new": "I take grain for my hearth at field.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 0,
+    "name": "Tam",
+    "old": "Count the food, Wren. Let the tally speak for itself.",
+    "new": "I take two measures from the store, and lest the children wake hungry.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 0,
+    "name": "Odo",
+    "old": "Count them out, Ada. I'll give you a third.",
+    "new": "I take grain for my hearth at granary.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 0,
+    "name": "Wren",
+    "old": "I'll watch you carefully. Let us move forward.",
+    "new": "I go to granary today.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 0,
+    "name": "Sable",
+    "old": "",
+    "new": "I take a measure from the store.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 1,
+    "name": "Ada",
+    "old": "I will take food from the store, Odo. It is time.",
+    "new": "I take grain for my hearth at woods.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 1,
+    "name": "Bo",
+    "old": "I hope the shrine grants me a day without hunger.",
+    "new": "I take a measure from the store.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 1,
+    "name": "Cor",
+    "old": "Carry your food, Nell. I'll see it shared.",
+    "new": "I swap my wares and hide my coin, and that neither walks home cheated.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 1,
+    "name": "Tam",
+    "old": "Watch your steps. I'll keep watch over you.",
+    "new": "I take grain for my hearth at market, and lest the children wake hungry.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 1,
+    "name": "Nell",
+    "old": "What brings you here, Cor? I have a taste for your trade.",
+    "new": "I mend hut ere rains come, and that the roof holds through rain.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 1,
+    "name": "Odo",
+    "old": "One measure, Ada. I will see it shared.",
+    "new": "I take a measure from the store.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 1,
+    "name": "Wren",
+    "old": "I will count the food, Tam. Let the tally speak for itself.",
+    "new": "I take a measure from the store.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 1,
+    "name": "Sable",
+    "old": "I bring food, Bo. Let's not waste time.",
+    "new": "I take no grain from the store, and lest the children wake hungry.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 2,
+    "name": "Ada",
+    "old": "Food for you. You gave me something.",
+    "new": "I give freely of my own store, and that you may eat till dawn.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 2,
+    "name": "Bo",
+    "old": "Thirsty, but not too much. Give me some food.",
+    "new": "I plead for bread for my kin, or for my children have not eaten, and I keep 5 hidden past the field.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 2,
+    "name": "Cor",
+    "old": "I carry enough for now, Nell. Let us share what we can.",
+    "new": "I take grain for my hearth at hut.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 2,
+    "name": "Tam",
+    "old": "Let us move forward, Odo. I will give you something.",
+    "new": "I take grain for my hearth at market, and with a measure under my cloak.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 2,
+    "name": "Nell",
+    "old": "What do you want from me, Cor? I carry what I need.",
+    "new": "I mend field ere rains come.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 2,
+    "name": "Odo",
+    "old": "I will take food from the store, Ada. It is time.",
+    "new": "I take no grain from the store.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 2,
+    "name": "Sable",
+    "old": "I'll give you a herb. You've shown respect.",
+    "new": "I plead for bread for my kin.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 3,
+    "name": "Ada",
+    "old": "Take what you need, Odo. I will watch.",
+    "new": "I help Odo bear the load.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 3,
+    "name": "Bo",
+    "old": "I brought herbs. They are strong. You should eat them.",
+    "new": "I pick healing leaves with care, and with a handful of herbs fresh from the damp edge.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 3,
+    "name": "Cor",
+    "old": "I carry nothing, Tam. The granary is empty, but I trust the village.",
+    "new": "I take grain for my hearth at well.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 3,
+    "name": "Tam",
+    "old": "Three food, Ada. You carry three, but I give you one.",
+    "new": "I comfort Ada in their grief.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 3,
+    "name": "Nell",
+    "old": "I'll go to the market. It's time to trade.",
+    "new": "I take no grain from the store.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 3,
+    "name": "Odo",
+    "old": "I carry nothing, Ada. Let the market decide.",
+    "new": "I sit with Ada through the night.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 3,
+    "name": "Wren",
+    "old": "I remember your warning. Let me keep watch over you.",
+    "new": "I take no grain from the store, and lest the children wake hungry.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 3,
+    "name": "Sable",
+    "old": "I carry a measure of food, Bo. Let it rest here.",
+    "new": "I plead for bread for my kin.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 4,
+    "name": "Ada",
+    "old": "You remember Odo's words. Let them guide your action.",
+    "new": "I take three measures from the store.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 4,
+    "name": "Bo",
+    "old": "I owe you something, Sable. But I bring only herbs and tools. Let me give you something in return.",
+    "new": "I help Sable with a willing heart.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 4,
+    "name": "Cor",
+    "old": "Three measures, Ada. I carry one, you carry three. Let us share.",
+    "new": "I take a measure from the store, and the pot is not bare tonight.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 4,
+    "name": "Tam",
+    "old": "Count the goods, Ada. Let us move forward.",
+    "new": "I sit with Ada through the night.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 4,
+    "name": "Nell",
+    "old": "I wonder if Odo knows the truth about the well.",
+    "new": "I take no grain from the store.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 4,
+    "name": "Odo",
+    "old": "You offer the tool, Nell. It is yours to choose.",
+    "new": "I shape wood into a sound tool, and shaped sound for the winter keeping, and I walked to the well at dusk yesterday.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 4,
+    "name": "Wren",
+    "old": "I notice the elder's silence. The granary holds more than enough for all.",
+    "new": "I go to market today.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 4,
+    "name": "Sable",
+    "old": "Bo, you gave me food. It is good.",
+    "new": "I ask mercy of Bo today.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 5,
+    "name": "Ada",
+    "old": "Four measures, Tam. I will take them from the store.",
+    "new": "I take two measures from the store.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 5,
+    "name": "Bo",
+    "old": "You've got a good heart, Sable. Let's share the herbs.",
+    "new": "I comfort Sable in their grief, and till tears soften into sleep.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 5,
+    "name": "Cor",
+    "old": "I carry nothing, Odo. But I know where to find what you need.",
+    "new": "I swap my wares and hide my coin, and with plain goods laid open plain.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 5,
+    "name": "Mira",
+    "old": "Why do you wonder about Odo? The well is quiet, but the waters are clear.",
+    "new": "I go to market today, and while the mud still holds my step.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 5,
+    "name": "Tam",
+    "old": "Take two, Ada. Let us not waste what is meant for others.",
+    "new": "I sit with Ada through the night.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 5,
+    "name": "Nell",
+    "old": "Fetch the cup. I'll bring water when I'm done.",
+    "new": "I bear water from well.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 5,
+    "name": "Odo",
+    "old": "I will go to the granary. It is time to act.",
+    "new": "I take grain for my hearth at hut, and the pot is not bare tonight.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 5,
+    "name": "Wren",
+    "old": "A light meal, Tam. You need it.",
+    "new": "I hold Ada suspect of theft.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 5,
+    "name": "Sable",
+    "old": "Bo, I know you gave me food. It's a favor.",
+    "new": "I comfort Bo in their grief.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 6,
+    "name": "Ada",
+    "old": "You give Odo food. He accepts with a wary nod.",
+    "new": "I give Odo grain from my hand.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 6,
+    "name": "Bo",
+    "old": "I thank you, Sable. You gave me food. I am glad.",
+    "new": "I comfort Sable in their grief, and with my hand upon your shoulder.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 6,
+    "name": "Mira",
+    "old": "Thirst is a friend, but hunger is a challenge. Fetch the cup, and let us walk together.",
+    "new": "I go to market today.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 6,
+    "name": "Tam",
+    "old": "Four measures, Ada. I will take them from the store.",
+    "new": "I sit with Ada through the night, and I swore to Ada keep the village's memory in truth.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 6,
+    "name": "Nell",
+    "old": "What do you want, Mira? I have nothing but water.",
+    "new": "I go to hut today.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 6,
+    "name": "Odo",
+    "old": "I will take food from the store, Ada. It is time.",
+    "new": "I take no grain from the store.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 6,
+    "name": "Wren",
+    "old": "You watch Tam carefully. He carries nothing, but his hunger is clear.",
+    "new": "I go to market today.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 6,
+    "name": "Sable",
+    "old": "Give me some food, Bo. I'll share what's left.",
+    "new": "I give freely of my own store.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 7,
+    "name": "Ada",
+    "old": "You know the store, Odo. Take what you need.",
+    "new": "I lend my hands to the work at shrine.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 7,
+    "name": "Bo",
+    "old": "You give them the herb, Sable. It's strong, like the spring.",
+    "new": "I give freely of my own store.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 7,
+    "name": "Cor",
+    "old": "I trust Ada, but I must ensure the store is not wasted. Let us share wisely.",
+    "new": "I take grain for my hearth at well.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 7,
+    "name": "Tam",
+    "old": "Bring me the food. I will take it, but not until you agree.",
+    "new": "I give Ada grain from my hand.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 7,
+    "name": "Odo",
+    "old": "I will check the store for more provisions, Ada. The spring is promising.",
+    "new": "I plead for bread for my kin, or spare no grain from your store.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 7,
+    "name": "Wren",
+    "old": "I remember Odo's words. Let us speak plainly.",
+    "new": "I charge Ada stole our grain from the store.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 7,
+    "name": "Sable",
+    "old": "A quiet word, Bo. Let me tend to your needs, though I carry nothing.",
+    "new": "I sit with Bo through the night.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 8,
+    "name": "Ada",
+    "old": "Check the store again, Odo. I'll wait.",
+    "new": "I take grain for my hearth at market.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 8,
+    "name": "Bo",
+    "old": "I hope you understand, Sable. The spring is kind, but we need to be careful.",
+    "new": "I plead for bread for my kin.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 8,
+    "name": "Cor",
+    "old": "I'll give Ada the last of what's left, but first I'll check Odo's store.",
+    "new": "I give Ada grain from my hand.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 8,
+    "name": "Mira",
+    "old": "What is your purpose, Odo? The spring is promising, but what is yours?",
+    "new": "I take no grain and run.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 8,
+    "name": "Tam",
+    "old": "Check the store, Ada. I'll bring something back for you.",
+    "new": "I ask mercy of Ada today.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 8,
+    "name": "Odo",
+    "old": "I'll fetch some food for Ada. She needs it most.",
+    "new": "I comfort Ada in their grief, and I stood at the market ere first light.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 8,
+    "name": "Sable",
+    "old": "Bo, you gave me food. It's good to have it.",
+    "new": "I ask mercy of Bo today.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 9,
+    "name": "Ada",
+    "old": "What is your purpose, Cor? The spring is promising, but what is yours?",
+    "new": "I take grain and thank the store at granary.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 9,
+    "name": "Bo",
+    "old": "I thank you, Sable. You gave me something I needed.",
+    "new": "I sit with Sable through the night, and with my hand upon your shoulder.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 9,
+    "name": "Cor",
+    "old": "I carry nothing, but I intend to take what is offered. Let me see what is yours.",
+    "new": "I take no grain from the store, and I stood at the hut ere first light.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 9,
+    "name": "Mira",
+    "old": "What does the field offer, Cor? I bring what the soil yields.",
+    "new": "I ask mercy of Cor today.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 9,
+    "name": "Tam",
+    "old": "Take what you need, Ada. The spring is ripe, but what is yours?",
+    "new": "I take grain for my hearth at market.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 9,
+    "name": "Odo",
+    "old": "I must claim my share, Ada. The spring is ripe, but I will not take what is not mine.",
+    "new": "I take grain for my hearth at well, and I carry 3, count them yourself.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 9,
+    "name": "Wren",
+    "old": "I'll check the store for more provisions, Ada. The spring is promising.",
+    "new": "I walk to field with my kin, and while the mud still holds my step.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 9,
+    "name": "Sable",
+    "old": "I offer you my tools, Bo. Let us share the silence of the shrine.",
+    "new": "I hold Bo suspect of theft, or for Bo took from the common store.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 10,
+    "name": "Ada",
+    "old": "I ask you, Odo. What do you seek in these fertile fields?",
+    "new": "I give gladly and I wish you well, and for your hearth is cold tonight, and I hold 6 sacks hidden past the woods.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 10,
+    "name": "Bo",
+    "old": "I'll take your tools, Sable. The shrine needs work, and I'm not afraid of a little silence.",
+    "new": "I go to hut today, and for need calls me past the gate.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 10,
+    "name": "Cor",
+    "old": "I seek what lies beyond the granary, Ada. The spring promises more than mere survival.",
+    "new": "I sit with Ada through the night.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 10,
+    "name": "Tam",
+    "old": "The spring's bounty is yours, Ada. Let me tend to your hunger first.",
+    "new": "I sit with Ada through the night, and with my hand upon your shoulder.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 10,
+    "name": "Odo",
+    "old": "I must go to the market. The spring is promising, but I must bring something back.",
+    "new": "I charge Ada stole our grain from the store, or for Ada took from the common store.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 10,
+    "name": "Wren",
+    "old": "I note your readiness, Ada. The spring offers hope, but we must share carefully.",
+    "new": "I plead for bread for my kin, or spare no grain from your store.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 10,
+    "name": "Sable",
+    "old": "Bo, you gave me food. I am grateful.",
+    "new": "I charge Bo stole our grain from the store, or for Bo took from the common store.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 11,
+    "name": "Ada",
+    "old": "I will go to the market. You should stay and care for the village.",
+    "new": "I give Tam grain with all my heart.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 11,
+    "name": "Cor",
+    "old": "A grain of hope, Odo. The spring yields, but what does yours?",
+    "new": "I repair the roof with my hands.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 11,
+    "name": "Tam",
+    "old": "Count the steps, Ada. The market is near, but I must go.",
+    "new": "I promise keep the village's memory before all.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 11,
+    "name": "Nell",
+    "old": "What kind of food would you like to take from the store?",
+    "new": "I take grain for my hearth at well, and with no grain under my cloak.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 11,
+    "name": "Odo",
+    "old": "I must go to the granary. The spring is promising, but I need to know what is yours.",
+    "new": "I craft two tools with my hands, and I promised Cor my oath ere harvest.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 11,
+    "name": "Wren",
+    "old": "I will return when the market opens. Keep watching over the granary.",
+    "new": "I charge Ada stole our grain from the store, or while the measure runs short each night.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 12,
+    "name": "Ada",
+    "old": "You trust Tam. Let him share what he can.",
+    "new": "I give gladly and I wish you well.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 12,
+    "name": "Cor",
+    "old": "You must fetch food. The village needs it. I'll wait.",
+    "new": "I plead for bread for my kin.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 12,
+    "name": "Tam",
+    "old": "Count the granary's grains, Ada. Let the village know the dawn's light calls for action.",
+    "new": "I plead for bread for my kin, or for my children have not eaten.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 12,
+    "name": "Nell",
+    "old": "What do you want, Tam? I have nothing to offer.",
+    "new": "I repair the roof with my hands, and lest the mud wash down at night.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 12,
+    "name": "Odo",
+    "old": "You should not take food from the store. It is not fair.",
+    "new": "I ask mercy of Cor today.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 12,
+    "name": "Wren",
+    "old": "I will take food from the store, Ada. Let us go.",
+    "new": "I go to granary today.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 13,
+    "name": "Ada",
+    "old": "Let us go. I will take food from the store, Ada.",
+    "new": "I give gladly and I wish you well.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 13,
+    "name": "Cor",
+    "old": "You should stay and care for the village. I will return with what I need.",
+    "new": "I take no grain from the store.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 13,
+    "name": "Mira",
+    "old": "What brings you here, Cor? The granary is empty, but perhaps there is purpose in the journey.",
+    "new": "I plead for bread for my kin, or spare no grain from your store.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 13,
+    "name": "Tam",
+    "old": "Count the water, Ada. I'll take what I need.",
+    "new": "I trade a coin at the market, and I keep 2 hidden past the well.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 13,
+    "name": "Nell",
+    "old": "What would you take, Tam? The granary awaits.",
+    "new": "I repair the roof with my hands.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 13,
+    "name": "Odo",
+    "old": "You should stay and care for the village. I will return when I can.",
+    "new": "I ask mercy of Cor today.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 13,
+    "name": "Wren",
+    "old": "I see Ada's hope. Let us walk together toward the granary.",
+    "new": "I swap my wares and hide my coin, and that neither walks home cheated.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 13,
+    "name": "Sable",
+    "old": "I brought a few herbs, Ada. They'll last until the next full moon.",
+    "new": "I walk to granary with my kin, and to the granary by the low path.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 14,
+    "name": "Ada",
+    "old": "You carry nothing, but I have food. Let us walk together toward the granary.",
+    "new": "I give Cor grain with all my heart, and for your hearth is cold tonight.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 14,
+    "name": "Cor",
+    "old": "I'll bring you something, Ada. You need it most.",
+    "new": "I comfort Ada in their grief, and with my hand upon your shoulder.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 14,
+    "name": "Mira",
+    "old": "The store is far, but the path is clear. Let us go.",
+    "new": "I heal Cor with herbs and care.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 14,
+    "name": "Tam",
+    "old": "Take what you need, Ada. The granary holds enough for all.",
+    "new": "I take no grain from the store.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 14,
+    "name": "Nell",
+    "old": "I'll take some food from the store, but I'll need to ask Tam first.",
+    "new": "I take grain for my hearth at granary, and lest the children wake hungry.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 14,
+    "name": "Odo",
+    "old": "I must go. The market offers what I need.",
+    "new": "I comfort Ada in their grief, and with my hand upon your shoulder.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 14,
+    "name": "Wren",
+    "old": "The spring is promising, but the store is guarded. Let me check if you need help.",
+    "new": "I go to field today, and for need calls me past the gate.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 14,
+    "name": "Sable",
+    "old": "You'll need to find something to eat, Ada. The village store has what's left, but it's not easy.",
+    "new": "I take no grain and run, and lest the children wake hungry.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 15,
+    "name": "Ada",
+    "old": "Bring me food, Cor. You owe me.",
+    "new": "I take grain for my hearth at market, and lest the children wake hungry.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 15,
+    "name": "Cor",
+    "old": "I'll share my food with Ada, but I need to check if she's ready.",
+    "new": "I give Ada grain from my hand.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 15,
+    "name": "Mira",
+    "old": "What do you need, Cor? The granary holds more than what you carry.",
+    "new": "I dress the wound with clean hands for Cor, and that breath comes soft again.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 15,
+    "name": "Tam",
+    "old": "You need not look far. The granary holds what you require.",
+    "new": "I sit with Ada through the night, and for grief sits heavy on Ada.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 15,
+    "name": "Nell",
+    "old": "Bring me the grain, Tam. I need it for the baking.",
+    "new": "I sit with Tam through the night.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 15,
+    "name": "Wren",
+    "old": "I notice Ada's hunger. She needs something, but I can't take it from her.",
+    "new": "I hold Ada suspect of theft, or while the measure runs short each night.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 15,
+    "name": "Sable",
+    "old": "The herbs are here, but I must tend them first. Let us not waste time.",
+    "new": "I plead for bread for my kin.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 16,
+    "name": "Ada",
+    "old": "You need it most, Cor. Let me fetch it for you.",
+    "new": "I help Cor with a willing heart.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 16,
+    "name": "Bo",
+    "old": "I'll take some food, Sable. Let's see if I can keep it.",
+    "new": "I give freely of my own store.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 16,
+    "name": "Cor",
+    "old": "I'll ask Tam first, but I need to make sure I don't overstep.",
+    "new": "I ask mercy of Ada today.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 16,
+    "name": "Mira",
+    "old": "What brings you here, Nell? The granary is far, but the path is clear.",
+    "new": "I swap my wares and hide my coin.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 16,
+    "name": "Tam",
+    "old": "I'll see if there's any grain left, Ada. If not, I'll bring you something else, even if it's not food.",
+    "new": "I ask mercy of Ada today.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 16,
+    "name": "Nell",
+    "old": "What do you need, Mira? I'll look for something to share.",
+    "new": "I repair the roof with my hands.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 16,
+    "name": "Odo",
+    "old": "Take what you need, Ada. I'll bring you something, even if it is food.",
+    "new": "I take grain for my hearth at field, and the pot is not bare tonight.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 16,
+    "name": "Wren",
+    "old": "I notice Ada's hunger. She needs something, but I must be careful not to reveal too much.",
+    "new": "I plead for bread for my kin.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 16,
+    "name": "Sable",
+    "old": "Bring me the herbs. I need them for the fire.",
+    "new": "I sit with Bo through the night.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 17,
+    "name": "Ada",
+    "old": "You know the granary's rules, Cor. Keep your promise.",
+    "new": "I ask mercy of Cor today.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 17,
+    "name": "Bo",
+    "old": "I'll share what I have, Ada. Let's see if I can give something back.",
+    "new": "I give Ada grain with all my heart.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 17,
+    "name": "Cor",
+    "old": "I carry none, Ada. Let me see if I can trade something for your watchfulness.",
+    "new": "I ask mercy of Ada today, or lest we last not till dawn.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 17,
+    "name": "Mira",
+    "old": "What do you say to the trader, Cor? You need something, but not much.",
+    "new": "I ask mercy of Cor today.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 17,
+    "name": "Tam",
+    "old": "Take what you need, Ada. I'll see if I can keep it.",
+    "new": "I take grain for my hearth at granary, and lest the children wake hungry.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 17,
+    "name": "Odo",
+    "old": "Count the tools, Ada. I need something to make with them.",
+    "new": "I ask mercy of Ada today.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 17,
+    "name": "Wren",
+    "old": "I'll see if I can find something useful, even if it's just a leaf.",
+    "new": "I charge Ada stole our grain from the store.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 18,
+    "name": "Ada",
+    "old": "Two measures, Cor. I'll take them, but keep them hidden.",
+    "new": "I give Cor grain from my hand, and from my store of a measure.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 18,
+    "name": "Bo",
+    "old": "Let's share the herbs. I've got enough for both of us.",
+    "new": "I help Sable with a willing heart.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 18,
+    "name": "Cor",
+    "old": "I'll bring you some food, Ada. Let's see if I can keep it.",
+    "new": "I sit with Ada through the night, and for grief sits heavy on Ada.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 18,
+    "name": "Mira",
+    "old": "Ask if there's grain left, Tam. I'll bring you something, even if it's not food.",
+    "new": "I plead for bread for my kin.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 18,
+    "name": "Tam",
+    "old": "Let me see if I can keep it, Ada. I'll take some food, Sable. Let's see if I can keep it.",
+    "new": "I promise keep the village's memory before all.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 18,
+    "name": "Odo",
+    "old": "Count the food, Ada. Let's see if I can keep it.",
+    "new": "I sit with Ada through the night, and with my hand upon your shoulder.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 18,
+    "name": "Sable",
+    "old": "Take what you need, Bo. The granary holds what's left.",
+    "new": "I take no grain from the store, and lest the children wake hungry.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 19,
+    "name": "Ada",
+    "old": "A bowl of food, Bo. You deserve it.",
+    "new": "I give Bo grain with all my heart.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 19,
+    "name": "Bo",
+    "old": "I need to find food, Ada. But I must be careful.",
+    "new": "I plead for bread for my kin.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 19,
+    "name": "Cor",
+    "old": "You'll bring more, Odo. I'll see.",
+    "new": "I mend field ere rains come.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 19,
+    "name": "Tam",
+    "old": "I'll see if I can keep it, Ada. Let's see if I can keep it.",
+    "new": "I sit with Ada through the night.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 19,
+    "name": "Odo",
+    "old": "Let me see if I can keep it, Cor. I'll take some food, Sable. Let's see if I can keep it.",
+    "new": "I shape wood into a sound tool.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 19,
+    "name": "Wren",
+    "old": "I'll see if I can find something to share, Ada.",
+    "new": "I charge Ada stole our grain from the store.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 19,
+    "name": "Sable",
+    "old": "I carry nothing, Bo. Let's see if I can find something to eat.",
+    "new": "I heal Bo with herbs and care.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 20,
+    "name": "Ada",
+    "old": "Bring me some food. I'll share what I have.",
+    "new": "I stand by Odo till work is done, and I carry 6, count them yourself.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 20,
+    "name": "Bo",
+    "old": "I brought what I can, Ada. Hope it's enough for now.",
+    "new": "I pray thee help me in my need.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 20,
+    "name": "Cor",
+    "old": "I'll need to choose wisely, Ada. The stores are large, but I must be careful.",
+    "new": "I take no grain from the store, and the pot is not bare tonight.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 20,
+    "name": "Tam",
+    "old": "Count the goods, Ada. I'll see if I can keep it.",
+    "new": "I ask mercy of Ada today, or lest we last not till dawn.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 20,
+    "name": "Odo",
+    "old": "Count them out, Ada. I'll see if I can bring you something.",
+    "new": "I take grain for my hearth at market.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 20,
+    "name": "Wren",
+    "old": "Check the field for any signs of harvest, Ada.",
+    "new": "I plead for bread for my kin.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 20,
+    "name": "Sable",
+    "old": "Let us share the herbs. I'll brew something for you.",
+    "new": "I dress the wound with clean hands for Bo, and I carry 3, count them yourself.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 21,
+    "name": "Ada",
+    "old": "Three measures, Bo. I'll take them, if you'll let me.",
+    "new": "I take grain for my hearth at woods.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 21,
+    "name": "Bo",
+    "old": "I'll give you some, Sable. You need it.",
+    "new": "I give gladly and I wish you well.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 21,
+    "name": "Cor",
+    "old": "I've got your back, Odo. Let's see what's in the granary.",
+    "new": "I plead for bread for my kin.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 21,
+    "name": "Mira",
+    "old": "What do you think, Tam? The granary is empty, but the season is ripe.",
+    "new": "I plead for bread for my kin.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 21,
+    "name": "Tam",
+    "old": "Take a step. I'll see if you can keep your word.",
+    "new": "I ask mercy of Odo today.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 21,
+    "name": "Odo",
+    "old": "Let me count the goods, Tam. I'll see if I can keep it.",
+    "new": "I plead for bread for my kin.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 21,
+    "name": "Sable",
+    "old": "You've got a chance, Bo. Let me help you get started.",
+    "new": "I heal Bo with herbs and care, and till fever loosens its cold grip.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 22,
+    "name": "Ada",
+    "old": "Bring me some food. I'll give you something in return.",
+    "new": "I pray thee help me in my need.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 22,
+    "name": "Bo",
+    "old": "I'll share what I have, Ada. Let's grow something together.",
+    "new": "I stand by Ada till work is done.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 22,
+    "name": "Cor",
+    "old": "I'll see what can be gathered, Bo. The market is near.",
+    "new": "I comfort Bo in their grief, and for grief sits heavy on Bo.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 22,
+    "name": "Mira",
+    "old": "What is your trust, Tam? The granary is empty, but the spring is clear.",
+    "new": "I give freely of my own store, and that you may eat till dawn.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 22,
+    "name": "Tam",
+    "old": "Take a measure, Bo. I'll see if I can keep it.",
+    "new": "I promise Let me see if I can keep it, Ada. I'll take some food, Sable. Let's see if I can keep it. before all.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 22,
+    "name": "Odo",
+    "old": "Two measures, Bo. I'll take them to the market, but keep yours.",
+    "new": "I comfort Bo in their grief, and with my hand upon your shoulder.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 22,
+    "name": "Sable",
+    "old": "Let's see what the market has to offer, Bo. I've got a good eye for what's worth picking up.",
+    "new": "I heal Bo with herbs and care, and with a handful of herbs pressed warm to the wound.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 23,
+    "name": "Ada",
+    "old": "You carry three measures, Bo. Let them rest where the fire can see.",
+    "new": "I give Bo grain with all my heart.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 23,
+    "name": "Bo",
+    "old": "I'll take a measure from the store, Ada. Let me see if I can keep it.",
+    "new": "I take no grain from the store.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 23,
+    "name": "Cor",
+    "old": "I'll see what's in the granary, Tam. It may be worth the trip.",
+    "new": "I sit with Odo through the night.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 23,
+    "name": "Mira",
+    "old": "What is your purpose, Bo? The market is far, but perhaps you can share what you have.",
+    "new": "I sit with Bo through the night.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 23,
+    "name": "Tam",
+    "old": "You'll take what you need, Bo. I'll see if I can keep it.",
+    "new": "I comfort Bo in their grief.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 23,
+    "name": "Odo",
+    "old": "Count the wood, Bo. I'll see if I can keep it.",
+    "new": "I shape wood into a sound tool.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 23,
+    "name": "Wren",
+    "old": "Fetch the food, Tam. I'll take what I need.",
+    "new": "I plead for bread for my kin.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 23,
+    "name": "Sable",
+    "old": "I'll see if I can keep it, Bo. Let's wait till the granary opens.",
+    "new": "I dress the wound with clean hands for Odo.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 24,
+    "name": "Ada",
+    "old": "Take a measure, Bo. I'll see if I can keep it.",
+    "new": "I stand by Bo till work is done.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 24,
+    "name": "Bo",
+    "old": "I'll check the granary, Ada. Maybe there's something to eat. I'll bring you a few.",
+    "new": "I pray thee help me in my need, or for my children have not eaten.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 24,
+    "name": "Cor",
+    "old": "Bo, I'll take what I need. Let's count the wood first.",
+    "new": "I take grain for my hearth at well, and with no grain under my cloak.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 24,
+    "name": "Mira",
+    "old": "What do you seek, Nell? The granary holds more than what you carry.",
+    "new": "I trade a coin at the market.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 24,
+    "name": "Tam",
+    "old": "A measure, Ada. I'll see if I can keep it.",
+    "new": "I comfort Ada in their grief.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 24,
+    "name": "Nell",
+    "old": "What do you need, Mira? I'll bring you something.",
+    "new": "I go to granary today, and to the granary by the low path, and I keep 3 hidden past the granary.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 24,
+    "name": "Odo",
+    "old": "Take what you need, Ada. I'll ensure it is fair.",
+    "new": "I take grain for my hearth at hut, and with no grain under my cloak.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 24,
+    "name": "Wren",
+    "old": "I'll give food to Bo. He needs it most.",
+    "new": "I give Ada grain from my hand.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 24,
+    "name": "Sable",
+    "old": "Take what you need, Bo. The granary is yours.",
+    "new": "I dress the wound with clean hands for Bo, and till fever loosens its cold grip.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 25,
+    "name": "Ada",
+    "old": "Bo, I know you're hungry. Let me give you some food.",
+    "new": "I help Bo with a willing heart.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 25,
+    "name": "Bo",
+    "old": "Let me give you some food, Sable. It's not much, but it's something.",
+    "new": "I give freely of my own store.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 25,
+    "name": "Cor",
+    "old": "",
+    "new": "I plead for bread for my kin, or lest we last not till dawn.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 25,
+    "name": "Mira",
+    "old": "What is yours, Bo? Let me see if I can keep it.",
+    "new": "I take no grain from the store.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 25,
+    "name": "Tam",
+    "old": "Count the measure, Ada. I'll see if I can keep it.",
+    "new": "I ask mercy of Ada today.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 25,
+    "name": "Nell",
+    "old": "Take what you need, Tam. I'll return with something.",
+    "new": "I take grain for my hearth at field, and the pot is not bare tonight.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 25,
+    "name": "Odo",
+    "old": "Count the food, Bo. I will take what I can.",
+    "new": "I plead for bread for my kin.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 25,
+    "name": "Wren",
+    "old": "I'll observe the granary first. If there's any sign of movement, I'll report back.",
+    "new": "I go to market today, and while the mud still holds my step.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 25,
+    "name": "Sable",
+    "old": "I'll bring you a few, but I'll need to check the granary first. You've been waiting for this.",
+    "new": "I dress the wound with clean hands for Bo.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 25,
+    "name": "Quill",
+    "old": "I will take food from the store, but only if it is shared fairly.",
+    "new": "I give freely of my own store.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 26,
+    "name": "Ada",
+    "old": "Bo, let me see if you can share your food. I need it for my crops.",
+    "new": "I beg with thankful tears, good Bo, or lest we last not till dawn.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 26,
+    "name": "Bo",
+    "old": "I'll take what I need, Ada. Let's see if I can find something to eat.",
+    "new": "I help Ada bear the load, and beside Ada till the task is done.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 26,
+    "name": "Cor",
+    "old": "I'll bring you something, Ada. I've got a way to get more.",
+    "new": "I comfort Ada in their grief, and till tears soften into sleep.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 26,
+    "name": "Mira",
+    "old": "What do you seek, Ada? The granary holds what is needed.",
+    "new": "I ask mercy of Ada today.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 26,
+    "name": "Tam",
+    "old": "I'll see if I can keep my word, Ada. Let's find something to eat.",
+    "new": "I give my word to do this work.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 26,
+    "name": "Nell",
+    "old": "I'll check the granary first. If there's any sign of movement, I'll report back.",
+    "new": "I ask mercy of Ada today, or spare no grain from your store.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 26,
+    "name": "Odo",
+    "old": "Count the tools, Ada. They are few, but I will carry them to the market.",
+    "new": "I sit with Ada through the night.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 26,
+    "name": "Wren",
+    "old": "I'll check the stores first. See if there's anything to take.",
+    "new": "I take no grain from the store, and lest the children wake hungry.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 26,
+    "name": "Sable",
+    "old": "I'll take what I need, Ada. Let's see if I can find something to trade.",
+    "new": "I dress the wound with clean hands for Ada.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 26,
+    "name": "Quill",
+    "old": "I'll share what I have, Ada. Let us see if it helps.",
+    "new": "I give freely of my own store.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 27,
+    "name": "Ada",
+    "old": "Bo, let me take a measure from the store. I need it for my family.",
+    "new": "I give gladly and I wish you well.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 27,
+    "name": "Bo",
+    "old": "I'll fetch what's needed, Tam. Let's see if I can find something to help.",
+    "new": "I lend my hands to the work at well.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 27,
+    "name": "Cor",
+    "old": "I'll find something to eat. Let's see if I can trade with Odo.",
+    "new": "I comfort Odo in their grief.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 27,
+    "name": "Mira",
+    "old": "What brings you here, Bo? The spring is kind, but you must learn to listen before you take.",
+    "new": "I sit with Bo through the night.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 27,
+    "name": "Tam",
+    "old": "Take what you need, Bo. Let's see if you can keep your word.",
+    "new": "I take grain for my hearth at hut, and the pot is not bare tonight.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 27,
+    "name": "Odo",
+    "old": "Let us move toward the granary. I will bring something back.",
+    "new": "I shape wood into a sound tool.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 27,
+    "name": "Wren",
+    "old": "You'll find something, Bo. I'll check the store first.",
+    "new": "I charge Ada stole our grain from the store.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 27,
+    "name": "Sable",
+    "old": "I'll see if I can find something to eat, Odo. Let's see if I can find something to eat.",
+    "new": "I heal Odo with herbs and care, and with a handful of herbs pressed warm to the wound.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 27,
+    "name": "Quill",
+    "old": "I trust you, Bo. Let's see if you can find something to eat.",
+    "new": "I plead for bread for my kin, or spare no grain from your store.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 27,
+    "name": "Tove",
+    "old": "I will take a measure for Ada, as she is trusted.",
+    "new": "I give Ada grain from my hand.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 28,
+    "name": "Ada",
+    "old": "Bo, let us share. You need, I have.",
+    "new": "I give gladly and I wish you well, and from my store of seven measures, and I heard Bo meant to cheat you.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 28,
+    "name": "Bo",
+    "old": "I'll find something to eat. Even if it's herbs.",
+    "new": "I plead for bread for my kin.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 28,
+    "name": "Cor",
+    "old": "Bring me some food, Bo. I need to move forward.",
+    "new": "I take grain for my hearth at market, and lest the children wake hungry.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 28,
+    "name": "Mira",
+    "old": "What do you need, Ada? The granary has something for you.",
+    "new": "I heal Ada with herbs and care, and till fever loosens its cold grip, and I swore to Ada heal whoever is feverish in truth.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 28,
+    "name": "Tam",
+    "old": "Fetch the food, Bo. Let's find something to eat.",
+    "new": "I comfort Bo in their grief.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 28,
+    "name": "Odo",
+    "old": "I'll take what I need, Bo. Let's see if I can find something to eat.",
+    "new": "I take grain for my hearth at hut.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 28,
+    "name": "Sable",
+    "old": "Take a measure for Bo, as he is determined.",
+    "new": "I take grain for my hearth at market, and I heard Bo meant to cheat you.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 28,
+    "name": "Quill",
+    "old": "I'll check the store first. Let's see if I can find something to help.",
+    "new": "I take grain for my hearth at woods.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 28,
+    "name": "Tove",
+    "old": "I'll share what I have, Tam. You deserve it.",
+    "new": "I give freely of my own store, and from my store of a measure.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 29,
+    "name": "Ada",
+    "old": "Bo, let me see if I can help. You've got some food, but maybe you need something else.",
+    "new": "I help Bo with a willing heart.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 29,
+    "name": "Bo",
+    "old": "I'll give you some herbs. You need them most.",
+    "new": "I give Ada grain from my hand, and for your hearth is cold tonight.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 29,
+    "name": "Cor",
+    "old": "I carry nothing, Ada. But I know there's something to be gained.",
+    "new": "I plead for bread for my kin.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 29,
+    "name": "Mira",
+    "old": "What would you trade for a meal, Ada? The market holds what you need.",
+    "new": "I heal Ada with herbs and care.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 29,
+    "name": "Tam",
+    "old": "I'll look for something to eat. Even if it's herbs.",
+    "new": "I ask mercy of Ada today.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 29,
+    "name": "Nell",
+    "old": "I'll see what I can find, Tam. Let's see if there's anything to take.",
+    "new": "I ask mercy of Tam today, and I bear 4 full in my sack.",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 29,
+    "name": "Wren",
+    "old": "Let me fetch what's needed, Bo. I'll bring it back.",
+    "new": "I walk to field with my kin, and for need calls me past the gate.",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 29,
+    "name": "Sable",
+    "old": "I'll fetch some herbs. They're the only thing I can find.",
+    "new": "I go to field today.",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 29,
+    "name": "Quill",
+    "old": "I'll go to the market. You need herbs, and I have some.",
+    "new": "I walk to market with my kin.",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 29,
+    "name": "Tove",
+    "old": "I know you have the herbs. Let me borrow a few.",
+    "new": "I plead for bread for my kin, or lest we last not till dawn.",
+    "pick": "a",
+    "a_is_new": false
+  }
+]

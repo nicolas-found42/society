@@ -1,0 +1,12 @@
+{
+  "round": 1,
+  "kind": "lines",
+  "pairs": 236,
+  "ties_new_engine_matched_old": 42,
+  "new_wins": 105,
+  "old_wins": 131,
+  "no_answer": 0,
+  "new_win_rate": 0.4449152542372881,
+  "noise_band_95": 0.05877649410259858,
+  "verdict": "within noise of parity"
+}

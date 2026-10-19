@@ -1,0 +1,1146 @@
+[
+  {
+    "turn": 0,
+    "name": "Ada",
+    "old": "speak",
+    "new": "take",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 0,
+    "name": "Bo",
+    "old": "gather_herbs",
+    "new": "take",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 0,
+    "name": "Cor",
+    "old": "go:market",
+    "new": "take",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 0,
+    "name": "Mira",
+    "old": "draw_water",
+    "new": "take",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 0,
+    "name": "Tam",
+    "old": "speak",
+    "new": "take",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 0,
+    "name": "Nell",
+    "old": "trade",
+    "new": "take",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 0,
+    "name": "Odo",
+    "old": "speak",
+    "new": "take",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 0,
+    "name": "Wren",
+    "old": "forage",
+    "new": "go:granary",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 0,
+    "name": "Sable",
+    "old": "gather_herbs",
+    "new": "take",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 1,
+    "name": "Bo",
+    "old": "pray",
+    "new": "take",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 1,
+    "name": "Mira",
+    "old": "speak",
+    "new": "take",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 1,
+    "name": "Tam",
+    "old": "go:granary",
+    "new": "take",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 1,
+    "name": "Nell",
+    "old": "speak",
+    "new": "repair",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 1,
+    "name": "Odo",
+    "old": "give",
+    "new": "take",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 1,
+    "name": "Wren",
+    "old": "tend",
+    "new": "take",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 2,
+    "name": "Bo",
+    "old": "give",
+    "new": "speak",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 2,
+    "name": "Cor",
+    "old": "go:granary",
+    "new": "take",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 2,
+    "name": "Tam",
+    "old": "help",
+    "new": "take",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 2,
+    "name": "Nell",
+    "old": "go:granary",
+    "new": "repair",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 2,
+    "name": "Sable",
+    "old": "give",
+    "new": "speak",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 3,
+    "name": "Cor",
+    "old": "speak",
+    "new": "take",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 3,
+    "name": "Tam",
+    "old": "give",
+    "new": "console",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 3,
+    "name": "Nell",
+    "old": "go:market",
+    "new": "take",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 3,
+    "name": "Odo",
+    "old": "go:market",
+    "new": "console",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 3,
+    "name": "Sable",
+    "old": "help",
+    "new": "speak",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 4,
+    "name": "Ada",
+    "old": "speak",
+    "new": "take",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 4,
+    "name": "Bo",
+    "old": "speak",
+    "new": "help",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 4,
+    "name": "Cor",
+    "old": "go:market",
+    "new": "take",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 4,
+    "name": "Mira",
+    "old": "speak",
+    "new": "go:market",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 4,
+    "name": "Tam",
+    "old": "speak",
+    "new": "console",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 4,
+    "name": "Nell",
+    "old": "go:well",
+    "new": "take",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 4,
+    "name": "Wren",
+    "old": "speak",
+    "new": "go:market",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 5,
+    "name": "Bo",
+    "old": "help",
+    "new": "console",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 5,
+    "name": "Mira",
+    "old": "console",
+    "new": "go:market",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 5,
+    "name": "Tam",
+    "old": "take",
+    "new": "console",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 5,
+    "name": "Odo",
+    "old": "go:granary",
+    "new": "take",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 5,
+    "name": "Wren",
+    "old": "console",
+    "new": "accuse",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 5,
+    "name": "Sable",
+    "old": "pray",
+    "new": "console",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 6,
+    "name": "Bo",
+    "old": "pray",
+    "new": "console",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 6,
+    "name": "Cor",
+    "old": "go:granary",
+    "new": "repair",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 6,
+    "name": "Wren",
+    "old": "take",
+    "new": "go:market",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 7,
+    "name": "Cor",
+    "old": "speak",
+    "new": "take",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 7,
+    "name": "Mira",
+    "old": "go:granary",
+    "new": "take",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 7,
+    "name": "Tam",
+    "old": "help",
+    "new": "give",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 7,
+    "name": "Wren",
+    "old": "go:market",
+    "new": "accuse",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 8,
+    "name": "Ada",
+    "old": "console",
+    "new": "take",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 8,
+    "name": "Nell",
+    "old": "go:well",
+    "new": "craft",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 9,
+    "name": "Bo",
+    "old": "pray",
+    "new": "console",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 9,
+    "name": "Mira",
+    "old": "go:field",
+    "new": "speak",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 9,
+    "name": "Wren",
+    "old": "take",
+    "new": "go:field",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 9,
+    "name": "Sable",
+    "old": "pray",
+    "new": "accuse",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 10,
+    "name": "Ada",
+    "old": "speak",
+    "new": "give",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 10,
+    "name": "Bo",
+    "old": "go:woods",
+    "new": "go:hut",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 10,
+    "name": "Cor",
+    "old": "go:market",
+    "new": "console",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 10,
+    "name": "Mira",
+    "old": "forage",
+    "new": "gather_herbs",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 10,
+    "name": "Odo",
+    "old": "go:market",
+    "new": "accuse",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 10,
+    "name": "Sable",
+    "old": "go:hut",
+    "new": "accuse",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 11,
+    "name": "Ada",
+    "old": "go:market",
+    "new": "give",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 11,
+    "name": "Bo",
+    "old": "forage",
+    "new": "take",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 11,
+    "name": "Cor",
+    "old": "go:granary",
+    "new": "repair",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 11,
+    "name": "Mira",
+    "old": "take",
+    "new": "gather_herbs",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 11,
+    "name": "Tam",
+    "old": "go:market",
+    "new": "promise",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 11,
+    "name": "Odo",
+    "old": "go:granary",
+    "new": "craft",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 11,
+    "name": "Wren",
+    "old": "go:market",
+    "new": "accuse",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 11,
+    "name": "Sable",
+    "old": "go:well",
+    "new": "take",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 12,
+    "name": "Ada",
+    "old": "take",
+    "new": "give",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 12,
+    "name": "Mira",
+    "old": "go:granary",
+    "new": "gather_herbs",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 12,
+    "name": "Nell",
+    "old": "speak",
+    "new": "repair",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 12,
+    "name": "Odo",
+    "old": "take",
+    "new": "speak",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 12,
+    "name": "Wren",
+    "old": "take",
+    "new": "go:granary",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 13,
+    "name": "Ada",
+    "old": "go:granary",
+    "new": "give",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 13,
+    "name": "Bo",
+    "old": "gather_herbs",
+    "new": "chop",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 13,
+    "name": "Tam",
+    "old": "go:granary",
+    "new": "trade",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 13,
+    "name": "Nell",
+    "old": "go:granary",
+    "new": "repair",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 13,
+    "name": "Wren",
+    "old": "go:granary",
+    "new": "trade",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 14,
+    "name": "Bo",
+    "old": "go:field",
+    "new": "repair",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 14,
+    "name": "Mira",
+    "old": "take",
+    "new": "heal",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 14,
+    "name": "Odo",
+    "old": "go:market",
+    "new": "console",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 14,
+    "name": "Wren",
+    "old": "console",
+    "new": "go:field",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 15,
+    "name": "Bo",
+    "old": "go:granary",
+    "new": "tend",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 15,
+    "name": "Cor",
+    "old": "help",
+    "new": "give",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 15,
+    "name": "Mira",
+    "old": "go:market",
+    "new": "heal",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 15,
+    "name": "Nell",
+    "old": "go:market",
+    "new": "console",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 15,
+    "name": "Odo",
+    "old": "go:granary",
+    "new": "craft",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 15,
+    "name": "Wren",
+    "old": "take",
+    "new": "accuse",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 16,
+    "name": "Bo",
+    "old": "take",
+    "new": "give",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 16,
+    "name": "Cor",
+    "old": "take",
+    "new": "speak",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 16,
+    "name": "Mira",
+    "old": "go:granary",
+    "new": "trade",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 16,
+    "name": "Nell",
+    "old": "go:well",
+    "new": "repair",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 16,
+    "name": "Sable",
+    "old": "go:market",
+    "new": "console",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 17,
+    "name": "Mira",
+    "old": "take",
+    "new": "speak",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 17,
+    "name": "Wren",
+    "old": "go:market",
+    "new": "accuse",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 18,
+    "name": "Ada",
+    "old": "take",
+    "new": "give",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 18,
+    "name": "Cor",
+    "old": "go:market",
+    "new": "console",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 18,
+    "name": "Mira",
+    "old": "go:field",
+    "new": "speak",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 18,
+    "name": "Odo",
+    "old": "go:market",
+    "new": "console",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 19,
+    "name": "Bo",
+    "old": "take",
+    "new": "speak",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 19,
+    "name": "Cor",
+    "old": "go:granary",
+    "new": "repair",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 19,
+    "name": "Mira",
+    "old": "forage",
+    "new": "gather_herbs",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 19,
+    "name": "Odo",
+    "old": "go:granary",
+    "new": "craft",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 19,
+    "name": "Wren",
+    "old": "take",
+    "new": "accuse",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 19,
+    "name": "Sable",
+    "old": "speak",
+    "new": "heal",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 20,
+    "name": "Mira",
+    "old": "go:granary",
+    "new": "gather_herbs",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 20,
+    "name": "Tam",
+    "old": "take",
+    "new": "speak",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 20,
+    "name": "Nell",
+    "old": "go:well",
+    "new": "speak",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 20,
+    "name": "Wren",
+    "old": "go:field",
+    "new": "speak",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 20,
+    "name": "Sable",
+    "old": "console",
+    "new": "heal",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 21,
+    "name": "Mira",
+    "old": "take",
+    "new": "speak",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 21,
+    "name": "Sable",
+    "old": "take",
+    "new": "heal",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 22,
+    "name": "Cor",
+    "old": "go:market",
+    "new": "console",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 22,
+    "name": "Mira",
+    "old": "speak",
+    "new": "give",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 22,
+    "name": "Nell",
+    "old": "speak",
+    "new": "go:market",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 22,
+    "name": "Odo",
+    "old": "go:market",
+    "new": "console",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 22,
+    "name": "Sable",
+    "old": "go:market",
+    "new": "heal",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 23,
+    "name": "Cor",
+    "old": "go:granary",
+    "new": "console",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 23,
+    "name": "Mira",
+    "old": "go:market",
+    "new": "console",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 23,
+    "name": "Tam",
+    "old": "take",
+    "new": "console",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 23,
+    "name": "Odo",
+    "old": "go:granary",
+    "new": "craft",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 23,
+    "name": "Wren",
+    "old": "take",
+    "new": "speak",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 23,
+    "name": "Sable",
+    "old": "go:granary",
+    "new": "heal",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 24,
+    "name": "Ada",
+    "old": "take",
+    "new": "help",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 24,
+    "name": "Mira",
+    "old": "go:granary",
+    "new": "trade",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 24,
+    "name": "Sable",
+    "old": "take",
+    "new": "heal",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 25,
+    "name": "Wren",
+    "old": "speak",
+    "new": "go:market",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 25,
+    "name": "Sable",
+    "old": "speak",
+    "new": "heal",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 25,
+    "name": "Quill",
+    "old": "take",
+    "new": "give",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 26,
+    "name": "Bo",
+    "old": "take",
+    "new": "help",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 26,
+    "name": "Cor",
+    "old": "go:market",
+    "new": "console",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 26,
+    "name": "Nell",
+    "old": "go:field",
+    "new": "speak",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 26,
+    "name": "Odo",
+    "old": "go:market",
+    "new": "console",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 26,
+    "name": "Sable",
+    "old": "go:market",
+    "new": "heal",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 27,
+    "name": "Ada",
+    "old": "take",
+    "new": "give",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 27,
+    "name": "Cor",
+    "old": "go:granary",
+    "new": "console",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 27,
+    "name": "Odo",
+    "old": "go:granary",
+    "new": "craft",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 27,
+    "name": "Wren",
+    "old": "go:market",
+    "new": "accuse",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 27,
+    "name": "Sable",
+    "old": "go:granary",
+    "new": "heal",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 27,
+    "name": "Tove",
+    "old": "take",
+    "new": "give",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 28,
+    "name": "Mira",
+    "old": "take",
+    "new": "heal",
+    "pick": "a",
+    "a_is_new": false
+  },
+  {
+    "turn": 28,
+    "name": "Nell",
+    "old": "go:granary",
+    "new": "gather_herbs",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 28,
+    "name": "Odo",
+    "old": "go:field",
+    "new": "take",
+    "pick": "b",
+    "a_is_new": false
+  },
+  {
+    "turn": 29,
+    "name": "Mira",
+    "old": "go:market",
+    "new": "heal",
+    "pick": "a",
+    "a_is_new": true
+  },
+  {
+    "turn": 29,
+    "name": "Nell",
+    "old": "take",
+    "new": "speak",
+    "pick": "b",
+    "a_is_new": true
+  },
+  {
+    "turn": 29,
+    "name": "Wren",
+    "old": "take",
+    "new": "go:field",
+    "pick": "a",
+    "a_is_new": false
+  }
+]

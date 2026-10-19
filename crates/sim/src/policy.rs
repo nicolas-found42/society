@@ -228,19 +228,33 @@ fn term_promise_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
     }
 }
 
-/// Someone present who is starving, ill or thirsty needs the social acts that
-/// feed, heal or steady them.
+/// Someone present who is starving, ill or thirsty needs the acts that
+/// answer the need: food acts for hunger and thirst, heal and console for
+/// illness and grief. Speaking near need is worth something; consoling
+/// beside an empty stomach is not.
 fn term_social_need(w: &World, a: &Agent, c: &Candidate) -> f32 {
-    let needy = w.present(a.place, &a.name).into_iter().any(|n| {
-        w.agent(&n)
-            .is_some_and(|o| o.hunger >= 2 || o.thirst >= 2 || o.ailment.is_some() || o.health < 7)
-    });
-    if !needy {
+    let others: Vec<String> = w.present(a.place, &a.name);
+    if others.is_empty() {
         return 0.0;
     }
+    let needy =
+        |o: &String| w.agent(o).is_some_and(|x| x.hunger >= 2 || x.thirst >= 2);
+    let ill = |o: &String| {
+        w.agent(o).is_some_and(|x| x.ailment.is_some() || x.health < 6)
+    };
+    let grieving = |o: &String| {
+        w.agent(o)
+            .is_some_and(|x| x.stress >= 2.8 || x.hope < 0.8)
+    };
     match c.action.as_str() {
-        "give" | "help" | "heal" | "console" => 1.0,
-        "speak" => 0.4,
+        // Feeding answers hunger; healing answers illness; consoling answers
+        // grief. A console beside mere hunger answers nothing, and a heal
+        // beside a busy day is not medicine.
+        "give" | "help" if others.iter().any(needy) => 1.0,
+        "heal" if others.iter().any(ill) => 1.0,
+        "heal" if others.iter().any(grieving) => 0.3,
+        "console" if others.iter().any(ill) || others.iter().any(grieving) => 1.0,
+        "speak" if others.iter().any(needy) || others.iter().any(ill) => 0.4,
         _ => 0.0,
     }
 }
@@ -343,9 +357,16 @@ fn term_trust_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
     }
 }
 
-/// The action fits the mood.
+/// The action fits the villager's state: their mood, and their appetite
+/// below the survival threshold - a villager who is hungry and empty-handed
+/// is already leaning toward food, even before the tier takes over.
 fn term_mood_pull(_w: &World, a: &Agent, c: &Candidate) -> f32 {
-    let fits = match a.mood {
+    let hungry = a.hunger >= 1 && a.food == 0;
+    let peckish = a.hunger >= 1 && here_has_food_hint(c);
+    let fits = if hungry || peckish {
+        matches!(c.verb, Verb::Take | Verb::Forage | Verb::Steal | Verb::Move | Verb::DrawWater)
+    } else {
+        match a.mood {
         Mood::Desperate => matches!(c.verb, Verb::Take | Verb::Forage | Verb::Steal | Verb::Move),
         Mood::Weary => c.verb == Verb::Rest,
         Mood::Bitter => {
@@ -354,11 +375,19 @@ fn term_mood_pull(_w: &World, a: &Agent, c: &Candidate) -> f32 {
         Mood::Anxious => matches!(c.verb, Verb::Console | Verb::Pray),
         Mood::Grieving => matches!(c.verb, Verb::Pray | Verb::Console),
         Mood::Feverish => matches!(c.verb, Verb::Heal | Verb::Rest),
-        Mood::Hopeful => matches!(c.verb, Verb::Give | Verb::Help) || is_workish(c),
-        Mood::Determined => is_workish(c),
-        Mood::Content => is_workish(c) || c.verb == Verb::Speak,
+            Mood::Hopeful => matches!(c.verb, Verb::Give | Verb::Help) || is_workish(c),
+            Mood::Determined => is_workish(c),
+            Mood::Content => is_workish(c) || c.verb == Verb::Speak,
+        }
     };
     f32::from(fits)
+}
+
+/// Does the candidate act where food is? The appetite fit is about the
+/// candidate's own reach, not a world scan: taking, foraging and moves read
+/// as food-seeking; the place itself decides the rest.
+fn here_has_food_hint(c: &Candidate) -> bool {
+    matches!(c.verb, Verb::Take | Verb::Forage | Verb::Move)
 }
 
 /// Not taken in the last three turns (the novelty window).
