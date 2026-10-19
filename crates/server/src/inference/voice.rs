@@ -1,8 +1,10 @@
 //! Small-model voice. One job: turn a decided action into one spoken line.
 //!
 //! Constrained by measurement:
-//! * `format` is a flat JSON Schema with `why` **before** `say`, because field
-//!   order is what the structured-output literature actually fixes.
+//! * `format` is a flat JSON Schema with one field, `say`: the line is the only
+//!   thing the model answers. It used to carry a `why` clause in front of the
+//!   answer; measured, 45 of 45 were prompt fragments, and the engine read one
+//!   as the villager's goal (see `Voice::schema`).
 //! * Reasoning is per role at its lowest enabled level (`think: "low"`), not
 //!   `false`: beam has no `false` in its think values and ignores the flag,
 //!   spending the whole budget on reasoning and returning empty content. The
@@ -149,7 +151,6 @@ impl std::error::Error for VoiceError {}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Line {
     pub say: String,
-    pub why: String,
     pub model: String,
     pub latency_ms: u64,
 }
@@ -178,21 +179,28 @@ impl Voice {
         &self.cfg
     }
 
-    /// The single output schema. Flat, no `$ref`, reasoning field first.
+    /// The single output schema. Flat, no `$ref`, and one field: the line.
+    ///
+    /// The schema used to ask for a `why` clause in front of `say`, on the
+    /// theory that a small model writes a better line after naming its reason.
+    /// Measured, the clause was never a reason: 45 of 45 were prompt fragments —
+    /// a system-prompt example ("she will not leave him"), a card line
+    /// ("Village atmosphere: spring (dawn) · clear (14 °C) · morale 2.50"), a
+    /// label ("mood: determined", "person"). Worse, the engine preferred it as
+    /// the villager's goal whenever it was between 8 and 72 characters, so a
+    /// parroted fragment could become that villager's goal. The judgment layer
+    /// already knows why the villager acts; the motive belongs there, and this
+    /// model is asked only for the words.
     fn schema() -> Value {
         json!({
             "type": "object",
             "properties": {
-                "why": {
-                    "type": "string",
-                    "description": "One short clause naming what makes this line fit the moment"
-                },
                 "say": {
                     "type": "string",
                     "description": "The words spoken aloud, one line"
                 }
             },
-            "required": ["why", "say"]
+            "required": ["say"]
         })
     }
 
@@ -261,14 +269,14 @@ impl Voice {
         let cadence = Self::vocal_cadence(speaker);
         format!(
             "{role_clause} Reply with JSON only, matching this schema exactly:\n\
-            {{\"why\":\"<one short clause>\",\"say\":\"<one line spoken aloud>\"}}\n\n\
+            {{\"say\":\"<one line spoken aloud>\"}}\n\n\
             Examples of the required style:\n\
             Situation: Ada, market. Cor carries six, Ada carries two, nothing is owed.\n\
-            {{\"why\":\"she wants the debt settled in public\",\"say\":\"Six measures, Cor. Count them out where everyone can hear.\"}}\n\n\
+            {{\"say\":\"Six measures, Cor. Count them out where everyone can hear.\"}}\n\n\
             Situation: Ada, hut. Rain. Bo is here, sick, carrying none.\n\
-            {{\"why\":\"she will not leave him\",\"say\":\"Lie still. I will find something, even if it is roots.\"}}\n\n\
+            {{\"say\":\"Lie still. I will find something, even if it is roots.\"}}\n\n\
             Situation: Wren, well. Nobody here. The well is dry.\n\
-            {{\"why\":\"she has nothing left to try here\",\"say\":\"Nothing. Not even mud.\"}}\n\n\
+            {{\"say\":\"Nothing. Not even mud.\"}}\n\n\
             Vocal habit for {speaker}: {cadence}\n\n\
             Rules:\n\
             - `say` is speech only: no narration, no stage directions, no summary of the scene.\n\
@@ -360,14 +368,8 @@ impl Voice {
         if say.is_empty() {
             return Err(VoiceError::Malformed(format!("empty say in {content:?}")));
         }
-        let why = parsed
-            .get("why")
-            .and_then(|s| s.as_str())
-            .unwrap_or("")
-            .to_owned();
         Ok(Line {
             say,
-            why,
             model: model.to_owned(),
             latency_ms: started.elapsed().as_millis() as u64,
         })
@@ -485,16 +487,53 @@ mod tests {
     }
 
     #[test]
-    fn schema_puts_reasoning_before_the_answer() {
+    fn the_schema_asks_for_the_line_and_nothing_else() {
+        // The `why` clause is gone: measured, 45 of 45 were prompt fragments
+        // and the engine read one as the villager's goal. The motive is the
+        // judgment layer's answer; the voice model writes only the line.
         let s = Voice::schema();
-        let keys: Vec<&str> = s["properties"]
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect();
-        assert_eq!(keys, vec!["why", "say"]);
-        assert_eq!(s["required"].as_array().unwrap().len(), 2);
+        let props = s["properties"].as_object().unwrap();
+        assert_eq!(props.len(), 1, "{s}");
+        assert!(props.contains_key("say"), "{s}");
+        assert_eq!(s["required"], json!(["say"]), "{s}");
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_carries_only_say_parses_into_a_line() {
+        // The schema no longer has a second field, so a conforming reply has
+        // exactly one property and must still become a line.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let body = json!({"message": {"content": r#"{"say":"The well is dry."}"#}}).to_string();
+        std::thread::spawn(move || {
+            let Ok((mut s, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = [0_u8; 8192];
+            let _ = s.read(&mut buf);
+            let _ = write!(
+                s,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+        });
+
+        let v = Voice::new(VoiceConfig {
+            base_url: format!("http://127.0.0.1:{port}"),
+            actor_model: "beam:cloud".into(),
+            elder_model: "x".into(),
+            actor_think: Think::parse("low"),
+            elder_think: Think::parse("low"),
+            timeout: Duration::from_secs(2),
+            max_tokens: 64,
+        });
+        let line = v
+            .speak_once("card", "beam:cloud", "Ada", &Think::default(), false)
+            .await
+            .expect("a say-only reply is a line");
+        assert_eq!(line.say, "The well is dry.");
+        assert_eq!(line.model, "beam:cloud");
     }
 
     #[test]
@@ -597,7 +636,7 @@ mod tests {
                         b"HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0\r\nContent-Length: 2\r\n\r\n{}",
                     );
                 } else {
-                    let body = r#"{"message":{"content":"{\"why\":\"she is thirsty\",\"say\":\"The well is dry.\"}"}}"#;
+                    let body = r#"{"message":{"content":"{\"say\":\"The well is dry.\"}"}}"#;
                     let _ = write!(
                         s,
                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
@@ -622,7 +661,6 @@ mod tests {
             .await
             .expect("a rate-limited line is retried, not dropped");
         assert_eq!(line.say, "The well is dry.");
-        assert_eq!(line.why, "she is thirsty");
     }
 
     #[test]
