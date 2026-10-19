@@ -9,6 +9,9 @@
     reason = "milliseconds, confidences and counts that are small by construction"
 )]
 
+mod copy;
+pub use copy::{is_copy, normalize};
+
 pub mod devserver;
 pub mod engine;
 pub mod inference;
