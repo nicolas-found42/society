@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 
 use serde_json::{json, Map, Value};
 
-use crate::action::{action_phrase, affordances};
+use crate::action::{action_phrase, affordances, shortlist};
 use crate::world::{Agent, Place, World};
 
 /// The exact JSON handed to the judgment layer for one agent's turn.
@@ -144,6 +144,11 @@ pub fn judgment_state(w: &World, a: &Agent) -> Value {
             "to": p.to, "text": p.text, "made_turn": p.made_turn
         })),
         "legal_actions": affordances(w, a),
+        // The menu the intent question offers: one representative per kind of
+        // act, not every legal action. `legal_actions` stays for validation and
+        // for callers that need the full set; the choice is always checked
+        // against it, because an action outside the menu is still legal.
+        "offered_actions": shortlist(w, a),
     })
 }
 
@@ -585,6 +590,25 @@ mod tests {
         assert!(v.get("food_here").is_some());
         assert!(v.get("food_carried").is_some());
         assert!(v.get("legal_actions").is_some());
+    }
+
+    #[test]
+    fn judgment_state_offers_a_shortlist_next_to_the_legal_actions() {
+        let w = World::founding(1);
+        let a = &w.agents[0];
+        let v = judgment_state(&w, a);
+        // The intent question reads `offered_actions`; validation still reads
+        // `legal_actions`, so both must be present and the menu must be the
+        // narrower one.
+        let offered: Vec<String> =
+            serde_json::from_value(v.get("offered_actions").expect("shortlist").clone())
+                .expect("a list of ids");
+        let legal: Vec<String> =
+            serde_json::from_value(v.get("legal_actions").expect("legal list").clone())
+                .expect("a list of ids");
+        assert!(!offered.is_empty());
+        assert!(offered.len() <= legal.len());
+        assert!(offered.iter().all(|action| legal.contains(action)));
     }
 
     #[test]

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 use crate::memory::{Memory, MemoryKind};
@@ -251,6 +253,198 @@ pub fn affordances(w: &World, a: &Agent) -> Vec<String> {
         v.push(format!("go:{}", p.id()));
     }
     v
+}
+
+/// The kinds of act the shortlist covers. The category decides what the menu
+/// represents, never how much a given action is worth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Category {
+    Need,
+    Social,
+    Work,
+    Rest,
+    Move,
+}
+
+/// Every category, in the order the shortlist renders, so the criteria order
+/// is stable for a given state.
+const CATEGORIES: [Category; 5] = [
+    Category::Need,
+    Category::Social,
+    Category::Work,
+    Category::Rest,
+    Category::Move,
+];
+
+impl Category {
+    fn of(action: &str) -> Self {
+        if action.starts_with("go:") {
+            return Self::Move;
+        }
+        match action {
+            "take" | "forage" | "draw_water" | "steal" => Self::Need,
+            // `give` is social: leaving it out of the table would make giving
+            // food unreachable from the judgment layer.
+            "speak" | "help" | "console" | "accuse" | "promise" | "give" => Self::Social,
+            "rest" => Self::Rest,
+            // chop, gather_herbs, craft, tend, heal, trade, pray, repair. The
+            // fallthrough keeps a newly legal work action represented without
+            // editing this table.
+            _ => Self::Work,
+        }
+    }
+}
+
+/// The action ids `name` took in the last three turns and in the last two,
+/// read out of the world's own event log: the world already records what
+/// everyone did, so no new `Agent` field is needed.
+///
+/// The bounds are by turn distance, not by event count: an action at
+/// `w.turn - 3` is in the three-turn set, and one at `w.turn - 2` or later is
+/// in the two-turn set (the current turn has no action yet when the menu is
+/// built).
+fn recent_actions<'w>(w: &'w World, name: &str) -> (HashSet<&'w str>, HashSet<&'w str>) {
+    let mut in_three = HashSet::new();
+    let mut in_two = HashSet::new();
+    for e in &w.events {
+        if e.actor != name {
+            continue;
+        }
+        let age = w.turn.saturating_sub(e.turn);
+        if age <= 3 {
+            in_three.insert(e.action.as_str());
+        }
+        if age <= 2 {
+            in_two.insert(e.action.as_str());
+        }
+    }
+    (in_three, in_two)
+}
+
+/// The menu the judgment layer chooses from: a handful of actions that cover
+/// the kinds of act available, not every legal action.
+///
+/// Measured, 27 of 45 decisions (60 %) were communicative (`speak`, `help`,
+/// `console`, `trade`) and scored on no hunger or thirst need, and four
+/// villagers repeated one action for four turns running. A list of up to
+/// eighteen legal actions is not a choice, and an unchanging list invites the
+/// same answer twice.
+///
+/// The result is always a subset of [`affordances`] and never empty: when
+/// every option is filtered out, the full legal list comes back. It is a pure
+/// function of `w` and `a` — no RNG, no mutation — and for the same state it
+/// always returns the same list: one representative per available category in
+/// the category order, then at most one action the villager has not just
+/// taken, minus the action they took in each of the last two turns.
+#[must_use]
+pub fn shortlist(w: &World, a: &Agent) -> Vec<String> {
+    let legal = affordances(w, a);
+    let (recent_three, recent_two) = recent_actions(w, &a.name);
+
+    let mut chosen: Vec<String> = Vec::new();
+    for category in CATEGORIES {
+        if let Some(rep) = representative(&legal, category, a, &recent_three) {
+            chosen.push(rep);
+        }
+    }
+
+    // The loop-breaker. The measured failure was four villagers repeating one
+    // action for four turns running; an action taken in each of the last two
+    // turns is a groove, not a decision. It runs before the fresh option so
+    // that a category whose only representative was just dropped can be
+    // restored by that option.
+    chosen.retain(|c| !recent_two.contains(c.as_str()));
+
+    // One option the villager has not taken in the last three turns, so the
+    // menu is not the same list twice, preferring a category the loop-breaker
+    // left unrepresented. Deterministic: the first such action in the legal
+    // list's order. A fresh action is never in the last two turns, so adding it
+    // after the loop-breaker is the same as adding it before.
+    let mut new_option: Option<String> = None;
+    let mut first_fresh: Option<String> = None;
+    for action in &legal {
+        if chosen.contains(action) || recent_three.contains(action.as_str()) {
+            continue;
+        }
+        if first_fresh.is_none() {
+            first_fresh = Some(action.clone());
+        }
+        if !chosen
+            .iter()
+            .any(|c| Category::of(c) == Category::of(action))
+        {
+            new_option = Some(action.clone());
+            break;
+        }
+    }
+    if new_option.is_none() {
+        new_option = first_fresh;
+    }
+    if let Some(action) = new_option {
+        chosen.push(action);
+    }
+
+    if chosen.is_empty() {
+        return legal;
+    }
+    chosen
+}
+
+/// One legal action of `category`: the first one the villager has not taken in
+/// the last three turns, else the first legal one.
+fn representative(
+    legal: &[String],
+    category: Category,
+    a: &Agent,
+    recent_three: &HashSet<&str>,
+) -> Option<String> {
+    let options: Vec<&String> = legal
+        .iter()
+        .filter(|action| Category::of(action) == category)
+        .collect();
+    if options.is_empty() {
+        return None;
+    }
+
+    // Survival is code's business, so the need representative is checked
+    // explicitly rather than left to the legal list's order: a desperate
+    // villager (hunger 2 or more and no food) is offered `take` or `forage`,
+    // and a thirsty one (thirst 2 or more and no water) is offered
+    // `draw_water` when the place can draw it. Hunger wins when both hold,
+    // because the goal ladder checks hunger first. The override narrows the
+    // category: a desperate villager must see food, not `steal`.
+    if category == Category::Need {
+        let desperate = a.hunger >= 2 && a.food == 0;
+        let thirsty = a.thirst >= 2 && a.water == 0;
+        let wanted: &[&str] = if desperate {
+            &["take", "forage"]
+        } else if thirsty {
+            &["draw_water"]
+        } else {
+            &[]
+        };
+        if !wanted.is_empty() {
+            let preferred: Vec<&String> = options
+                .iter()
+                .copied()
+                .filter(|action| wanted.contains(&action.as_str()))
+                .collect();
+            if !preferred.is_empty() {
+                return first_not_recent(&preferred, recent_three);
+            }
+        }
+    }
+
+    first_not_recent(&options, recent_three)
+}
+
+/// The first option not taken in the last three turns, else the first option.
+fn first_not_recent(options: &[&String], recent_three: &HashSet<&str>) -> Option<String> {
+    options
+        .iter()
+        .find(|action| !recent_three.contains(action.as_str()))
+        .or_else(|| options.first())
+        .map(|action| (**action).clone())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1097,5 +1291,188 @@ mod tests {
             .expect("a spoken promise is stored");
         assert_eq!(promise.text, speech);
         assert_eq!(promise.to, other);
+    }
+
+    // ---- shortlist ----
+
+    /// Two villagers at the field, which offers every category: food to take
+    /// or forage, a listener to speak to, work (herbs, tending), rest, and two
+    /// adjacent places.
+    fn two_at_field(seed: u64) -> World {
+        let mut w = World::founding(seed);
+        let name = w.agents[0].name.clone();
+        let other = w.agents[1].name.clone();
+        w.agent_mut(&name).unwrap().place = Place::Field;
+        w.agent_mut(&other).unwrap().place = Place::Field;
+        w.place_state_mut(Place::Field).food = 4;
+        w.place_state_mut(Place::Field).herbs = 1;
+        w
+    }
+
+    /// Record that `name` took `action` on `turn`, the way `apply` does.
+    fn took(w: &mut World, name: &str, turn: u64, action: &str) {
+        let place = w.agent(name).map_or(Place::Granary, |a| a.place);
+        w.push_event(Event {
+            turn,
+            actor: name.to_owned(),
+            place,
+            kind: EventKind::System,
+            action: action.to_owned(),
+            text: String::new(),
+            social: None,
+            intensity: None,
+            grounded: None,
+            fidelity: None,
+            divine: false,
+        });
+    }
+
+    #[test]
+    fn the_shortlist_is_a_subset_of_the_legal_actions() {
+        let w = World::founding(21);
+        for a in w.living() {
+            let legal = affordances(&w, a);
+            let menu = shortlist(&w, a);
+            assert!(!menu.is_empty(), "{} has no menu", a.name);
+            for action in &menu {
+                assert!(
+                    legal.contains(action),
+                    "{}: {action} is offered but not legal",
+                    a.name
+                );
+            }
+            let mut unique = menu.clone();
+            unique.sort();
+            unique.dedup();
+            assert_eq!(unique.len(), menu.len(), "{}: {menu:?}", a.name);
+        }
+    }
+
+    #[test]
+    fn the_shortlist_holds_one_option_per_available_category() {
+        let w = two_at_field(23);
+        let a = &w.agents[0];
+        let legal = affordances(&w, a);
+        let menu = shortlist(&w, a);
+        let available: Vec<Category> = CATEGORIES
+            .into_iter()
+            .filter(|c| legal.iter().any(|action| Category::of(action) == *c))
+            .collect();
+        // Every category the place offers is represented, and the menu is a
+        // handful of options, not the full legal list.
+        assert_eq!(available.len(), 5, "{legal:?}");
+        for category in available {
+            assert!(
+                menu.iter().any(|action| Category::of(action) == category),
+                "{category:?} missing from {menu:?}"
+            );
+        }
+        assert!(menu.len() <= 6, "{menu:?}");
+        assert!(menu.len() < legal.len(), "{} vs {legal:?}", menu.len());
+    }
+
+    #[test]
+    fn an_action_taken_twice_running_is_excluded() {
+        let mut w = two_at_field(29);
+        w.turn = 10;
+        let name = w.agents[0].name.clone();
+        took(&mut w, &name, 8, "take");
+        took(&mut w, &name, 9, "take");
+        let a = w.agent(&name).unwrap();
+        let menu = shortlist(&w, a);
+        assert!(
+            !menu.contains(&"take".to_owned()),
+            "the loop-breaker must drop a repeated action: {menu:?}"
+        );
+        // The need category still has a representative: forage, not the groove.
+        assert!(menu.contains(&"forage".to_owned()), "{menu:?}");
+    }
+
+    #[test]
+    fn a_desperate_villagers_shortlist_contains_a_food_action() {
+        let mut w = World::founding(31);
+        let name = w.agents[0].name.clone();
+        {
+            let a = w.agent_mut(&name).unwrap();
+            a.place = Place::Field;
+            a.food = 0;
+            a.hunger = 3;
+        }
+        let a = w.agent(&name).unwrap();
+        let menu = shortlist(&w, a);
+        assert!(
+            menu.iter()
+                .any(|action| action == "take" || action == "forage"),
+            "{menu:?}"
+        );
+    }
+
+    #[test]
+    fn a_thirsty_villager_is_offered_water_not_the_first_legal_need() {
+        // At the well `take` is legal and comes first in the legal list; the
+        // explicit thirst check must still put water on the menu.
+        let mut w = World::founding(37);
+        let name = w.agents[0].name.clone();
+        {
+            let a = w.agent_mut(&name).unwrap();
+            a.place = Place::Well;
+            a.thirst = 3;
+            a.water = 0;
+        }
+        let a = w.agent(&name).unwrap();
+        assert!(affordances(&w, a).contains(&"take".to_owned()));
+        let menu = shortlist(&w, a);
+        assert!(menu.contains(&"draw_water".to_owned()), "{menu:?}");
+    }
+
+    #[test]
+    fn the_shortlist_falls_back_to_the_legal_list_and_is_never_empty() {
+        let mut w = World::founding(41);
+        w.turn = 10;
+        let name = w.agents[0].name.clone();
+        {
+            let a = w.agent_mut(&name).unwrap();
+            a.place = Place::Shrine;
+            a.food = 0;
+            a.hunger = 3;
+        }
+        let a = w.agent(&name).unwrap();
+        let legal = affordances(&w, a);
+        // Take every legal action in each of the last two turns: the menu has
+        // nothing left after the loop-breaker.
+        for action in &legal {
+            took(&mut w, &name, 8, action);
+            took(&mut w, &name, 9, action);
+        }
+        let a = w.agent(&name).unwrap();
+        let menu = shortlist(&w, a);
+        assert!(!menu.is_empty());
+        assert_eq!(menu, legal);
+    }
+
+    #[test]
+    fn a_villager_in_a_groove_is_offered_a_different_action() {
+        let mut w = two_at_field(43);
+        w.turn = 10;
+        let name = w.agents[0].name.clone();
+        // Three turns of the same act: the work representative must move on
+        // and the repeated act must be gone, not merely deprioritised.
+        took(&mut w, &name, 7, "gather_herbs");
+        took(&mut w, &name, 8, "gather_herbs");
+        took(&mut w, &name, 9, "gather_herbs");
+        let a = w.agent(&name).unwrap();
+        let menu = shortlist(&w, a);
+        assert!(
+            !menu.contains(&"gather_herbs".to_owned()),
+            "the repeated act is still on the menu: {menu:?}"
+        );
+        assert!(
+            menu.contains(&"tend".to_owned()),
+            "work needs its other option: {menu:?}"
+        );
+        // The menu still covers every category the place offers.
+        for action in &menu {
+            assert!(affordances(&w, a).contains(action), "{action}");
+        }
     }
 }

@@ -19,7 +19,7 @@ mod memory;
 mod rng;
 mod world;
 
-pub use action::{action_phrase, affordances, apply, Intent, Outcome, SocialAct, Verb};
+pub use action::{action_phrase, affordances, apply, shortlist, Intent, Outcome, SocialAct, Verb};
 pub use card::{
     agent_card, judgment_state, render_place_map, render_social_matrix, render_village_ui,
     render_villager_inspector, world_brief,
