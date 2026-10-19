@@ -1,0 +1,12 @@
+{
+  "seed": 7,
+  "turns": 40,
+  "population_end": 12,
+  "births": 3,
+  "deaths": 0,
+  "lines": 391,
+  "discredited": 0,
+  "discredited_rate": 0.0,
+  "trust_mean": 3.419393301010132,
+  "trust_spread_sd": 0.750231146812439
+}
