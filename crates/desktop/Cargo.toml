@@ -1,0 +1,21 @@
+[package]
+name = "society"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "society"
+path = "src/main.rs"
+
+[dependencies]
+society-sim.workspace = true
+society-server = { path = "../server" }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+eframe = "0.37"
+egui = "0.37"
+# Matches eframe's winit. Used only to stop macOS from activating the app on
+# launch: the observer window must never take focus from the user.
+winit = "0.30"
+clap = { version = "4", features = ["derive"] }

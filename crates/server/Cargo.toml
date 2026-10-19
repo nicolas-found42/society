@@ -1,0 +1,13 @@
+[package]
+name = "society-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+society-sim.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
+reqwest = { version = "0.12", features = ["json"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }

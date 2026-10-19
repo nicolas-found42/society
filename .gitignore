@@ -1,0 +1,8 @@
+/target
+/data
+/tools/shot-bin
+/.scratch/
+.DS_Store
+.env
+.env.*
+!.env.example

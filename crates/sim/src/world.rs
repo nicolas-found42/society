@@ -1,0 +1,1488 @@
+use serde::{Deserialize, Serialize};
+
+use crate::memory::{Belief, Fact, Memory, MemoryKind, MEMORY_CAP, REFLECTION_BUDGET};
+use crate::rng::Rng;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Place {
+    Granary,
+    Well,
+    Field,
+    Hut,
+    Market,
+    Shrine,
+    Woods,
+}
+
+impl Place {
+    pub const ALL: [Place; 7] = [
+        Place::Granary,
+        Place::Well,
+        Place::Field,
+        Place::Hut,
+        Place::Market,
+        Place::Shrine,
+        Place::Woods,
+    ];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Place::Granary => "granary",
+            Place::Well => "well",
+            Place::Field => "field",
+            Place::Hut => "hut",
+            Place::Market => "market",
+            Place::Shrine => "shrine",
+            Place::Woods => "woods",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Place::Granary => "The Granary",
+            Place::Well => "The Stone Well",
+            Place::Field => "The Barley Field",
+            Place::Hut => "The Long Hut",
+            Place::Market => "The Market Green",
+            Place::Shrine => "The Moss Shrine",
+            Place::Woods => "The Deep Woods",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            Place::Granary => "🏛",
+            Place::Well => "⛲",
+            Place::Field => "🌾",
+            Place::Hut => "🛖",
+            Place::Market => "⚖",
+            Place::Shrine => "⛩",
+            Place::Woods => "🌲",
+        }
+    }
+
+    pub fn from_id(s: &str) -> Option<Place> {
+        Place::ALL.into_iter().find(|p| p.id() == s)
+    }
+
+    /// Ring of seven. Symmetric; both directions are listed.
+    pub fn adjacent(self) -> &'static [Place] {
+        use Place::*;
+        match self {
+            Granary => &[Market, Field],
+            Field => &[Granary, Woods],
+            Market => &[Granary, Well],
+            Well => &[Market, Hut],
+            Hut => &[Well, Shrine],
+            Shrine => &[Hut, Woods],
+            Woods => &[Field, Shrine],
+        }
+    }
+
+    pub fn can_harvest(self) -> bool {
+        matches!(self, Place::Field | Place::Woods)
+    }
+
+    pub fn can_chop(self) -> bool {
+        matches!(self, Place::Woods)
+    }
+
+    pub fn can_draw_water(self) -> bool {
+        matches!(self, Place::Well)
+    }
+
+    pub fn can_gather_herbs(self) -> bool {
+        matches!(self, Place::Woods | Place::Shrine | Place::Field)
+    }
+
+    pub fn can_craft(self) -> bool {
+        matches!(self, Place::Market | Place::Hut)
+    }
+}
+
+pub const PLACES: [Place; 7] = Place::ALL;
+pub const ADJACENCY: [(&str, [&str; 2]); 7] = [
+    ("granary", ["market", "field"]),
+    ("field", ["granary", "woods"]),
+    ("market", ["granary", "well"]),
+    ("well", ["market", "hut"]),
+    ("hut", ["well", "shrine"]),
+    ("shrine", ["hut", "woods"]),
+    ("woods", ["field", "shrine"]),
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimeOfDay {
+    Dawn,
+    Morning,
+    Midday,
+    Afternoon,
+    Dusk,
+    Night,
+}
+
+impl TimeOfDay {
+    pub fn from_turn(turn: u64) -> Self {
+        match turn % 12 {
+            0 | 1 => TimeOfDay::Dawn,
+            2 | 3 => TimeOfDay::Morning,
+            4 | 5 => TimeOfDay::Midday,
+            6 | 7 => TimeOfDay::Afternoon,
+            8 | 9 => TimeOfDay::Dusk,
+            _ => TimeOfDay::Night,
+        }
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            TimeOfDay::Dawn => "dawn",
+            TimeOfDay::Morning => "morning",
+            TimeOfDay::Midday => "midday",
+            TimeOfDay::Afternoon => "afternoon",
+            TimeOfDay::Dusk => "dusk",
+            TimeOfDay::Night => "night",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            TimeOfDay::Dawn => "🌅",
+            TimeOfDay::Morning => "🌤",
+            TimeOfDay::Midday => "☀️",
+            TimeOfDay::Afternoon => "⛅",
+            TimeOfDay::Dusk => "🌇",
+            TimeOfDay::Night => "🌙",
+        }
+    }
+
+    pub fn is_night(self) -> bool {
+        matches!(self, TimeOfDay::Night)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Season {
+    Spring,
+    Summer,
+    Autumn,
+    Winter,
+}
+
+impl Season {
+    pub fn from_day(day: u64) -> Self {
+        match (day / 3) % 4 {
+            0 => Season::Spring,
+            1 => Season::Summer,
+            2 => Season::Autumn,
+            _ => Season::Winter,
+        }
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Season::Spring => "spring",
+            Season::Summer => "summer",
+            Season::Autumn => "autumn",
+            Season::Winter => "winter",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            Season::Spring => "🌱",
+            Season::Summer => "🌻",
+            Season::Autumn => "🍂",
+            Season::Winter => "❄️",
+        }
+    }
+
+    pub fn base_temp_c(self) -> i32 {
+        match self {
+            Season::Spring => 14,
+            Season::Summer => 23,
+            Season::Autumn => 10,
+            Season::Winter => -2,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WeatherKind {
+    Clear,
+    SoftRain,
+    BountifulSun,
+    Fog,
+    Frost,
+    Drought,
+    Storm,
+}
+
+impl WeatherKind {
+    pub fn id(self) -> &'static str {
+        match self {
+            WeatherKind::Clear => "clear",
+            WeatherKind::SoftRain => "soft_rain",
+            WeatherKind::BountifulSun => "bountiful_sun",
+            WeatherKind::Fog => "fog",
+            WeatherKind::Frost => "frost",
+            WeatherKind::Drought => "drought",
+            WeatherKind::Storm => "storm",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            WeatherKind::Clear => "☀",
+            WeatherKind::SoftRain => "🌧",
+            WeatherKind::BountifulSun => "🌞",
+            WeatherKind::Fog => "🌫",
+            WeatherKind::Frost => "🥶",
+            WeatherKind::Drought => "🏜",
+            WeatherKind::Storm => "⛈",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PlaceState {
+    pub food: u32,
+    /// Which agent, if any, holds the store against others.
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub water: u32,
+    #[serde(default)]
+    pub wood: u32,
+    #[serde(default)]
+    pub herbs: u32,
+    #[serde(default)]
+    pub tools: u32,
+    #[serde(default)]
+    pub coin: u32,
+    /// Structural condition from 1 ( dilapidated ) to 5 ( sturdy ).
+    #[serde(default = "default_condition")]
+    pub condition: u8,
+    /// Whether a warm fire is burning here (primarily Hut or Shrine).
+    #[serde(default)]
+    pub hearth_lit: bool,
+    /// Local soil or woodland fertility multiplier (0.5 .. 2.0).
+    #[serde(default = "default_fertility")]
+    pub fertility: f32,
+}
+
+fn default_condition() -> u8 {
+    4
+}
+
+fn default_fertility() -> f32 {
+    1.0
+}
+
+impl PlaceState {
+    pub fn new(food: u32) -> Self {
+        Self {
+            food,
+            owner: None,
+            water: 0,
+            wood: 0,
+            herbs: 0,
+            tools: 0,
+            coin: 0,
+            condition: 4,
+            hearth_lit: false,
+            fertility: 1.0,
+        }
+    }
+}
+
+/// Trust an agent starts with toward everyone: neither suspicion nor
+/// friendship. A child begins neutral toward the whole village, parents
+/// included, and earns its opinions from what it witnesses.
+pub const NEUTRAL_TRUST: f32 = 2.0;
+
+/// A birth drains the public store. A village that has not solved its food
+/// problem cannot grow its way out of it.
+pub const BIRTH_COST: u32 = 6;
+
+/// Living villagers the land can carry. Growth past the founding nine is
+/// possible; a runaway is not.
+pub const POPULATION_CAP: usize = 12;
+
+/// Mutual trust, on the 0..4 scale, required before a pair may have a child.
+pub const BIRTH_TRUST: f32 = 3.5;
+
+/// Turns a villager must have been alive before they can parent, so the
+/// founding cast cannot pair off on turn one.
+pub const BIRTH_MIN_AGE: u64 = 24;
+
+/// What a child carries at birth: the village has to carry them.
+pub const CHILD_FOOD: u32 = 1;
+
+/// Standing every villager starts with: neither respected nor despised.
+pub const STARTING_STANDING: f32 = 2.0;
+
+/// Fixed local name pool for children. Choosing needs no network call, and
+/// deterministic selection keeps a seed replayable.
+const CHILD_NAMES: [&str; 24] = [
+    "Ash", "Bram", "Cael", "Dara", "Ede", "Fen", "Gale", "Hale", "Ivo", "Juna",
+    "Kira", "Lark", "Mab", "Nim", "Orin", "Pell", "Quill", "Rhea", "Sen", "Tove",
+    "Ulla", "Vale", "Wisp", "Yara",
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    Steward,
+    #[default]
+    Farmer,
+    Woodcutter,
+    Herbalist,
+    Artisan,
+    Watchman,
+    Elder,
+    Trader,
+    Forager,
+}
+
+impl Role {
+    pub fn id(self) -> &'static str {
+        match self {
+            Role::Steward => "steward",
+            Role::Farmer => "farmer",
+            Role::Woodcutter => "woodcutter",
+            Role::Herbalist => "herbalist",
+            Role::Artisan => "artisan",
+            Role::Watchman => "watchman",
+            Role::Elder => "elder",
+            Role::Trader => "trader",
+            Role::Forager => "forager",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            Role::Steward => "📜",
+            Role::Farmer => "🌾",
+            Role::Woodcutter => "🪓",
+            Role::Herbalist => "🌿",
+            Role::Artisan => "⚒",
+            Role::Watchman => "🛡",
+            Role::Elder => "🕯",
+            Role::Trader => "⚖",
+            Role::Forager => "🧺",
+        }
+    }
+
+    pub fn for_founder(name: &str) -> Self {
+        match name {
+            "Ada" => Role::Steward,
+            "Bo" => Role::Farmer,
+            "Cor" => Role::Trader,
+            "Mira" => Role::Herbalist,
+            "Tam" => Role::Elder,
+            "Nell" => Role::Forager,
+            "Odo" => Role::Artisan,
+            "Wren" => Role::Watchman,
+            "Sable" => Role::Woodcutter,
+            _ => Role::Farmer,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Skills {
+    pub farming: u8,
+    pub forestry: u8,
+    pub herbalism: u8,
+    pub craft: u8,
+    pub stewardship: u8,
+    pub counsel: u8,
+}
+
+impl Skills {
+    pub fn for_role(role: Role) -> Self {
+        let mut s = Self {
+            farming: 1,
+            forestry: 1,
+            herbalism: 1,
+            craft: 1,
+            stewardship: 1,
+            counsel: 1,
+        };
+        match role {
+            Role::Steward => s.stewardship = 3,
+            Role::Farmer => s.farming = 3,
+            Role::Woodcutter => s.forestry = 3,
+            Role::Herbalist => s.herbalism = 3,
+            Role::Artisan => s.craft = 3,
+            Role::Watchman => {
+                s.forestry = 2;
+                s.stewardship = 2;
+            }
+            Role::Elder => s.counsel = 3,
+            Role::Trader => {
+                s.craft = 2;
+                s.stewardship = 2;
+            }
+            Role::Forager => {
+                s.farming = 2;
+                s.herbalism = 2;
+            }
+        }
+        s
+    }
+
+    pub fn top_skill(&self) -> (&'static str, u8) {
+        let all = [
+            ("farming", self.farming),
+            ("forestry", self.forestry),
+            ("herbalism", self.herbalism),
+            ("craft", self.craft),
+            ("stewardship", self.stewardship),
+            ("counsel", self.counsel),
+        ];
+        all.into_iter().max_by_key(|(_, v)| *v).unwrap_or(("farming", 1))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ailment {
+    Chill,
+    Fever,
+    Exhaustion,
+    Injury,
+    Heartache,
+}
+
+impl Ailment {
+    pub fn id(self) -> &'static str {
+        match self {
+            Ailment::Chill => "chill",
+            Ailment::Fever => "fever",
+            Ailment::Exhaustion => "exhaustion",
+            Ailment::Injury => "injury",
+            Ailment::Heartache => "heartache",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Mood {
+    #[default]
+    Content,
+    Hopeful,
+    Determined,
+    Anxious,
+    Weary,
+    Bitter,
+    Grieving,
+    Feverish,
+    Desperate,
+}
+
+impl Mood {
+    pub fn id(self) -> &'static str {
+        match self {
+            Mood::Content => "content",
+            Mood::Hopeful => "hopeful",
+            Mood::Determined => "determined",
+            Mood::Anxious => "anxious",
+            Mood::Weary => "weary",
+            Mood::Bitter => "bitter",
+            Mood::Grieving => "grieving",
+            Mood::Feverish => "feverish",
+            Mood::Desperate => "desperate",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            Mood::Content => "🙂",
+            Mood::Hopeful => "✨",
+            Mood::Determined => "🔥",
+            Mood::Anxious => "😟",
+            Mood::Weary => "😮‍💨",
+            Mood::Bitter => "😠",
+            Mood::Grieving => "🖤",
+            Mood::Feverish => "🤒",
+            Mood::Desperate => "🚨",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Kinship {
+    #[default]
+    Acquaintance,
+    Friend,
+    Confidant,
+    Partner,
+    Parent,
+    Child,
+    Sibling,
+    Rival,
+}
+
+impl Kinship {
+    pub fn id(self) -> &'static str {
+        match self {
+            Kinship::Acquaintance => "acquaintance",
+            Kinship::Friend => "friend",
+            Kinship::Confidant => "confidant",
+            Kinship::Partner => "partner",
+            Kinship::Parent => "parent",
+            Kinship::Child => "child",
+            Kinship::Sibling => "sibling",
+            Kinship::Rival => "rival",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RelationDetail {
+    pub other: String,
+    pub affinity: f32,
+    pub respect: f32,
+    pub grudge: f32,
+    pub kinship: Kinship,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Agent {
+    pub name: String,
+    pub persona: String,
+    pub place: Place,
+    pub food: u32,
+    /// 0 fed .. 3 starving.
+    pub hunger: u8,
+    pub starving_turns: u8,
+    pub standing: f32,
+    pub alive: bool,
+    /// Trust toward every other agent, 0..4.
+    pub trust: Vec<(String, f32)>,
+    pub memories: Vec<Memory>,
+    /// One unresolved commitment, if any.
+    pub promise: Option<Promise>,
+    /// The turn this villager entered the world. 0 for the founding cast.
+    pub born_turn: u64,
+    /// 0 for the founding cast; one more than the elder parent otherwise.
+    pub generation: u8,
+    /// Both parents' names; empty exactly for the founding cast.
+    pub parents: Vec<String>,
+    /// Additional carried resources.
+    #[serde(default)]
+    pub water: u32,
+    #[serde(default)]
+    pub wood: u32,
+    #[serde(default)]
+    pub herbs: u32,
+    #[serde(default)]
+    pub tools: u32,
+    #[serde(default)]
+    pub coin: u32,
+    /// Deeper physical & mental vitals.
+    #[serde(default)]
+    pub thirst: u8,
+    #[serde(default = "default_energy")]
+    pub energy: u8,
+    #[serde(default = "default_warmth")]
+    pub warmth: u8,
+    #[serde(default = "default_health")]
+    pub health: u8,
+    #[serde(default)]
+    pub ailment: Option<Ailment>,
+    #[serde(default)]
+    pub role: Role,
+    #[serde(default)]
+    pub skills: Skills,
+    #[serde(default)]
+    pub mood: Mood,
+    #[serde(default)]
+    pub stress: f32,
+    #[serde(default = "default_hope")]
+    pub hope: f32,
+    #[serde(default = "default_hope")]
+    pub devotion: f32,
+    #[serde(default)]
+    pub current_goal: String,
+    #[serde(default)]
+    pub partner: Option<String>,
+    #[serde(default)]
+    pub relations: Vec<RelationDetail>,
+    #[serde(default)]
+    pub beliefs: Vec<Belief>,
+    #[serde(default)]
+    pub facts: Vec<Fact>,
+    #[serde(default)]
+    pub reflection_poignancy: f32,
+}
+
+fn default_energy() -> u8 {
+    8
+}
+fn default_warmth() -> u8 {
+    3
+}
+fn default_health() -> u8 {
+    10
+}
+fn default_hope() -> f32 {
+    2.5
+}
+
+impl Agent {
+    /// The single way a villager comes into existence. The founding cast and
+    /// every child go through here, so trust seeding, lineage, food and hunger
+    /// are one rule rather than two that can drift apart.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        name: impl Into<String>,
+        persona: impl Into<String>,
+        place: Place,
+        food: u32,
+        hunger: u8,
+        born_turn: u64,
+        generation: u8,
+        parents: Vec<String>,
+        living: &[String],
+    ) -> Self {
+        let name = name.into();
+        let trust = living
+            .iter()
+            .filter(|n| **n != name)
+            .map(|n| (n.clone(), NEUTRAL_TRUST))
+            .collect();
+        let relations = living
+            .iter()
+            .filter(|n| **n != name)
+            .map(|n| {
+                let kinship = if parents.contains(n) {
+                    Kinship::Parent
+                } else {
+                    Kinship::Acquaintance
+                };
+                RelationDetail {
+                    other: n.clone(),
+                    affinity: NEUTRAL_TRUST,
+                    respect: NEUTRAL_TRUST,
+                    grudge: 0.0,
+                    kinship,
+                }
+            })
+            .collect();
+        let role = Role::for_founder(&name);
+        let skills = Skills::for_role(role);
+        Self {
+            name,
+            persona: persona.into(),
+            place,
+            food,
+            hunger,
+            starving_turns: 0,
+            standing: STARTING_STANDING,
+            alive: true,
+            trust,
+            memories: Vec::new(),
+            promise: None,
+            born_turn,
+            generation,
+            parents,
+            water: 1,
+            wood: 0,
+            herbs: 0,
+            tools: if matches!(role, Role::Artisan | Role::Woodcutter | Role::Farmer) { 1 } else { 0 },
+            coin: if matches!(role, Role::Trader | Role::Steward) { 2 } else { 1 },
+            thirst: 0,
+            energy: 8,
+            warmth: 3,
+            health: 10,
+            ailment: None,
+            role,
+            skills,
+            mood: Mood::Content,
+            stress: 0.5,
+            hope: 2.5,
+            devotion: 2.0,
+            current_goal: "secure food and keep the settlement whole".into(),
+            partner: None,
+            relations,
+            beliefs: Vec::new(),
+            facts: Vec::new(),
+            reflection_poignancy: 0.0,
+        }
+    }
+
+    pub fn trust_of(&self, other: &str) -> f32 {
+        self.trust
+            .iter()
+            .find(|(n, _)| n == other)
+            .map(|(_, v)| *v)
+            .unwrap_or(NEUTRAL_TRUST)
+    }
+
+    pub fn set_trust(&mut self, other: &str, v: f32) {
+        let v = ((v.clamp(0.0, 4.0)) * 100.0).round() / 100.0;
+        if let Some(slot) = self.trust.iter_mut().find(|(n, _)| n == other) {
+            slot.1 = v;
+        } else {
+            self.trust.push((other.to_string(), v));
+        }
+        self.sync_relation_from_trust(other, v);
+    }
+
+    pub fn adjust_trust(&mut self, other: &str, delta: f32) {
+        let v = self.trust_of(other) + delta;
+        self.set_trust(other, v);
+        if let Some(rel) = self.relations.iter_mut().find(|r| r.other == other) {
+            rel.affinity = (rel.affinity + delta * 0.8).clamp(0.0, 4.0);
+            if delta < -0.3 {
+                rel.grudge = (rel.grudge + (-delta)).clamp(0.0, 4.0);
+            } else if delta > 0.2 {
+                rel.grudge = (rel.grudge - delta * 0.5).clamp(0.0, 4.0);
+            }
+        }
+    }
+
+    fn sync_relation_from_trust(&mut self, other: &str, trust_val: f32) {
+        if let Some(rel) = self.relations.iter_mut().find(|r| r.other == other) {
+            rel.affinity = ((rel.affinity + trust_val) * 0.5).clamp(0.0, 4.0);
+            if !matches!(
+                rel.kinship,
+                Kinship::Parent | Kinship::Child | Kinship::Sibling | Kinship::Partner
+            ) {
+                rel.kinship = if trust_val >= 3.4 && rel.grudge < 0.5 {
+                    Kinship::Confidant
+                } else if trust_val >= 2.7 {
+                    Kinship::Friend
+                } else if trust_val <= 1.0 || rel.grudge >= 1.5 {
+                    Kinship::Rival
+                } else {
+                    Kinship::Acquaintance
+                };
+            }
+        } else {
+            self.relations.push(RelationDetail {
+                other: other.to_string(),
+                affinity: trust_val,
+                respect: NEUTRAL_TRUST,
+                grudge: 0.0,
+                kinship: Kinship::Acquaintance,
+            });
+        }
+    }
+
+    pub fn relation_with(&self, other: &str) -> Option<&RelationDetail> {
+        self.relations.iter().find(|r| r.other == other)
+    }
+
+    pub fn observe_place(&mut self, place: Place, st: &PlaceState, tick: u64) {
+        let key = format!("{}:food", place.id());
+        if let Some(b) = self.beliefs.iter_mut().find(|b| b.about == key) {
+            *b = Belief::observed(key, st.food as i32, tick);
+        } else {
+            self.beliefs.push(Belief::observed(key, st.food as i32, tick));
+        }
+    }
+
+    pub fn record_fact(&mut self, subject: impl Into<String>, text: impl Into<String>, tick: u64, confidence: f32) {
+        let subject = subject.into();
+        let text = text.into();
+        for f in self.facts.iter_mut() {
+            if f.subject == subject && f.live(tick) && f.text != text {
+                f.invalid_at = Some(tick);
+            }
+        }
+        let id = self.facts.len() as u64 + 1;
+        self.facts.push(Fact {
+            id,
+            subject,
+            text,
+            valid_at: tick,
+            invalid_at: None,
+            expired_at: None,
+            confidence,
+        });
+    }
+
+    pub fn refresh_mood_and_goal(&mut self, season: Season) {
+        self.mood = if self.hunger >= 3 || self.starving_turns > 0 {
+            Mood::Desperate
+        } else if self.ailment.is_some() {
+            Mood::Feverish
+        } else if self.memories.iter().any(|m| m.permanent && m.turn + 12 >= self.born_turn)
+            && self.stress >= 2.5
+        {
+            Mood::Grieving
+        } else if self.stress >= 2.8 {
+            Mood::Anxious
+        } else if self.energy <= 2 {
+            Mood::Weary
+        } else if self.relations.iter().any(|r| r.grudge >= 1.8) {
+            Mood::Bitter
+        } else if self.hope >= 3.0 && self.food >= 2 {
+            Mood::Hopeful
+        } else if self.skills.top_skill().1 >= 4 {
+            Mood::Determined
+        } else {
+            Mood::Content
+        };
+
+        self.current_goal = if self.hunger >= 2 && self.food == 0 {
+            "find grain or forage immediately before starving".into()
+        } else if self.thirst >= 2 && self.water == 0 {
+            "draw fresh water from the well".into()
+        } else if self.ailment.is_some() {
+            "seek herbs or rest to recover health".into()
+        } else if season == Season::Winter && self.warmth <= 1 {
+            "gather firewood and warm by the hut hearth".into()
+        } else if let Some(pr) = &self.promise {
+            format!("keep promise to {}", pr.to)
+        } else {
+            match self.role {
+                Role::Steward => "balance the granary stores and prevent theft".into(),
+                Role::Farmer => "tend the barley field and bring in the harvest".into(),
+                Role::Woodcutter => "keep the settlement stocked with timber and firewood".into(),
+                Role::Herbalist => "gather medicinal herbs and heal the sick".into(),
+                Role::Artisan => "craft sturdy tools and keep structures in repair".into(),
+                Role::Watchman => "patrol the ring and guard against betrayal".into(),
+                Role::Elder => "counsel the anxious and preserve village memory".into(),
+                Role::Trader => "circulate tools, timber, and grain at the market".into(),
+                Role::Forager => "search the woods and field margins for wild stores".into(),
+            }
+        };
+    }
+
+    /// Insert a memory, then enforce the cap. Scars are never evicted.
+    pub fn remember(&mut self, m: Memory) {
+        self.reflection_poignancy += m.salience * 25.0;
+        self.memories.push(m);
+        self.compact();
+        if self.reflection_poignancy >= REFLECTION_BUDGET {
+            self.reflection_poignancy = 0.0;
+            let (_, top_skill_lvl) = self.skills.top_skill();
+            let insight = format!(
+                "You reflected on your place as {} (skill {}, trust of village {:.1}).",
+                self.role.id(),
+                top_skill_lvl,
+                self.standing
+            );
+            self.memories.push(
+                Memory::new(self.born_turn, insight, 0.75, MemoryKind::Reflection)
+                    .with_valence(0.2)
+                    .with_tag("reflection"),
+            );
+            self.compact();
+        }
+    }
+
+    fn compact(&mut self) {
+        if self.memories.len() <= MEMORY_CAP {
+            return;
+        }
+        // Evict the weakest non-permanent memory until we fit.
+        while self.memories.len() > MEMORY_CAP {
+            let victim = self
+                .memories
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| !m.permanent)
+                .min_by(|a, b| a.1.salience.total_cmp(&b.1.salience))
+                .map(|(i, _)| i);
+            match victim {
+                Some(i) => {
+                    self.memories.remove(i);
+                }
+                None => break,
+            }
+        }
+    }
+
+    pub fn memories_brief(&self, now: u64) -> Vec<(f32, String)> {
+        let mut v: Vec<(f32, String)> = self
+            .memories
+            .iter()
+            .map(|m| (m.weight(now, 12.0), m.text.clone()))
+            .collect();
+        v.sort_by(|a, b| b.0.total_cmp(&a.0));
+        v
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Promise {
+    pub to: String,
+    pub text: String,
+    pub made_turn: u64,
+    pub kept: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventKind {
+    Speech,
+    Move,
+    Transfer,
+    Harvest,
+    Rest,
+    Betrayal,
+    Accusation,
+    Promise,
+    Death,
+    Birth,
+    Divine,
+    Craft,
+    Heal,
+    Prayer,
+    Repair,
+    Trade,
+    Bond,
+    Confusion,
+    System,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Event {
+    pub turn: u64,
+    pub actor: String,
+    pub place: Place,
+    pub kind: EventKind,
+    pub action: String,
+    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub social: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intensity: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grounded: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fidelity: Option<f32>,
+    pub divine: bool,
+}
+
+impl Event {
+    pub fn line(&self) -> String {
+        format!("{} at the {}: {}", self.actor, self.place.id(), self.text)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct World {
+    pub seed: u64,
+    pub turn: u64,
+    pub day: u64,
+    pub agents: Vec<Agent>,
+    pub places: Vec<(Place, PlaceState)>,
+    pub events: Vec<Event>,
+    /// Weather multiplier for harvest this day.
+    pub weather: f32,
+    #[serde(default = "default_weather_kind")]
+    pub weather_kind: WeatherKind,
+    #[serde(default = "default_temp_c")]
+    pub temperature_c: i32,
+    #[serde(default)]
+    pub village_morale: f32,
+    pub rng: Rng,
+    pub halted: Option<String>,
+}
+
+fn default_weather_kind() -> WeatherKind {
+    WeatherKind::Clear
+}
+
+fn default_temp_c() -> i32 {
+    14
+}
+
+impl World {
+    /// Keep the harvest multiplier and visible weather in sync for natural
+    /// weather changes and observer interventions alike.
+    pub fn set_weather(&mut self, multiplier: f32) {
+        self.weather = multiplier;
+        let new_season = self.season();
+        self.weather_kind = match new_season {
+            Season::Winter if self.weather < 0.85 => WeatherKind::Frost,
+            Season::Winter => WeatherKind::Clear,
+            Season::Summer if self.weather > 1.25 => WeatherKind::BountifulSun,
+            Season::Summer if self.weather < 0.75 => WeatherKind::Drought,
+            _ if self.weather > 1.2 => WeatherKind::SoftRain,
+            _ if self.weather < 0.75 => WeatherKind::Fog,
+            _ => WeatherKind::Clear,
+        };
+        self.temperature_c = new_season.base_temp_c() + ((self.weather - 1.0) * 6.0).round() as i32;
+    }
+
+    pub fn founding(seed: u64) -> Self {
+        let mut rng = Rng::new(seed);
+        let cast = [
+            ("Ada", "cautious and loyal; keeps accounts in her head and says them out loud; short plain sentences; hates being cheated"),
+            ("Bo", "anxious and generous; apologises too much; speaks in half-finished sentences"),
+            ("Cor", "proud and evasive; boasts about his stores; never admits fault; deflects with questions"),
+            ("Mira", "calm and watchful; speaks in proverbs and questions; brokers peace but remembers everything"),
+            ("Tam", "old and tired; speaks of weather and the dead; has no patience for feuds"),
+            ("Nell", "quick and curious; asks the question nobody wants asked"),
+            ("Odo", "stubborn and fair; divides things by the count, out loud"),
+            ("Wren", "quiet and watchful; says little, notices everything"),
+            ("Sable", "sharp and hungry; arrived last winter and has not been forgiven"),
+        ];
+        let names: Vec<String> = cast.iter().map(|(n, _)| n.to_string()).collect();
+        let mut agents = Vec::new();
+        for (i, (name, persona)) in cast.iter().enumerate() {
+            let place = if i == 0 { Place::Granary } else { Place::ALL[rng.below(Place::ALL.len())] };
+            // Founding and birth share one constructor, so neither invents a
+            // different notion of what a villager starts with.
+            agents.push(Agent::new(
+                *name,
+                *persona,
+                place,
+                1 + rng.below(2) as u32,
+                1,
+                0,
+                0,
+                Vec::new(),
+                &names,
+            ));
+        }
+        let mut places = Vec::new();
+        for p in Place::ALL {
+            let st = match p {
+                Place::Granary => PlaceState {
+                    food: 9, water: 2, wood: 2, herbs: 1, tools: 2, coin: 4,
+                    owner: None, condition: 5, hearth_lit: false, fertility: 1.0,
+                },
+                Place::Field => PlaceState {
+                    food: 4, water: 2, wood: 0, herbs: 1, tools: 1, coin: 0,
+                    owner: None, condition: 4, hearth_lit: false, fertility: 1.2,
+                },
+                Place::Market => PlaceState {
+                    food: 3, water: 1, wood: 3, herbs: 2, tools: 3, coin: 8,
+                    owner: None, condition: 4, hearth_lit: false, fertility: 1.0,
+                },
+                Place::Well => PlaceState {
+                    food: 1, water: 12, wood: 0, herbs: 1, tools: 0, coin: 1,
+                    owner: None, condition: 5, hearth_lit: false, fertility: 1.1,
+                },
+                Place::Hut => PlaceState {
+                    food: 2, water: 3, wood: 4, herbs: 1, tools: 1, coin: 0,
+                    owner: None, condition: 5, hearth_lit: true, fertility: 1.0,
+                },
+                Place::Shrine => PlaceState {
+                    food: 1, water: 2, wood: 1, herbs: 4, tools: 0, coin: 2,
+                    owner: None, condition: 5, hearth_lit: true, fertility: 1.1,
+                },
+                Place::Woods => PlaceState {
+                    food: 3, water: 2, wood: 8, herbs: 5, tools: 0, coin: 0,
+                    owner: None, condition: 4, hearth_lit: false, fertility: 1.3,
+                },
+            };
+            places.push((p, st));
+        }
+        let mut w = Self {
+            seed,
+            turn: 0,
+            day: 0,
+            agents,
+            places,
+            events: Vec::new(),
+            weather: 1.0,
+            weather_kind: WeatherKind::Clear,
+            temperature_c: 14,
+            village_morale: 2.5,
+            rng,
+            halted: None,
+        };
+        for a in w.agents.iter_mut() {
+            a.refresh_mood_and_goal(Season::Spring);
+        }
+        w.push_event(Event {
+            turn: 0,
+            actor: "world".into(),
+            place: Place::Granary,
+            kind: EventKind::System,
+            action: "founding".into(),
+            text: "Nine villagers wake in a settlement with nine measures of grain.".into(),
+            social: None,
+            intensity: None,
+            grounded: None,
+            fidelity: None,
+            divine: false,
+        });
+        w
+    }
+
+    pub fn season(&self) -> Season {
+        Season::from_day(self.day)
+    }
+
+    pub fn time_of_day(&self) -> TimeOfDay {
+        TimeOfDay::from_turn(self.turn)
+    }
+
+    pub fn agent(&self, name: &str) -> Option<&Agent> {
+        self.agents.iter().find(|a| a.name == name)
+    }
+
+    pub fn agent_mut(&mut self, name: &str) -> Option<&mut Agent> {
+        self.agents.iter_mut().find(|a| a.name == name)
+    }
+
+    pub fn living(&self) -> impl Iterator<Item = &Agent> {
+        self.agents.iter().filter(|a| a.alive)
+    }
+
+    pub fn place_state(&self, p: Place) -> &PlaceState {
+        &self.places.iter().find(|(q, _)| *q == p).expect("every place exists").1
+    }
+
+    pub fn place_state_mut(&mut self, p: Place) -> &mut PlaceState {
+        &mut self.places.iter_mut().find(|(q, _)| *q == p).expect("every place exists").1
+    }
+
+    pub fn present(&self, place: Place, except: &str) -> Vec<String> {
+        self.living()
+            .filter(|a| a.place == place && a.name != except)
+            .map(|a| a.name.clone())
+            .collect()
+    }
+
+    pub fn push_event(&mut self, e: Event) {
+        self.events.push(e);
+    }
+
+    /// End-of-turn bookkeeping: eating, hunger, harvest, death, promises.
+    pub fn settle(&mut self) {
+        let turn = self.turn;
+        let season = self.season();
+        // Harvest before anyone eats, so a starving village can still find food.
+        // The yield is carried to the granary: a field that keeps its grain is a
+        // field nobody visits.
+        let weather = self.weather;
+        let mut harvested = 0u32;
+        for p in Place::ALL {
+            if p.can_harvest() {
+                harvested += (weather * if p == Place::Field { 2.0 } else { 1.0 }).round() as u32;
+            }
+        }
+        {
+            let st = self.place_state_mut(Place::Granary);
+            st.food = (st.food + harvested).min(18);
+        }
+        // Natural regeneration of water at the Well, timber/herbs in the Woods, and hearth upkeep.
+        {
+            let rain_bonus = if matches!(self.weather_kind, WeatherKind::SoftRain | WeatherKind::Storm) { 3 } else { 1 };
+            let well = self.place_state_mut(Place::Well);
+            well.water = (well.water + rain_bonus).min(20);
+        }
+        if turn % 3 == 0 {
+            let woods = self.place_state_mut(Place::Woods);
+            woods.wood = (woods.wood + 1).min(16);
+            if season != Season::Winter {
+                woods.herbs = (woods.herbs + 1).min(10);
+            }
+        }
+        if turn % 4 == 0 {
+            let hut = self.place_state_mut(Place::Hut);
+            if hut.wood > 0 {
+                hut.wood -= 1;
+                hut.hearth_lit = true;
+            } else if season == Season::Winter {
+                hut.hearth_lit = false;
+            }
+        }
+        let hut_lit = self.place_state(Place::Hut).hearth_lit;
+        let mut died = Vec::new();
+        let mut scars = Vec::new();
+        // Villagers eat when they can, and get hungry on every second turn.
+        // The ratio matters: at one measure per villager per turn, eight
+        // villagers outrun any harvest this land can produce and the colony
+        // dies with a full store.
+        let hungry_turn = turn % 2 == 1;
+        let thirsty_turn = turn % 3 == 2;
+        for a in self.agents.iter_mut().filter(|a| a.alive) {
+            if a.food > 0 && a.hunger >= 1 {
+                a.food -= 1;
+                a.hunger = 0;
+                a.starving_turns = 0;
+            } else if a.hunger < 3 && hungry_turn {
+                a.hunger += 1;
+            }
+            if a.water > 0 && a.thirst >= 1 {
+                a.water -= 1;
+                a.thirst = 0;
+            } else if a.place == Place::Well && a.thirst >= 1 {
+                a.thirst = 0;
+            } else if a.thirst < 3 && thirsty_turn {
+                a.thirst += 1;
+            }
+
+            // Warmth & ailment dynamics.
+            if a.place == Place::Hut && hut_lit {
+                a.warmth = (a.warmth + 1).min(4);
+            } else if season == Season::Winter && turn % 3 == 0 {
+                a.warmth = a.warmth.saturating_sub(1);
+            }
+            if a.warmth == 0 && a.ailment.is_none() && season == Season::Winter {
+                a.ailment = Some(Ailment::Chill);
+            }
+            if a.herbs > 0 && (a.ailment.is_some() || a.health < 8) {
+                a.herbs -= 1;
+                a.ailment = None;
+                a.health = (a.health + 2).min(10);
+            }
+            if a.hunger == 0 && a.thirst == 0 && a.ailment.is_none() && a.health < 10 {
+                a.health = (a.health + 1).min(10);
+            }
+            a.energy = (a.energy + 1).min(10);
+
+            if a.hunger >= 3 {
+                a.starving_turns += 1;
+                a.health = a.health.saturating_sub(2);
+                if a.starving_turns >= 3 {
+                    a.alive = false;
+                    died.push((a.name.clone(), a.place));
+                }
+            }
+            // Broken promise: overdue by ten turns and to someone still alive.
+            if let Some(pr) = &a.promise {
+                if turn.saturating_sub(pr.made_turn) > 10 && pr.kept.is_none() {
+                    let to = pr.to.clone();
+                    scars.push((a.name.clone(), format!("You broke your word to {to}.")));
+                }
+            }
+            a.refresh_mood_and_goal(season);
+        }
+        for (name, place) in died {
+            self.push_event(Event {
+                turn,
+                actor: name.clone(),
+                place,
+                kind: EventKind::Death,
+                action: "death".into(),
+                text: format!("{name} died of hunger."),
+                social: None,
+                intensity: Some(4.0),
+                grounded: None,
+                fidelity: None,
+                divine: false,
+            });
+            for other in self.agents.iter_mut().filter(|a| a.alive && a.name != name) {
+                other.remember(Memory::scar(turn, format!("{name} starved while you lived.")));
+                other.set_trust(&name, 0.0);
+                other.stress = (other.stress + 1.0).min(4.0);
+            }
+        }
+        for (who, text) in scars {
+            if let Some(a) = self.agent_mut(&who) {
+                a.remember(Memory::scar(turn, text));
+                a.promise = None;
+            }
+        }
+        for a in self.agents.iter_mut().filter(|a| a.alive) {
+            if let Some(pr) = a.promise.clone() {
+                if turn.saturating_sub(pr.made_turn) > 10 {
+                    a.set_trust(&pr.to, a.trust_of(&pr.to) - 0.4);
+                    a.promise = None;
+                }
+            }
+        }
+        // A birth is the counterpart of a death: settled in the same pass, on
+        // the same side of the commit boundary, after eating so a village that
+        // just fed itself can qualify this turn. At most one per turn keeps the
+        // population curve legible.
+        self.settle_birth(turn);
+
+        // Update village morale average.
+        let living_count = self.living().count();
+        if living_count > 0 {
+            let sum_hope: f32 = self
+                .living()
+                .map(|a| (a.hope + (4.0 - a.stress).max(0.0)) * 0.5)
+                .sum();
+            self.village_morale = ((sum_hope / living_count as f32) * 100.0).round() / 100.0;
+        }
+
+        self.turn += 1;
+        if self.turn % 12 == 0 {
+            self.day += 1;
+            self.weather = 0.6 + self.rng.next_f32() * 0.9;
+            self.set_weather(self.weather);
+        }
+    }
+
+    /// One birth per turn, if a pair qualifies. Candidates are gathered in
+    /// agent order and the pair is chosen with the world's own RNG, so the same
+    /// seed and the same actions produce the same child.
+    fn settle_birth(&mut self, turn: u64) {
+        if self.living().count() >= POPULATION_CAP {
+            return;
+        }
+        if self.place_state(Place::Granary).food < BIRTH_COST {
+            return;
+        }
+        let mut pairs: Vec<(usize, usize)> = Vec::new();
+        let living: Vec<usize> = self
+            .agents
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.alive)
+            .map(|(i, _)| i)
+            .collect();
+        for (n, &i) in living.iter().enumerate() {
+            for &j in &living[n + 1..] {
+                let a = &self.agents[i];
+                let b = &self.agents[j];
+                if a.place != b.place || a.hunger != 0 || b.hunger != 0 {
+                    continue;
+                }
+                if turn.saturating_sub(a.born_turn) < BIRTH_MIN_AGE
+                    || turn.saturating_sub(b.born_turn) < BIRTH_MIN_AGE
+                {
+                    continue;
+                }
+                if a.trust_of(&b.name) < BIRTH_TRUST || b.trust_of(&a.name) < BIRTH_TRUST {
+                    continue;
+                }
+                pairs.push((i, j));
+            }
+        }
+        if pairs.is_empty() {
+            return;
+        }
+        let (i, j) = pairs[self.rng.below(pairs.len())];
+        let place = self.agents[i].place;
+        let mother = self.agents[i].name.clone();
+        let father = self.agents[j].name.clone();
+        let generation = self.agents[i].generation.max(self.agents[j].generation) + 1;
+        let persona = mix_personas(&self.agents[i].persona, &self.agents[j].persona);
+
+        // Names come from a fixed pool, deterministically. Every lookup is by
+        // name, so a name is never reused — not even after its bearer dies.
+        // When the pool is spent the same ordered walk continues with
+        // suffixed variants, so growth never stops for want of a noun.
+        let start = self.rng.below(CHILD_NAMES.len());
+        let mut round = 0u32;
+        let name = 'name: loop {
+            for k in 0..CHILD_NAMES.len() {
+                let base = CHILD_NAMES[(start + k) % CHILD_NAMES.len()];
+                let cand = match round {
+                    0 => base.to_string(),
+                    n => format!("{base} {n}"),
+                };
+                if self.agent(&cand).is_none() {
+                    break 'name cand;
+                }
+            }
+            round += 1;
+        };
+
+        // Bond parents as partners if not already bonded, and find existing siblings.
+        if self.agents[i].partner.is_none() && self.agents[j].partner.is_none() {
+            self.agents[i].partner = Some(father.clone());
+            self.agents[j].partner = Some(mother.clone());
+        }
+        let siblings: Vec<String> = self
+            .agents
+            .iter()
+            .filter(|a| {
+                a.parents.contains(&mother) || a.parents.contains(&father)
+            })
+            .map(|a| a.name.clone())
+            .collect();
+
+        let living_names: Vec<String> = self.living().map(|a| a.name.clone()).collect();
+        let mut child = Agent::new(
+            name.clone(),
+            persona,
+            place,
+            CHILD_FOOD,
+            1,
+            turn,
+            generation,
+            vec![mother.clone(), father.clone()],
+            &living_names,
+        );
+        for sib in &siblings {
+            if let Some(rel) = child.relations.iter_mut().find(|r| &r.other == sib) {
+                rel.kinship = Kinship::Sibling;
+            }
+        }
+        // Everyone alive gains a neutral view of the newcomer, so the pairwise
+        // trust schema stays complete for every living pair.
+        for a in self.agents.iter_mut().filter(|a| a.alive) {
+            a.set_trust(&name, NEUTRAL_TRUST);
+            if a.name == mother || a.name == father {
+                if let Some(rel) = a.relations.iter_mut().find(|r| r.other == name) {
+                    rel.kinship = Kinship::Child;
+                    rel.affinity = 3.5;
+                }
+            } else if siblings.contains(&a.name) {
+                if let Some(rel) = a.relations.iter_mut().find(|r| r.other == name) {
+                    rel.kinship = Kinship::Sibling;
+                }
+            }
+        }
+        self.place_state_mut(Place::Granary).food -= BIRTH_COST;
+        self.push_event(Event {
+            turn,
+            actor: name.to_string(),
+            place,
+            kind: EventKind::Birth,
+            action: "birth".into(),
+            text: format!("{name} was born to {mother} and {father}."),
+            social: None,
+            intensity: Some(3.5),
+            grounded: None,
+            fidelity: None,
+            divine: false,
+        });
+        for (parent, other) in [(&mother, &father), (&father, &mother)] {
+            if let Some(p) = self.agent_mut(parent) {
+                p.remember(Memory::new(
+                    turn,
+                    format!("{name} was born to you and {other}."),
+                    0.9,
+                    MemoryKind::Witnessed,
+                ));
+            }
+        }
+        self.agents.push(child);
+    }
+
+    pub fn record(&mut self, kind: MemoryKind, text: String, salience: f32) {
+        let turn = self.turn;
+        for a in self.agents.iter_mut().filter(|a| a.alive) {
+            a.remember(Memory::new(turn, text.clone(), salience, kind));
+        }
+    }
+
+    pub fn halt(&mut self, reason: impl Into<String>) {
+        let reason = reason.into();
+        self.halted = Some(reason.clone());
+        self.push_event(Event {
+            turn: self.turn,
+            actor: "world".into(),
+            place: Place::Granary,
+            kind: EventKind::System,
+            action: "halt".into(),
+            text: reason,
+            social: None,
+            intensity: None,
+            grounded: None,
+            fidelity: None,
+            divine: false,
+        });
+    }
+}
+
+/// A child inherits traits from both parents rather than being authored. The
+/// first clause of each persona is its dominant trait; joining them gives a
+/// small model one readable line with both influences in view.
+pub fn mix_personas(a: &str, b: &str) -> String {
+    let first = |s: &str| s.split(';').next().unwrap_or(s).trim().to_string();
+    format!("{}; {}", first(a), first(b))
+}
