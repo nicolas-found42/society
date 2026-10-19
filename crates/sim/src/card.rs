@@ -263,7 +263,9 @@ pub fn agent_card(w: &World, a: &Agent, decision: &str) -> String {
     // nearest short phrase, opening word first ("balance", "counsel them").
     // Removing it alone left the copy count unchanged (10 of 18) because the
     // memory block and the dialogue supplied the same kind of string; gone
-    // with them, 0 of 18. The judgment state still carries `current_goal`.
+    // with them, 0 of 18, and the lines were full sentences instead of
+    // one-word fragments ("taken", "Grain"). The judgment state still carries
+    // `current_goal`.
     if !mems.is_empty() {
         s.push_str("You remember (context, not a script; never repeat these words):\n");
         for m in &mems {
