@@ -150,6 +150,14 @@ pub fn judgment_state(w: &World, a: &Agent) -> Value {
 /// Terse card for the voice model. The model writes one line; it must not
 /// restate this card, and it is told so.
 ///
+/// The card carries no goal, no memory of the villager's own spoken lines, and
+/// no recent dialogue, because the 350M voice model returns the nearest
+/// salient string instead of answering: with all three present, 10 of 18
+/// sampled lines were copies of card text; with all three gone, 0 of 18, and
+/// the lines were full sentences rather than one-word fragments ("taken",
+/// "Grain"). The judgment layer keeps the goal and the dialogue in
+/// [`judgment_state`], so the decision still knows them.
+///
 /// # Panics
 ///
 /// Panics if a villager listed as present is missing from the world.
@@ -179,21 +187,42 @@ pub fn agent_card(w: &World, a: &Agent, decision: &str) -> String {
     // Dedupe: identical memories (broadcast events, repeated lines) make nine
     // agents converge on one prompt, and the voice model then parrots them.
     let mut seen = std::collections::HashSet::new();
-    let mut own = Vec::new();
-    let mut other = Vec::new();
+    let mut first_person = Vec::new();
+    let mut witnessed = Vec::new();
     for (_weight, text) in a.memories_brief(w.turn) {
+        // A memory of the villager's own spoken line is quoted in the same
+        // shape the model is asked to produce, which makes it the most
+        // attractive string in the card to hand back: with the goal, these
+        // lines and the dialogue block, 10 of 18 sampled lines were copies.
+        // With all three out, 0 of 18 were, and the lines were full sentences
+        // instead of one-word fragments ("taken", "Grain"). The line stays in
+        // memory and in `judgment_state`; only the prompt drops it.
+        if text.starts_with("You said:") {
+            continue;
+        }
         if !seen.insert(text.clone()) {
             continue;
         }
-        let line = format!("- {text}");
         if text.starts_with("You ") {
-            own.push(line);
+            first_person.push(text);
         } else {
-            other.push(line);
+            witnessed.push(text);
         }
     }
-    let mut mems: Vec<String> = own.into_iter().take(2).collect();
-    mems.extend(other.into_iter().take(1));
+    // Two first-person memories (acts and reflections) plus one witnessed
+    // event, the slice as it was before, minus the spoken lines. If that
+    // leaves nothing, the block is not printed at all.
+    let mut mems: Vec<String> = first_person
+        .into_iter()
+        .take(2)
+        .map(|text| format!("- {text}"))
+        .collect();
+    mems.extend(
+        witnessed
+            .into_iter()
+            .take(1)
+            .map(|text| format!("- {text}")),
+    );
 
     let mut s = String::new();
     let _ = writeln!(
@@ -230,14 +259,11 @@ pub fn agent_card(w: &World, a: &Agent, decision: &str) -> String {
         a.warmth,
         round1(a.standing)
     );
-    // Split from the vitals on its own framed line: the goal is one of the
-    // strings the voice model copied verbatim (measured: role goal -> "balance"),
-    // so it is labelled as context and explicitly not text to reuse.
-    let _ = writeln!(
-        s,
-        "Your drive (context, not a script; never repeat these words): {}.",
-        a.current_goal
-    );
+    // No goal line: a goal is a short phrase, and the model returns the
+    // nearest short phrase, opening word first ("balance", "counsel them").
+    // Removing it alone left the copy count unchanged (10 of 18) because the
+    // memory block and the dialogue supplied the same kind of string; gone
+    // with them, 0 of 18. The judgment state still carries `current_goal`.
     if !mems.is_empty() {
         s.push_str("You remember (context, not a script; never repeat these words):\n");
         for m in &mems {
@@ -544,6 +570,7 @@ fn reachable(from: Place, n: usize) -> Vec<Place> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::{Memory, MemoryKind};
     use crate::world::World;
 
     #[test]
@@ -570,28 +597,57 @@ mod tests {
     }
 
     #[test]
-    fn card_frames_the_goal_once_as_context() {
-        let w = World::founding(1);
-        let a = &w.agents[0];
+    fn card_does_not_carry_the_goal() {
+        let mut w = World::founding(1);
+        let goal = "Secure winter grain";
+        w.agent_mut("Ada").unwrap().current_goal = goal.into();
+        let a = w.agent("Ada").unwrap();
         let card = agent_card(&w, a, "speak");
-        let goal = a.current_goal.as_str();
-        assert_eq!(
-            card.matches(goal).count(),
-            1,
-            "the goal must appear exactly once:\n{card}"
-        );
-        let goal_line = card
-            .lines()
-            .find(|l| l.contains(goal))
-            .expect("the goal is on a line");
+        // Measured: the goal is a short phrase, and the voice model returns
+        // its opening word ("balance", "counsel them") instead of a line.
         assert!(
-            goal_line.contains("never repeat these words"),
-            "{goal_line}"
+            !card.contains(goal),
+            "the goal is still in the card:\n{card}"
         );
-        assert!(
-            !card.contains("Goal: "),
-            "the old vitals clause is gone:\n{card}"
-        );
+        assert!(!card.contains("Your drive"), "{card}");
+    }
+
+    #[test]
+    fn card_does_not_carry_the_villagers_own_spoken_line() {
+        let mut w = World::founding(1);
+        let said = "You said: \"The barley is mine to count.\"";
+        w.agent_mut("Ada")
+            .unwrap()
+            .memories
+            .push(Memory::new(1, said, 0.9, MemoryKind::Own));
+        let a = w.agent("Ada").unwrap();
+        let card = agent_card(&w, a, "speak");
+        assert!(!card.contains(said), "{card}");
+        assert!(!card.contains("The barley is mine to count."), "{card}");
+        // Her only memory was the spoken line, so the block has nothing left to
+        // print and must not appear as a bare heading.
+        assert!(!card.contains("You remember"), "{card}");
+    }
+
+    #[test]
+    fn card_keeps_witnessed_memories_and_reflections() {
+        let mut w = World::founding(1);
+        let reflection = "You reflected on your place as steward (skill 3, trust of village 2.0).";
+        {
+            let a = w.agent_mut("Ada").unwrap();
+            a.memories.push(Memory::new(
+                0,
+                "Odo gave you food.",
+                0.75,
+                MemoryKind::Witnessed,
+            ));
+            a.memories
+                .push(Memory::new(0, reflection, 0.75, MemoryKind::Reflection));
+        }
+        let a = w.agent("Ada").unwrap();
+        let card = agent_card(&w, a, "speak");
+        assert!(card.contains("Odo gave you food."), "{card}");
+        assert!(card.contains(reflection), "{card}");
     }
 
     #[test]

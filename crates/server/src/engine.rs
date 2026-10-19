@@ -16,13 +16,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use society_sim::{
     affordances, agent_card, apply, judgment_state, Event, EventKind, Intent, Memory, MemoryKind,
-    Place, Role, SocialAct, World,
+    Outcome, Place, Role, SocialAct, World,
 };
 
+use crate::copy::{is_copy, is_paraphrase};
 use crate::inference::judgment::{
     action_question, choice_question, noul_question, score_question, Answer, Dilemma, Judge,
 };
-use crate::inference::voice::{Line, Voice};
+use crate::inference::voice::{Line, Voice, VoiceError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TurnRecord {
@@ -153,6 +154,9 @@ const REGISTERS: [&str; 5] = [
 
 /// Turns before an unfulfilled promise becomes a public breach of faith.
 const PROMISE_OVERDUE_TURNS: u64 = 8;
+
+/// The observer-facing explanation for a villager the copy filter silenced.
+const DROPPED_LINE_NOTE: &str = "dropped a line copied verbatim from the card";
 
 impl Engine {
     /// Every committed turn is written to `save_path` before `step` returns Ok,
@@ -372,17 +376,19 @@ impl Engine {
             // The elder is the only villager whose line is rendered by the
             // elder model; everyone else uses the actor model.
             let elder = a.role == Role::Elder;
+            // Assembled here, while `world` is borrowed, from the same card the
+            // model sees; the task owns the strings.
+            let sources = CopySources::for_agent(world, a, &card);
             let voice = Arc::clone(&self.voice);
             let permits = Arc::clone(&self.permits);
             let name_for_call = name.clone();
             let name = name.clone();
             tasks.spawn(async move {
                 let permit = permits.acquire_owned().await.expect("semaphore open");
-                let res = if elder {
-                    voice.speak_elder(&card, &name_for_call).await
-                } else {
-                    voice.speak_actor(&card, &name_for_call).await
-                };
+                // The copy check and its one retry stay under this permit: a
+                // retry is a second call in the same AIMD slot, not a permit of
+                // its own, so the window still bounds the backend's queue.
+                let res = speak_checked(&voice, elder, &card, &name_for_call, &sources).await;
                 drop(permit);
                 (name, res)
             });
@@ -426,6 +432,12 @@ impl Engine {
         let mut gate_state = Map::new();
         let mut gate_q = Map::new();
         for (name, line) in &lines {
+            // A dropped line was never spoken, so there is nothing to ask
+            // about: gating it would spend a call on an empty string and, worse,
+            // a missing gate answer reads as credible.
+            if line.say.is_empty() {
+                continue;
+            }
             let a = world.agent(name).expect("agent");
             let (_, intent, _, register, addressee, dilemma) = intents
                 .iter()
@@ -452,8 +464,21 @@ impl Engine {
             );
             gate_q.insert(
                 format!("fidelity_{name}"),
+                // Consistency, not alignment: the old "does it carry out the
+                // decision" wording rewarded parroting the action id (measured:
+                // the identical string "draw_water" scored 0.96 when the
+                // decision was `draw_water`, 0.25 when it was `speak`) and
+                // punished a line that simply did not mention the action.
+                //
+                // Asked in the positive, because the answer is the probability
+                // that the proposition holds and the credibility rule reads a
+                // high score as faithful. Asking "does it contradict" inverts
+                // the scale: measured, 43 of 45 lines then scored below 0.5 and
+                // every social effect was discredited.
                 noul_question(&format!(
-                    "Does `{name}.said` carry out `{name}.decided` without contradicting it?"
+                    "Is `{name}.said` consistent with what `{name}` decided or did this turn \
+                     (`{name}.decided`)? A line that merely fails to mention the decision is \
+                     consistent with it; a line that states the opposite of it is not."
                 )),
             );
             gate_q.insert(
@@ -499,56 +524,56 @@ impl Engine {
                 ),
             );
         }
-        let gate_answer = self
-            .judge
-            .ask(Value::Object(gate_state), gate_q)
-            .await
-            .map_err(|e| {
-                let reason = self.halt_now(world, format!("judgment layer unavailable: {e}"));
-                EngineError::Judgment(reason)
-            })?;
+        // A turn where every line was dropped has nothing left to gate; asking
+        // an empty batch would be a network round trip whose failure would fail
+        // a turn that already decided to commit.
+        let gate_asked = !gate_q.is_empty();
+        let gate_answer = if gate_asked {
+            self.judge
+                .ask(Value::Object(gate_state), gate_q)
+                .await
+                .map_err(|e| {
+                    let reason = self.halt_now(world, format!("judgment layer unavailable: {e}"));
+                    EngineError::Judgment(reason)
+                })?
+        } else {
+            Answer {
+                answers: Map::new(),
+                model: None,
+                cost: 0.0,
+                input_tokens: 0,
+                latency_ms: 0,
+                state: Value::Null,
+                questions: Value::Null,
+            }
+        };
 
         // ---- 4. commit ----
         let mut agent_turns = Vec::new();
         for (name, intent, confidence, register, addressee, dilemma) in intents {
-            let line = lines.iter().find(|(n, _)| *n == name).map_or(
-                Line {
-                    say: String::new(),
-                    why: String::new(),
-                    model: String::new(),
-                    latency_ms: 0,
-                },
-                |(_, l)| l.clone(),
-            );
-            let social = gate_answer
-                .get(&format!("social_{name}"))
-                .and_then(|j| j.choice().map(SocialAct::from_id))
-                .unwrap_or(SocialAct::None);
-            let q = |t: Option<f32>| t.map(|x| (x * 100.0).round() / 100.0);
-            let fidelity = q(gate_answer
-                .get(&format!("fidelity_{name}"))
-                .and_then(|j| j.noul()));
-            let grounded = q(gate_answer
-                .get(&format!("grounded_{name}"))
-                .and_then(|j| j.noul()));
-            let intensity = q(gate_answer
-                .get(&format!("intensity_{name}"))
-                .and_then(|j| j.score()));
-
-            // A line that contradicts its own decision or the world is spoken
-            // but not credited: it cannot move trust.
-            let credible = fidelity.is_none_or(|f| f >= 0.5) && grounded.is_none_or(|g| g >= 0.4);
-            let effective_social = if credible { social } else { SocialAct::None };
+            let found = lines.iter().find(|(n, _)| *n == name).map(|(_, l)| l);
+            let line = found.cloned().unwrap_or_else(|| Line {
+                say: String::new(),
+                why: String::new(),
+                model: String::new(),
+                latency_ms: 0,
+            });
+            // A line the engine dropped is present with an empty `say`; the
+            // voice module errors rather than return one. A villager absent from
+            // `lines` lost the call (a 429 or a malformed reply) and keeps the
+            // old silent path, which is not a copy.
+            let dropped = found.is_some_and(|l| l.say.is_empty());
+            let verdict = turn_verdict(&gate_answer, &name, dropped);
 
             let place_before = world.agent(&name).map(|a| a.place);
-            let outcome = apply(world, &name, &intent, &line.say, effective_social);
+            let outcome = apply(world, &name, &intent, &line.say, verdict.social);
             if let Some(e) = world.events.last_mut() {
-                e.intensity = intensity;
-                e.grounded = grounded;
-                e.fidelity = fidelity;
+                e.intensity = verdict.intensity;
+                e.grounded = verdict.grounded;
+                e.fidelity = verdict.fidelity;
             }
 
-            if credible {
+            if verdict.credible {
                 settle_social_echoes(
                     world,
                     turn,
@@ -557,39 +582,26 @@ impl Engine {
                     &intent.action,
                     &line.say,
                     &line.why,
-                    effective_social,
+                    verdict.social,
                     register,
                     addressee.as_deref(),
-                    intensity.unwrap_or(1.0),
+                    verdict.intensity.unwrap_or(1.0),
                 );
             }
 
             let agent_state = state.get(&name).cloned().unwrap_or(Value::Null);
-            let register_label = REGISTERS[register.min(4) as usize].to_owned();
-
-            agent_turns.push(AgentTurn {
+            agent_turns.push(agent_turn_record(
                 name,
-                action: intent.action,
-                accepted: outcome.accepted,
-                note: outcome.note,
-                say: line.say,
-                why: line.why,
-                social: if credible {
-                    social.id().to_owned()
-                } else {
-                    "discredited".into()
-                },
-                fidelity,
-                grounded,
-                intensity,
-                confidence: Some(confidence),
-                latency_ms: line.latency_ms,
-                model: line.model,
-                state: agent_state,
+                &intent,
+                &outcome,
+                &verdict,
+                line,
+                confidence,
+                register,
                 addressee,
-                register: Some(register_label),
                 dilemma,
-            });
+                agent_state,
+            ));
         }
 
         let events_before = world.events.len();
@@ -621,7 +633,7 @@ impl Engine {
             turn,
             day,
             intent_call: Some(CallRecord::of(&intent_answer)),
-            gate_call: Some(CallRecord::of(&gate_answer)),
+            gate_call: gate_asked.then(|| CallRecord::of(&gate_answer)),
             agents: agent_turns,
             births,
         })
@@ -733,6 +745,242 @@ pub fn recent_place_dialogue(w: &World, place: Place, limit: usize) -> Vec<Strin
         .collect();
     out.reverse();
     out
+}
+
+/// The strings one villager's line must not reproduce.
+///
+/// The voice model is small and copies the nearest salient string in its card;
+/// measured on a 5-turn run, 5 of 45 lines were a verbatim action id or card
+/// string, and the stored line then reappeared in the next card. The lists are
+/// built once per speaking villager from the same card the model read, so they
+/// hold exactly what that card taught it. With the goal, the villager's own
+/// past lines and the recent dialogue in the card, 10 of 18 sampled lines were
+/// copies of card text; with all three gone, 0 of 18. Keeping them as sources
+/// now would drop lines for copying words the model never saw.
+struct CopySources {
+    /// Exact text: equality or a contiguous word-run, either direction. The
+    /// card, the legal action ids (so a one-word id like "help" is caught),
+    /// the action phrases, and the memory lines the card printed.
+    strict: Vec<String>,
+    /// Short phrases where a content-word paraphrase is still a copy. The card
+    /// is deliberately absent: its common words would match almost anything.
+    phrases: Vec<String>,
+}
+
+impl CopySources {
+    /// Assemble the lists for `a` from `card`, the exact text sent to the
+    /// voice model.
+    fn for_agent(world: &World, a: &society_sim::Agent, card: &str) -> Self {
+        let legal = affordances(world, a);
+        let action_phrases: Vec<String> = legal
+            .iter()
+            .map(|id| society_sim::action_phrase(id))
+            .collect();
+        let memories = card_memories(card);
+
+        let mut strict =
+            Vec::with_capacity(1 + legal.len() + action_phrases.len() + memories.len());
+        strict.push(card.to_owned());
+        strict.extend(legal);
+        strict.extend(action_phrases.iter().cloned());
+        strict.extend(memories.iter().cloned());
+
+        let mut phrases = action_phrases;
+        phrases.extend(memories);
+
+        Self { strict, phrases }
+    }
+
+    /// True when either copy test fires.
+    fn copies(&self, line: &str) -> bool {
+        is_copy(line, &self.strict) || is_paraphrase(line, &self.phrases)
+    }
+}
+
+/// The memory lines the card printed, taken from the card itself.
+///
+/// Reading them back out of the rendered card rather than recomputing the
+/// memory slice keeps the filter honest: a string the model did not see cannot
+/// become a source. The card prefixes memory lines with "- " and nothing else
+/// it prints does, so the marker is the slice boundary.
+fn card_memories(card: &str) -> Vec<String> {
+    card.lines()
+        .filter_map(|line| line.strip_prefix("- "))
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// One voice call plus, if the line is a copy, one retry with the rejected
+/// words appended to the card.
+///
+/// A dropped line comes back as a [`Line`] with an empty `say`: the voice
+/// module refuses to return one, so an empty `say` in `lines` means the engine
+/// dropped it. A villager absent from `lines` lost the call to an error instead.
+///
+/// # Errors
+///
+/// Returns the first call's error, or the retry's rate-limit error so the turn
+/// keeps its backpressure path. Any other retry error is swallowed into a drop:
+/// the first call already succeeded, so the turn still commits.
+async fn speak_checked(
+    voice: &Voice,
+    elder: bool,
+    card: &str,
+    name: &str,
+    sources: &CopySources,
+) -> Result<Line, VoiceError> {
+    async fn speak(voice: &Voice, elder: bool, card: &str, name: &str) -> Result<Line, VoiceError> {
+        if elder {
+            voice.speak_elder(card, name).await
+        } else {
+            voice.speak_actor(card, name).await
+        }
+    }
+
+    let first = speak(voice, elder, card, name).await?;
+    if !sources.copies(&first.say) {
+        return Ok(first);
+    }
+    // The same call with a longer card, not a new protocol.
+    let retry_card = format!(
+        "{card}\n\nYou already said \"{}\". Say something different.",
+        first.say
+    );
+    // The permit was held across both calls, so the retry's cost is the sum:
+    // reporting only the second call would hide half the work from `adapt`.
+    let latency_ms = first.latency_ms;
+    match speak(voice, elder, &retry_card, name).await {
+        Ok(line) if !sources.copies(&line.say) => Ok(Line {
+            latency_ms: latency_ms + line.latency_ms,
+            ..line
+        }),
+        Ok(line) => Ok(Line {
+            say: String::new(),
+            why: String::new(),
+            model: line.model,
+            latency_ms: latency_ms + line.latency_ms,
+        }),
+        Err(e) if e.retry_after().is_some() => Err(e),
+        Err(_) => Ok(Line {
+            say: String::new(),
+            why: String::new(),
+            model: first.model,
+            latency_ms,
+        }),
+    }
+}
+
+/// One villager's gate readings and what they mean for the record.
+struct TurnVerdict {
+    fidelity: Option<f32>,
+    grounded: Option<f32>,
+    intensity: Option<f32>,
+    /// The social act credited to the turn; `None` when it is discredited.
+    social: SocialAct,
+    /// The record's `social` string: the act's id, or "discredited".
+    social_label: String,
+    /// Whether trust, memory and social echoes may move.
+    credible: bool,
+    /// The line was dropped by the copy filter, never gated.
+    dropped: bool,
+}
+
+impl TurnVerdict {
+    /// The record's note. A dropped line's note wins: what the observer needs
+    /// explained is why the villager said nothing, not what the action did.
+    fn note(&self, action_note: Option<String>) -> Option<String> {
+        if self.dropped {
+            Some(DROPPED_LINE_NOTE.to_owned())
+        } else {
+            action_note
+        }
+    }
+}
+
+/// Read the gate answer for one villager.
+///
+/// A dropped line was never asked about, and a missing answer is `None`, which
+/// the credibility test would accept, so the drop pins `fidelity` to `Some(0.0)`
+/// explicitly.
+fn turn_verdict(gate: &Answer, name: &str, dropped: bool) -> TurnVerdict {
+    if dropped {
+        return TurnVerdict {
+            fidelity: Some(0.0),
+            grounded: None,
+            intensity: None,
+            social: SocialAct::None,
+            social_label: "discredited".into(),
+            credible: false,
+            dropped: true,
+        };
+    }
+    let social = gate
+        .get(&format!("social_{name}"))
+        .and_then(|j| j.choice().map(SocialAct::from_id))
+        .unwrap_or(SocialAct::None);
+    let q = |t: Option<f32>| t.map(|x| (x * 100.0).round() / 100.0);
+    let fidelity = q(gate.get(&format!("fidelity_{name}")).and_then(|j| j.noul()));
+    let grounded = q(gate.get(&format!("grounded_{name}")).and_then(|j| j.noul()));
+    let intensity = q(gate
+        .get(&format!("intensity_{name}"))
+        .and_then(|j| j.score()));
+
+    // A line that contradicts its own decision or the world is spoken but not
+    // credited: it cannot move trust.
+    let credible = fidelity.is_none_or(|f| f >= 0.5) && grounded.is_none_or(|g| g >= 0.4);
+    TurnVerdict {
+        fidelity,
+        grounded,
+        intensity,
+        social: if credible { social } else { SocialAct::None },
+        social_label: if credible {
+            social.id().to_owned()
+        } else {
+            "discredited".into()
+        },
+        credible,
+        dropped: false,
+    }
+}
+
+/// The record `step` writes for one villager. Split out so the dropped-line
+/// record can be tested without a network round trip.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one field per judgment, one per line, one per resolved intent"
+)]
+fn agent_turn_record(
+    name: String,
+    intent: &Intent,
+    outcome: &Outcome,
+    verdict: &TurnVerdict,
+    line: Line,
+    confidence: f32,
+    register: u8,
+    addressee: Option<String>,
+    dilemma: Option<Dilemma>,
+    state: Value,
+) -> AgentTurn {
+    AgentTurn {
+        name,
+        action: intent.action.clone(),
+        accepted: outcome.accepted,
+        note: verdict.note(outcome.note.clone()),
+        say: line.say,
+        why: line.why,
+        social: verdict.social_label.clone(),
+        fidelity: verdict.fidelity,
+        grounded: verdict.grounded,
+        intensity: verdict.intensity,
+        confidence: Some(confidence),
+        latency_ms: line.latency_ms,
+        model: line.model,
+        state,
+        addressee,
+        register: Some(REGISTERS[register.min(4) as usize].to_owned()),
+        dilemma,
+    }
 }
 
 /// Propagates interpersonal memories, rumor mill echoes, trust shifts, and
@@ -947,7 +1195,9 @@ fn agent_card_with(
     addressee: Option<&str>,
     dilemma: Option<&Dilemma>,
 ) -> String {
-    let mut card = agent_card(w, a, &decision.replace("go:", "leave for "));
+    // The sim crate renders the decision itself through `action_phrase`; any
+    // rewrite here lands on top of that phrase ("leave for leave for market").
+    let mut card = agent_card(w, a, decision);
     let _ = writeln!(
         card,
         "Village atmosphere: {} ({}) · {} ({} °C) · morale {:.2}.",
@@ -960,9 +1210,10 @@ fn agent_card_with(
     if let Some(owner) = &w.place_state(a.place).owner {
         let _ = writeln!(card, "This place ({}) is claimed by {owner}.", a.place.id());
     }
-    if !a.current_goal.trim().is_empty() {
-        let _ = writeln!(card, "Current drive: {}.", a.current_goal);
-    }
+    // The promise text is quoted, not framed: an unkept promise is the one
+    // short phrase the voice should be answering, and the chooser has already
+    // used it. No goal line here: the sim card dropped it because the model
+    // returns the phrase's opening word instead of a line.
     if let Some(p) = &a.promise {
         if p.kept.is_none() {
             let age = w.turn.saturating_sub(p.made_turn);
@@ -993,22 +1244,22 @@ fn agent_card_with(
         );
     }
     if let Some(d) = dilemma {
+        // Prose, not ids: a raw id in the card is a string the model copies.
         let _ = writeln!(
             card,
-            "Inner conflict: you chose `{}` ({:.0}%), but nearly chose `{}` ({:.0}%).",
-            d.chosen,
+            "Inner conflict: you chose {} ({:.0}%), but nearly chose {} ({:.0}%).",
+            society_sim::action_phrase(&d.chosen),
             d.chosen_prob * 100.0,
-            d.alternative,
+            society_sim::action_phrase(&d.alternative),
             d.alternative_prob * 100.0
         );
     }
-    let recent = recent_place_dialogue(w, a.place, 3);
-    if !recent.is_empty() {
-        card.push_str("Recent speech at this place:\n");
-        for line in recent {
-            let _ = writeln!(card, "  - {line}");
-        }
-    }
+    // No recent-dialogue block. This was the strongest copy source in the whole
+    // card: with the goal, the own past lines and these quoted lines, 10 of 18
+    // sampled lines were copies; with all three out, 0 of 18, and the lines
+    // were full sentences instead of one-word fragments ("taken", "Grain").
+    // Tam said one line four times in six samples while it was quoted back.
+    // `enrich_judgment_state` still gives the dialogue to the chooser.
     card
 }
 
@@ -1106,7 +1357,7 @@ mod tests {
     }
 
     #[test]
-    fn enriched_card_and_state_include_kinship_promises_and_local_dialogue() {
+    fn enriched_state_keeps_local_dialogue_while_the_card_drops_it() {
         let mut w = World::founding(7);
         w.turn = 12;
         w.place_state_mut(Place::Market).owner = Some("Sable".into());
@@ -1153,9 +1404,317 @@ mod tests {
         };
         let card = agent_card_with(&w, ada, "give:Bo", 4, Some("Bo"), Some(&d));
         assert!(card.contains("claimed by Sable"));
-        assert!(card.contains("Secure winter grain"));
         assert!(card.contains("Unkept promise to Bo"));
         assert!(card.contains("Inner conflict"));
-        assert!(card.contains("You promised me grain before the frost."));
+        // The chooser still sees the local dialogue in its state; the card no
+        // longer quotes it, because quoted dialogue was the top copy source
+        // (measured: 10 of 18 sampled lines with it, 0 of 18 without).
+        assert_eq!(
+            enriched["village_context"]["recent_place_dialogue"][0],
+            "Turn 11 Bo: You promised me grain before the frost."
+        );
+        assert!(
+            !card.contains("You promised me grain before the frost."),
+            "{card}"
+        );
+        // The goal lives in the judgment state, not in the prompt.
+        assert_eq!(enriched["current_goal"], "Secure winter grain");
+        assert!(!card.contains("Secure winter grain"), "{card}");
+    }
+
+    /// A founding world with a fixed goal and a place owner, so card assertions
+    /// do not depend on the seed's random placements.
+    fn card_world() -> World {
+        let mut w = World::founding(7);
+        w.place_state_mut(Place::Market).owner = Some("Sable".into());
+        w.agent_mut("Ada").unwrap().place = Place::Market;
+        w.agent_mut("Bo").unwrap().place = Place::Market;
+        w.agent_mut("Ada").unwrap().current_goal = "Secure winter grain".into();
+        w
+    }
+
+    #[test]
+    fn a_card_does_not_offer_the_decision_as_a_copyable_id() {
+        let w = card_world();
+        let ada = w.agent("Ada").unwrap();
+        let card = agent_card_with(&w, ada, "draw_water", 4, None, None);
+        assert!(card.contains("draw water from the well"), "{card}");
+        assert!(!card.contains("draw_water"), "{card}");
+    }
+
+    #[test]
+    fn a_place_decision_is_rendered_once_as_prose() {
+        let w = card_world();
+        let ada = w.agent("Ada").unwrap();
+        let card = agent_card_with(&w, ada, "go:market", 4, None, None);
+        assert!(card.contains("leave for market"), "{card}");
+        assert!(!card.contains("leave for leave for"), "{card}");
+        assert!(!card.contains("go:market"), "{card}");
+    }
+
+    #[test]
+    fn the_dilemma_is_rendered_as_prose_not_ids() {
+        let w = card_world();
+        let ada = w.agent("Ada").unwrap();
+        let d = Dilemma {
+            chosen: "draw_water".into(),
+            alternative: "console".into(),
+            chosen_prob: 0.33,
+            alternative_prob: 0.29,
+        };
+        let card = agent_card_with(&w, ada, "draw_water", 4, None, Some(&d));
+        assert!(
+            card.contains("you chose draw water from the well (33%)"),
+            "{card}"
+        );
+        assert!(
+            card.contains("nearly chose console someone here (29%)"),
+            "{card}"
+        );
+        assert!(!card.contains("draw_water"), "{card}");
+        assert!(!card.contains('`'), "{card}");
+    }
+
+    #[test]
+    fn the_card_has_no_recent_dialogue_block() {
+        let mut w = card_world();
+        w.push_event(Event {
+            turn: 11,
+            actor: "Bo".into(),
+            place: Place::Market,
+            kind: EventKind::Speech,
+            action: "speak".into(),
+            text: "The well is low.".into(),
+            social: None,
+            intensity: Some(2.0),
+            grounded: Some(1.0),
+            fidelity: Some(1.0),
+            divine: false,
+        });
+        let ada = w.agent("Ada").unwrap();
+        let card = agent_card_with(&w, ada, "draw_water", 4, None, None);
+        // The card quoting a line is the copy loop: the model returns it, the
+        // line is stored in memory, and the next card quotes it again.
+        assert!(!card.contains("Recent speech at this place"), "{card}");
+        assert!(!card.contains("The well is low."), "{card}");
+    }
+
+    #[test]
+    fn the_card_still_carries_the_decision_as_prose_and_the_register() {
+        let w = card_world();
+        let ada = w.agent("Ada").unwrap();
+        let card = agent_card_with(&w, ada, "draw_water", 4, None, None);
+        assert!(
+            card.contains("You have decided to draw water from the well."),
+            "{card}"
+        );
+        assert!(card.contains("Register: "), "{card}");
+        assert!(card.contains(REGISTERS[4]), "{card}");
+    }
+
+    #[test]
+    fn the_goal_is_not_in_the_card() {
+        let w = card_world();
+        let ada = w.agent("Ada").unwrap();
+        let card = agent_card_with(&w, ada, "draw_water", 4, None, None);
+        assert!(!card.contains("Secure winter grain"), "{card}");
+    }
+
+    /// The copy sources as `step` assembles them for one villager.
+    fn sources_for(w: &World, name: &str, decision: &str) -> CopySources {
+        let a = w.agent(name).unwrap();
+        let card = agent_card_with(w, a, decision, 4, None, None);
+        CopySources::for_agent(w, a, &card)
+    }
+
+    #[test]
+    fn a_card_decision_makes_its_words_a_copy_but_a_sentence_does_not() {
+        // Card-level test, as the rule set specifies: the action phrase is also
+        // a strict source, so the same sentence is caught there; what this test
+        // pins is that the card alone does not swallow an elaboration.
+        let card = vec!["You have decided to draw water from the well.".to_string()];
+        assert!(is_copy("draw water", &card));
+        assert!(!is_copy("I will draw water from the well tomorrow", &card));
+    }
+
+    #[test]
+    fn a_paraphrase_of_the_goal_is_not_a_copy() {
+        let mut w = card_world();
+        w.agent_mut("Ada").unwrap().current_goal =
+            "keep the settlement stocked with timber and firewood".into();
+        let copy = sources_for(&w, "Ada", "draw_water");
+        // The goal is not in the card, so a line that echoes it copies nothing
+        // the model saw. Keeping it as a source would drop legitimate lines.
+        assert!(!copy
+            .strict
+            .iter()
+            .any(|s| s.contains("keep the settlement")));
+        assert!(!copy
+            .phrases
+            .iter()
+            .any(|s| s.contains("keep the settlement")));
+        assert!(!copy.copies("keep stocked"));
+    }
+
+    #[test]
+    fn a_line_that_opens_with_the_goals_word_is_not_a_copy() {
+        let mut w = card_world();
+        w.agent_mut("Ada").unwrap().current_goal =
+            "counsel the anxious and preserve village memory".into();
+        let copy = sources_for(&w, "Ada", "draw_water");
+        // The head-copy rule had the goal as its only source. With the goal out
+        // of the card it would drop any legitimate line opening with "counsel".
+        assert!(!copy.copies("counsel the anxious"));
+    }
+
+    #[test]
+    fn a_villagers_own_previous_line_is_not_a_copy_any_more() {
+        let mut w = card_world();
+        w.agent_mut("Ada").unwrap().memories.push(Memory::new(
+            11,
+            "You said: \"The barley is mine to count.\"",
+            0.9,
+            MemoryKind::Own,
+        ));
+        w.push_event(Event {
+            turn: 11,
+            actor: "Ada".into(),
+            place: Place::Market,
+            kind: EventKind::Speech,
+            action: "speak".into(),
+            text: "The barley is mine to count.".into(),
+            social: None,
+            intensity: Some(2.0),
+            grounded: Some(1.0),
+            fidelity: Some(1.0),
+            divine: false,
+        });
+        let a = w.agent("Ada").unwrap();
+        let card = agent_card_with(&w, a, "draw_water", 4, None, None);
+        let copy = CopySources::for_agent(&w, a, &card);
+        // The sim card drops the villager's own spoken line and the engine no
+        // longer adds it back, so repeating it copies nothing the model read.
+        assert!(!card.contains("barley"), "{card}");
+        assert!(!copy.strict.iter().any(|s| s.contains("barley")));
+        assert!(!copy.phrases.iter().any(|s| s.contains("barley")));
+        assert!(!copy.copies("The barley is mine to count."));
+    }
+
+    #[test]
+    fn the_copy_sources_hold_the_strings_the_card_shows() {
+        let mut w = card_world();
+        w.agent_mut("Ada").unwrap().memories.push(Memory::new(
+            0,
+            "Odo gave you food.",
+            0.75,
+            MemoryKind::Witnessed,
+        ));
+        w.push_event(Event {
+            turn: 11,
+            actor: "Bo".into(),
+            place: Place::Market,
+            kind: EventKind::Speech,
+            action: "speak".into(),
+            text: "The well is low.".into(),
+            social: None,
+            intensity: Some(2.0),
+            grounded: Some(1.0),
+            fidelity: Some(1.0),
+            divine: false,
+        });
+        let copy = sources_for(&w, "Ada", "draw_water");
+        // A card string is still a copy, and a memory line the card printed is
+        // still a source...
+        assert!(copy.copies("You have decided to draw water from the well."));
+        assert!(copy.copies("Odo gave you food."));
+        // ...while the three strings the card no longer shows are not.
+        assert!(!copy.phrases.iter().any(|s| s == "Secure winter grain"));
+        assert!(!copy.strict.iter().any(|s| s.contains("The well is low.")));
+        assert!(!copy.copies("The well is low."));
+    }
+
+    /// The gate answer a dropped line never receives.
+    fn empty_gate() -> Answer {
+        Answer {
+            answers: Map::new(),
+            model: None,
+            cost: 0.0,
+            input_tokens: 0,
+            latency_ms: 0,
+            state: Value::Null,
+            questions: Value::Null,
+        }
+    }
+
+    #[test]
+    fn a_dropped_line_is_committed_silent_and_discredited() {
+        let mut w = World::founding(7);
+        w.agent_mut("Ada").unwrap().place = Place::Well;
+        w.agent_mut("Bo").unwrap().place = Place::Well;
+        let trust_before = w.agent("Ada").unwrap().trust_of("Bo");
+
+        let verdict = turn_verdict(&empty_gate(), "Ada", true);
+        let intent = Intent::parse("draw_water", Place::Well).unwrap();
+        let outcome = apply(&mut w, "Ada", &intent, "", verdict.social);
+        let event = w.events.last_mut().unwrap();
+        event.fidelity = verdict.fidelity;
+        let event_text = event.text.clone();
+        let event_fidelity = event.fidelity;
+
+        let record = agent_turn_record(
+            "Ada".into(),
+            &intent,
+            &outcome,
+            &verdict,
+            Line {
+                say: String::new(),
+                why: String::new(),
+                model: "a".into(),
+                latency_ms: 0,
+            },
+            0.8,
+            2,
+            None,
+            None,
+            Value::Null,
+        );
+
+        assert_eq!(record.say, "");
+        assert_eq!(record.fidelity, Some(0.0));
+        assert_eq!(record.social, "discredited");
+        assert_eq!(record.note.as_deref(), Some(DROPPED_LINE_NOTE));
+        assert_eq!(record.action, "draw_water");
+        // The drop note replaces the action's own note: the observer needs the
+        // silence explained, not the water counted.
+        assert_eq!(outcome.note.as_deref(), Some("+2 water"));
+        assert_ne!(record.note, outcome.note);
+
+        // The act happened, silently: empty event text and an own memory in
+        // prose, not a line.
+        assert!(record.accepted);
+        assert_eq!(event_text, "");
+        assert_eq!(event_fidelity, Some(0.0));
+        assert!(w
+            .agent("Ada")
+            .unwrap()
+            .memories
+            .iter()
+            .any(|m| m.text == "You draw water from the well."));
+        assert!(!w
+            .agent("Ada")
+            .unwrap()
+            .memories
+            .iter()
+            .any(|m| m.text.contains("You said:")));
+
+        // Not credited: no speech reached Bo and no trust moved.
+        assert!(!w
+            .agent("Bo")
+            .unwrap()
+            .memories
+            .iter()
+            .any(|m| m.text.contains("said")));
+        let trust_after = w.agent("Ada").unwrap().trust_of("Bo");
+        assert!((trust_before - trust_after).abs() < f32::EPSILON);
     }
 }
