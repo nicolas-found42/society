@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 
 use serde_json::{json, Map, Value};
 
-use crate::action::affordances;
+use crate::action::{action_phrase, affordances};
 use crate::world::{Agent, Place, World};
 
 /// The exact JSON handed to the judgment layer for one agent's turn.
@@ -223,12 +223,19 @@ pub fn agent_card(w: &World, a: &Agent, decision: &str) -> String {
     );
     let _ = writeln!(
         s,
-        "Hunger {}/3, Thirst {}/3, Energy {}/10, Warmth {}/4, Standing {}/4. Goal: {}.",
+        "Hunger {}/3, Thirst {}/3, Energy {}/10, Warmth {}/4, Standing {}/4.",
         a.hunger,
         a.thirst,
         a.energy,
         a.warmth,
-        round1(a.standing),
+        round1(a.standing)
+    );
+    // Split from the vitals on its own framed line: the goal is one of the
+    // strings the voice model copied verbatim (measured: role goal -> "balance"),
+    // so it is labelled as context and explicitly not text to reuse.
+    let _ = writeln!(
+        s,
+        "Your drive (context, not a script; never repeat these words): {}.",
         a.current_goal
     );
     if !mems.is_empty() {
@@ -238,7 +245,7 @@ pub fn agent_card(w: &World, a: &Agent, decision: &str) -> String {
             s.push('\n');
         }
     }
-    let _ = writeln!(s, "You have decided to {decision}.");
+    let _ = writeln!(s, "You have decided to {}.", action_phrase(decision));
     s.push_str("Say one line aloud. Do not describe the situation or count your food unless you are making a demand or an offer.");
     s
 }
@@ -549,6 +556,42 @@ mod tests {
         assert!(v.get("food_here").is_some());
         assert!(v.get("food_carried").is_some());
         assert!(v.get("legal_actions").is_some());
+    }
+
+    #[test]
+    fn card_renders_the_decision_as_prose() {
+        let w = World::founding(1);
+        let card = agent_card(&w, &w.agents[0], "draw_water");
+        assert!(card.contains("You have decided to draw water from the well."));
+        assert!(
+            !card.contains("draw_water"),
+            "the card must not hand the model a copyable id:\n{card}"
+        );
+    }
+
+    #[test]
+    fn card_frames_the_goal_once_as_context() {
+        let w = World::founding(1);
+        let a = &w.agents[0];
+        let card = agent_card(&w, a, "speak");
+        let goal = a.current_goal.as_str();
+        assert_eq!(
+            card.matches(goal).count(),
+            1,
+            "the goal must appear exactly once:\n{card}"
+        );
+        let goal_line = card
+            .lines()
+            .find(|l| l.contains(goal))
+            .expect("the goal is on a line");
+        assert!(
+            goal_line.contains("never repeat these words"),
+            "{goal_line}"
+        );
+        assert!(
+            !card.contains("Goal: "),
+            "the old vitals clause is gone:\n{card}"
+        );
     }
 
     #[test]

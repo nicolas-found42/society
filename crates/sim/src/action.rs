@@ -111,6 +111,46 @@ impl Intent {
     }
 }
 
+/// Prose rendering of a wire action id, for prompts that must not leak the id.
+///
+/// The voice model copies the nearest salient string in its card; a raw id like
+/// `draw_water` is exactly what it copied (measured: 5 of 45 lines in a 5-turn
+/// run were the action id, verbatim). Any surface the model reads — the card's
+/// decision line and the actor's own memory — must therefore carry the phrase,
+/// never the id.
+///
+/// A place id is kept verbatim (`go:market` -> "leave for market"); an unknown
+/// id falls back to its own spelling with underscores turned into spaces.
+#[must_use]
+pub fn action_phrase(action: &str) -> String {
+    if let Some(place) = action.strip_prefix("go:") {
+        return format!("leave for {}", place.replace('_', " "));
+    }
+    let phrase = match action {
+        "speak" => "speak aloud",
+        "rest" => "rest",
+        "take" => "take food from the store here",
+        "give" => "give food to someone here",
+        "forage" => "forage here for food",
+        "help" => "help someone here",
+        "steal" => "take what belongs to someone else",
+        "accuse" => "accuse someone here",
+        "promise" => "promise someone here",
+        "draw_water" => "draw water from the well",
+        "chop" => "chop wood",
+        "gather_herbs" => "gather herbs",
+        "craft" => "craft a tool",
+        "tend" => "tend the field",
+        "heal" => "heal the sick",
+        "trade" => "trade at the market",
+        "pray" => "pray at the shrine",
+        "repair" => "repair what is broken",
+        "console" => "console someone here",
+        _ => return action.replace('_', " "),
+    };
+    phrase.to_owned()
+}
+
 /// Every action the simulator will accept for this agent right now, in the
 /// exact spelling the model must choose from.
 #[must_use]
@@ -856,7 +896,7 @@ pub fn apply(
         // The actor remembers their own act.
         if let Some(x) = w.agent_mut(actor) {
             let text = if speech.is_empty() {
-                format!("You {}.", intent.action)
+                format!("You {}.", action_phrase(&intent.action))
             } else {
                 format!("You said: \"{speech}\"")
             };
@@ -907,5 +947,104 @@ impl SocialAct {
             Self::Blessing => "blessing",
             Self::Forgiveness => "forgiveness",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::World;
+
+    #[test]
+    fn action_phrase_matches_the_contract_table() {
+        let table = [
+            ("speak", "speak aloud"),
+            ("rest", "rest"),
+            ("take", "take food from the store here"),
+            ("give", "give food to someone here"),
+            ("forage", "forage here for food"),
+            ("help", "help someone here"),
+            ("steal", "take what belongs to someone else"),
+            ("accuse", "accuse someone here"),
+            ("promise", "promise someone here"),
+            ("draw_water", "draw water from the well"),
+            ("chop", "chop wood"),
+            ("gather_herbs", "gather herbs"),
+            ("craft", "craft a tool"),
+            ("tend", "tend the field"),
+            ("heal", "heal the sick"),
+            ("trade", "trade at the market"),
+            ("pray", "pray at the shrine"),
+            ("repair", "repair what is broken"),
+            ("console", "console someone here"),
+            ("go:market", "leave for market"),
+        ];
+        for (id, phrase) in table {
+            assert_eq!(action_phrase(id), phrase, "{id}");
+        }
+    }
+
+    #[test]
+    fn action_phrase_spaces_an_unknown_id() {
+        assert_eq!(action_phrase("foo_bar"), "foo bar");
+    }
+
+    #[test]
+    fn no_action_phrase_leaks_an_underscore() {
+        // Every id the wire vocabulary can carry, including the `move` verb id
+        // (the model never chooses it; `go:<place>` replaces it) and every
+        // place form. A prompt that shows an underscore shows the wire id.
+        let verbs = [
+            Verb::Speak,
+            Verb::Rest,
+            Verb::Take,
+            Verb::Give,
+            Verb::Forage,
+            Verb::Help,
+            Verb::Steal,
+            Verb::Accuse,
+            Verb::Promise,
+            Verb::Move,
+            Verb::DrawWater,
+            Verb::Chop,
+            Verb::GatherHerbs,
+            Verb::Craft,
+            Verb::Tend,
+            Verb::Heal,
+            Verb::Trade,
+            Verb::Pray,
+            Verb::Repair,
+            Verb::Console,
+        ];
+        let mut ids: Vec<String> = verbs.iter().map(|v| v.id().to_owned()).collect();
+        for p in Place::ALL {
+            ids.push(format!("go:{}", p.id()));
+        }
+        for id in ids {
+            let phrase = action_phrase(&id);
+            assert!(
+                !phrase.contains('_'),
+                "{id} rendered as {phrase}, which still leaks the id"
+            );
+        }
+    }
+
+    #[test]
+    fn a_silent_acts_own_memory_holds_prose_not_the_id() {
+        let mut w = World::founding(307);
+        let name = w.agents[0].name.clone();
+        w.agent_mut(&name).unwrap().place = Place::Well;
+        let intent = Intent::parse("draw_water", Place::Well).unwrap();
+        let out = apply(&mut w, &name, &intent, "", SocialAct::None);
+        assert!(out.accepted);
+        let own = w
+            .agent(&name)
+            .unwrap()
+            .memories
+            .iter()
+            .find(|m| m.kind == MemoryKind::Own)
+            .expect("the actor records their own act");
+        assert_eq!(own.text, "You draw water from the well.");
+        assert!(!own.text.contains("draw_water"));
     }
 }
