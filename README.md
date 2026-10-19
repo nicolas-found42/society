@@ -134,7 +134,9 @@ carries nothing quotable — no goal, no dialogue, none of the villager's own
 lines — and a line that still copies it is dropped: the model is asked once
 more, and if the second line copies too the villager commits silent, with no
 trust move, no social effect and no memory of a line. The feed shows the
-reason.
+reason. The model's own prompt is a source in the same sense, and the filter
+guards it too: a line that quotes the system prompt's instructions or its
+example lines is the model reading itself back, not a villager speaking.
 
 One turn for nine villagers takes **~0.7 s** with the default LFM2.5-350M voice
 models, reasoning off, on a stock Ollama daemon (measured medians: 689 ms over

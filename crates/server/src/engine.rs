@@ -22,11 +22,11 @@ use society_sim::{
     NEUTRAL_TRUST,
 };
 
-use crate::copy::{is_copy, is_paraphrase};
+use crate::copy::{is_copy, is_instruction_copy, is_paraphrase};
 use crate::inference::judgment::{
     action_question, choice_question, noul_question, Answer, Dilemma, Judge,
 };
-use crate::inference::voice::{Line, Voice, VoiceError};
+use crate::inference::voice::{prompt_examples, Line, Voice, VoiceError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TurnRecord {
@@ -1084,11 +1084,18 @@ pub fn recent_place_dialogue(w: &World, place: Place, limit: usize) -> Vec<Strin
 struct CopySources {
     /// Exact text: equality or a contiguous word-run, either direction. The
     /// card, the legal action ids (so a one-word id like "help" is caught),
-    /// the action phrases, and the memory lines the card printed.
+    /// the action phrases, the memory lines the card printed, and the example
+    /// lines the system prompt shows the model.
     strict: Vec<String>,
     /// Short phrases where a content-word paraphrase is still a copy. The card
     /// is deliberately absent: its common words would match almost anything.
     phrases: Vec<String>,
+    /// The system prompt's own instructions, matched by a shared run of
+    /// three words. The prompt is a source like the card: measured, one line
+    /// in seventy-four was the speaker's own vocal habit handed back as
+    /// dialogue, and the whole-line rule cannot see a line that quotes only
+    /// part of an instruction.
+    instructions: Vec<String>,
 }
 
 impl CopySources {
@@ -1102,22 +1109,34 @@ impl CopySources {
             .collect();
         let memories = card_memories(card);
 
-        let mut strict =
-            Vec::with_capacity(1 + legal.len() + action_phrases.len() + memories.len());
+        let examples = prompt_examples();
+
+        let mut strict = Vec::with_capacity(
+            1 + legal.len() + action_phrases.len() + memories.len() + examples.len(),
+        );
         strict.push(card.to_owned());
         strict.extend(legal);
         strict.extend(action_phrases.iter().cloned());
         strict.extend(memories.iter().cloned());
+        strict.extend(examples);
 
         let mut phrases = action_phrases;
         phrases.extend(memories);
 
-        Self { strict, phrases }
+        let instructions = vec![Voice::vocal_cadence(&a.name).to_owned()];
+
+        Self {
+            strict,
+            phrases,
+            instructions,
+        }
     }
 
-    /// True when either copy test fires.
+    /// True when any copy test fires.
     fn copies(&self, line: &str) -> bool {
-        is_copy(line, &self.strict) || is_paraphrase(line, &self.phrases)
+        is_copy(line, &self.strict)
+            || is_paraphrase(line, &self.phrases)
+            || is_instruction_copy(line, &self.instructions)
     }
 }
 
@@ -1382,12 +1401,11 @@ fn settle_social_echoes(
         return;
     };
 
-    // 1. Evolve the speaker's current goal from what they did this turn.
-    if let Some(a) = world.agent_mut(speaker) {
-        if let Some(new_goal) = synthesize_goal(action, social, addressee) {
-            a.current_goal = new_goal;
-        }
-    }
+    // The speaker's goal is not written here. The goal is a standing aim, and
+    // the sim crate's goal ladder owns it (survival, then the unkept promise,
+    // then the motive, then the role). An engine that also wrote it would be
+    // a second convention, and the ladder would erase it in the same step
+    // anyway: `world.settle()` refreshes every villager's goal after this.
 
     if say.trim().is_empty() {
         return;
@@ -1535,29 +1553,6 @@ fn settle_village_promises(world: &mut World) {
             fidelity: Some(1.0),
             divine: false,
         });
-    }
-}
-
-/// The goal the world writes for a villager after a credible turn: the social
-/// act first, then the move.
-///
-/// No free text goes in. The old signature took the voice model's `why` and
-/// preferred it whenever it was 8 to 72 characters long; measured, 45 of 45
-/// were prompt fragments (a system-prompt example, a card line, a label), so a
-/// parroted fragment could become the villager's goal. The motive is answered
-/// by the judgment layer and turned into a goal by the sim crate's ladder
-/// (`Agent::refresh_mood_and_goal`), which is the one place that mapping lives;
-/// a second copy here would be a second convention that could disagree with it.
-fn synthesize_goal(action: &str, social: SocialAct, addressee: Option<&str>) -> Option<String> {
-    match (social.id(), addressee) {
-        ("promise", Some(t)) => Some(format!("Make good on promise to {t}")),
-        ("plea", Some(t)) => Some(format!("Seek aid from {t}")),
-        ("accusation", Some(t)) => Some(format!("Hold {t} to account")),
-        ("trade_offer", Some(t)) => Some(format!("Strike a trade with {t}")),
-        _ if action.starts_with("go:") => {
-            Some(format!("Reach {} and see what awaits", &action[3..]))
-        },
-        _ => None,
     }
 }
 
@@ -2387,6 +2382,21 @@ mod tests {
         assert!(!copy.copies("The well is low."));
     }
 
+    #[test]
+    fn the_prompt_is_a_copy_source_too() {
+        let w = card_world();
+        let copy = sources_for(&w, "Ada", "draw_water");
+        // The system's own instructions are in front of the model, so a line
+        // that quotes them is the model reading its prompt back. Measured:
+        // one line in seventy-four was the speaker's vocal habit handed back
+        // as dialogue.
+        let cadence = Voice::vocal_cadence("Ada");
+        assert!(copy.copies(&format!("Ada speaks {cadence}")));
+        // An example line, quoted whole, is caught by the ordinary rule.
+        let example = prompt_examples().first().cloned().expect("an example");
+        assert!(copy.copies(&example));
+    }
+
     /// The gate answer a dropped line never receives.
     fn empty_gate() -> Answer {
         Answer {
@@ -2551,29 +2561,5 @@ mod tests {
         assert!(answered_motive(&answer, "Ada").is_err());
         let missing = motive_answer("Bo", "fear");
         assert!(answered_motive(&missing, "Ada").is_err());
-    }
-
-    #[test]
-    fn synthesize_goal_names_the_person_a_plea_reaches() {
-        let goal = synthesize_goal("speak", SocialAct::Plea, Some("Bo"));
-        assert_eq!(goal.as_deref(), Some("Seek aid from Bo"));
-    }
-
-    #[test]
-    fn synthesize_goal_names_the_place_a_move_reaches() {
-        let goal = synthesize_goal("go:market", SocialAct::None, None);
-        assert_eq!(goal.as_deref(), Some("Reach market and see what awaits"));
-    }
-
-    #[test]
-    fn synthesize_goal_leaves_a_plain_action_alone() {
-        // Nothing here may come from free text: the old rationale branch read
-        // the voice model's `why`, which was a prompt fragment in 45 of 45
-        // measured lines, and turned it into the villager's goal.
-        assert_eq!(synthesize_goal("draw_water", SocialAct::None, None), None);
-        assert_eq!(
-            synthesize_goal("draw_water", SocialAct::None, Some("Bo")),
-            None
-        );
     }
 }

@@ -60,6 +60,35 @@ pub fn is_copy(line: &str, sources: &[String]) -> bool {
     false
 }
 
+/// True when `line` and an instruction source share a contiguous run of three
+/// words.
+///
+/// The voice model's system prompt is a copy source like the card, but a line
+/// that quotes it is only a fragment of it: measured, one line in seventy-four
+/// was the speaker's own vocal habit handed back as dialogue ("Cor speaks with
+/// quiet intensity", out of "Speak with quiet intensity; name the person you
+/// address or distrust"). The whole-line rule cannot see that, because the
+/// line carries words the instruction does not.
+#[must_use]
+pub fn is_instruction_copy(line: &str, sources: &[String]) -> bool {
+    let n = normalize(line);
+    if n.is_empty() {
+        return false;
+    }
+    let n_words = words(&n);
+    if n_words.len() < 3 {
+        return false;
+    }
+    sources.iter().any(|source| {
+        let m = normalize(source);
+        if m.is_empty() {
+            return false;
+        }
+        let m_words = words(&m);
+        n_words.windows(3).any(|run| contains_run(&m_words, run))
+    })
+}
+
 /// True when `line` paraphrases a phrase source: its content words occur, in
 /// order, inside the source's content words.
 ///
@@ -147,7 +176,7 @@ fn contains_run(longer: &[&str], shorter: &[&str]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_copy, is_paraphrase, normalize};
+    use super::{is_copy, is_instruction_copy, is_paraphrase, normalize};
 
     #[test]
     fn normalize_folds_case_punctuation_and_space() {
@@ -245,5 +274,42 @@ mod tests {
         let sources = vec!["draw water from the well".to_owned()];
         assert!(!is_paraphrase("", &sources));
         assert!(!is_paraphrase("and the", &sources));
+    }
+
+    #[test]
+    fn a_line_that_quotes_the_vocal_habit_is_a_copy() {
+        // Measured: "Cor speaks with quiet intensity" was handed back as
+        // dialogue, out of "Speak with quiet intensity; name the person you
+        // address or distrust".
+        let cadence =
+            vec!["Speak with quiet intensity; name the person you address or distrust.".to_owned()];
+        assert!(is_instruction_copy(
+            "Cor speaks with quiet intensity",
+            &cadence
+        ));
+    }
+
+    #[test]
+    fn two_shared_words_are_not_a_quotation() {
+        let cadence =
+            vec!["Speak with quiet intensity; name the person you address or distrust.".to_owned()];
+        assert!(!is_instruction_copy("with intensity", &cadence));
+    }
+
+    #[test]
+    fn a_short_line_cannot_quote_an_instruction() {
+        let cadence =
+            vec!["Speak with quiet intensity; name the person you address or distrust.".to_owned()];
+        assert!(!is_instruction_copy("intensity", &cadence));
+    }
+
+    #[test]
+    fn a_line_of_its_own_is_not_a_quotation() {
+        let cadence =
+            vec!["Speak with quiet intensity; name the person you address or distrust.".to_owned()];
+        assert!(!is_instruction_copy(
+            "The granary is nearly empty and we must not let it go to waste.",
+            &cadence
+        ));
     }
 }

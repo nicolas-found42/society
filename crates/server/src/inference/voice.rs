@@ -161,6 +161,28 @@ pub struct Voice {
     client: reqwest::Client,
 }
 
+/// The three example lines the system prompt shows the model.
+///
+/// They are in the prompt, so the model can hand one back as dialogue: the
+/// copy filter treats them as sources.
+const EXAMPLE_LINES: [&str; 3] = [
+    "Six measures, Cor. Count them out where everyone can hear.",
+    "Lie still. I will find something, even if it is roots.",
+    "Nothing. Not even mud.",
+];
+
+/// The example lines the system prompt shows the model.
+///
+/// The prompt is a copy source like the card: a line that quotes one of these
+/// is the model reading its own instructions back, not a villager speaking.
+#[must_use]
+pub fn prompt_examples() -> Vec<String> {
+    EXAMPLE_LINES
+        .iter()
+        .map(|line| (*line).to_owned())
+        .collect()
+}
+
 impl Voice {
     /// # Panics
     ///
@@ -267,24 +289,23 @@ impl Voice {
             "You are a villager in a small, tight-knit settlement where everyone remembers favors, grudges, kinship, and scarcity."
         };
         let cadence = Self::vocal_cadence(speaker);
+        let [e0, e1, e2] = EXAMPLE_LINES;
         format!(
             "{role_clause} Reply with JSON only, matching this schema exactly:\n\
             {{\"say\":\"<one line spoken aloud>\"}}\n\n\
             Examples of the required style:\n\
             Situation: Ada, market. Cor carries six, Ada carries two, nothing is owed.\n\
-            {{\"say\":\"Six measures, Cor. Count them out where everyone can hear.\"}}\n\n\
+            {{\"say\":\"{e0}\"}}\n\n\
             Situation: Ada, hut. Rain. Bo is here, sick, carrying none.\n\
-            {{\"say\":\"Lie still. I will find something, even if it is roots.\"}}\n\n\
+            {{\"say\":\"{e1}\"}}\n\n\
             Situation: Wren, well. Nobody here. The well is dry.\n\
-            {{\"say\":\"Nothing. Not even mud.\"}}\n\n\
+            {{\"say\":\"{e2}\"}}\n\n\
             Vocal habit for {speaker}: {cadence}\n\n\
             Rules:\n\
             - `say` is speech only: no narration, no stage directions, no summary of the scene.\n\
             - One sentence, at most twenty words.\n\
-            - If recent lines at this place are shown, answer or react to them like a real conversation.\n\
             - If you hesitated between two actions, let that tension show in what you say.\n\
-            - Never reuse a sentence from the examples above, or from your own memories.\n\
-            - Never repeat a line you have already said in this conversation.\n\
+            - Never reuse a sentence from the examples above.\n\
             - Do not count food out loud unless you are making a demand or an offer.\n\
             - Say something new about this exact person in this exact place."
         )
