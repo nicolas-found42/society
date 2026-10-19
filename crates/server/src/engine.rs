@@ -7,8 +7,8 @@
 //!      from mood and the card's addressee from trust
 //!   3. voice renders one line per agent, concurrently under an AIMD cap
 //!   4. Jev gates all lines at once: fidelity, grounding, social act
-//!   5. code reads the addressee and the intensity out of the line, applies
-//!      effects in a fixed order and settles the turn
+//!   5. code reads the addressee out of the line, derives the intensity from
+//!      the act and register, applies effects in a fixed order and settles
 
 use std::fmt::Write as _;
 use std::sync::Arc;
