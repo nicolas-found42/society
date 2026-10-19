@@ -646,6 +646,12 @@ pub struct Agent {
     pub devotion: f32,
     #[serde(default)]
     pub current_goal: String,
+    /// Why this villager is doing what they are doing, in the judgment
+    /// layer's words: "hunger", "thirst", "kinship", "promise", "fear", "duty".
+    /// Set by the engine each turn; `None` when the judgment layer has not
+    /// answered yet.
+    #[serde(default)]
+    pub motive: Option<String>,
     #[serde(default)]
     pub partner: Option<String>,
     #[serde(default)]
@@ -755,6 +761,7 @@ impl Agent {
             hope: 2.5,
             devotion: 2.0,
             current_goal: "secure food and keep the settlement whole".into(),
+            motive: None,
             partner: None,
             relations,
             beliefs: Vec::new(),
@@ -889,6 +896,29 @@ impl Agent {
             Mood::Content
         };
 
+        // The judgment layer answers *why* this villager acts; the answer is a
+        // single word, and the goal ladder is where it becomes a goal.
+        //
+        // Order matters: survival first, then the unkept promise, then the
+        // motive, then the role. The survival ladder must always win, because
+        // a villager who is starving does not get to be loyal: no motive the
+        // judge returns may talk someone out of finding food or water. The
+        // motive sits below the promise because a promise is a concrete
+        // obligation already in the world state, and above the role because
+        // the role is the fallback for when nothing finer is known.
+        let motive_goal = match self.motive.as_deref() {
+            Some("hunger") => Some("find food before the next meal"),
+            Some("thirst") => Some("drink and carry water"),
+            Some("kinship") => Some("keep the family close and fed"),
+            Some("fear") => Some("keep clear of the quarrel"),
+            // "promise" is already the unkept-promise step below, and "duty"
+            // is exactly the role goal; neither adds a second phrasing.
+            Some("promise" | "duty") => None,
+            // An unknown label must not invent a goal, and neither must an
+            // unanswered judgment; both fall through to the role.
+            _ => None,
+        };
+
         self.current_goal = if self.hunger >= 2 && self.food == 0 {
             "find grain or forage immediately before starving".into()
         } else if self.thirst >= 2 && self.water == 0 {
@@ -899,6 +929,8 @@ impl Agent {
             "gather firewood and warm by the hut hearth".into()
         } else if let Some(pr) = &self.promise {
             format!("keep promise to {}", pr.to)
+        } else if let Some(goal) = motive_goal {
+            goal.into()
         } else {
             match self.role {
                 Role::Steward => "balance the granary stores and prevent theft".into(),
@@ -1646,4 +1678,97 @@ impl World {
 pub fn mix_personas(a: &str, b: &str) -> String {
     let first = |s: &str| s.split(';').next().unwrap_or(s).trim().to_owned();
     format!("{}; {}", first(a), first(b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fed, watered villager with no ailment, so only the goal ladder's
+    /// motive and role steps can decide the goal.
+    fn villager() -> Agent {
+        Agent::new("Ada", "plain", Place::Granary, 2, 0, 0, 0, vec![], &[])
+    }
+
+    fn goal_after_refresh(a: &mut Agent) -> String {
+        a.refresh_mood_and_goal(Season::Spring);
+        a.current_goal.clone()
+    }
+
+    #[test]
+    fn a_motive_hunger_sets_its_goal_when_the_villager_is_fed() {
+        let mut a = villager();
+        a.motive = Some("hunger".into());
+        assert_eq!(goal_after_refresh(&mut a), "find food before the next meal");
+    }
+
+    #[test]
+    fn a_starving_villager_keeps_the_survival_goal_over_its_motive() {
+        let mut a = villager();
+        a.motive = Some("hunger".into());
+        a.food = 0;
+        a.hunger = 2;
+        assert_eq!(
+            goal_after_refresh(&mut a),
+            "find grain or forage immediately before starving"
+        );
+    }
+
+    #[test]
+    fn no_motive_leaves_the_role_goal_in_place() {
+        let mut a = villager();
+        assert_eq!(
+            goal_after_refresh(&mut a),
+            "balance the granary stores and prevent theft"
+        );
+    }
+
+    #[test]
+    fn motive_promise_defers_to_the_unkept_promise_and_otherwise_to_the_role() {
+        let mut a = villager();
+        a.motive = Some("promise".into());
+        assert_eq!(
+            goal_after_refresh(&mut a),
+            "balance the granary stores and prevent theft"
+        );
+        a.promise = Some(Promise {
+            to: "Bo".into(),
+            text: "bring grain to the hut".into(),
+            made_turn: 1,
+            kept: None,
+        });
+        assert_eq!(goal_after_refresh(&mut a), "keep promise to Bo");
+    }
+
+    #[test]
+    fn an_unknown_motive_falls_through_to_the_role_goal() {
+        let mut a = villager();
+        a.motive = Some("curiosity".into());
+        assert_eq!(
+            goal_after_refresh(&mut a),
+            "balance the granary stores and prevent theft"
+        );
+    }
+
+    #[test]
+    fn the_motive_survives_a_serde_round_trip() {
+        let mut a = villager();
+        a.motive = Some("kinship".into());
+        let text = serde_json::to_string(&a).unwrap();
+        let back: Agent = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.motive.as_deref(), Some("kinship"));
+    }
+
+    #[test]
+    fn a_save_without_the_motive_field_loads_with_no_motive() {
+        let a = villager();
+        let mut value = serde_json::to_value(&a).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("motive")
+            .expect("the serialized agent carries the field");
+        let back: Agent = serde_json::from_value(value).unwrap();
+        assert_eq!(back.motive, None);
+    }
 }
