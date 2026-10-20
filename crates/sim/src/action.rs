@@ -1309,6 +1309,9 @@ fn apply_resolved(
             kind,
             action: intent.action.clone(),
             text: speech.to_owned(),
+            // Spoken iff the villager said words (ticket #4): silent harvests
+            // and chores record an empty chronicle line, never dialogue.
+            spoken: !speech.trim().is_empty(),
             social: Some(social.id().to_owned()),
             intensity,
             grounded: Some(grounded),
@@ -1337,6 +1340,8 @@ fn apply_resolved(
             kind: EventKind::Confusion,
             action: intent.action.clone(),
             text: note.clone().unwrap_or_else(|| "confused".into()),
+            // Rejections explain the world; the villager said nothing.
+            spoken: false,
             social: None,
             intensity: None,
             grounded: None,
@@ -1570,6 +1575,7 @@ mod tests {
             kind: EventKind::System,
             action: action.to_owned(),
             text: String::new(),
+            spoken: false,
             social: None,
             intensity: None,
             grounded: None,

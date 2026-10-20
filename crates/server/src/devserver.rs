@@ -349,13 +349,21 @@ pub fn last_factors(run: &[turn::TurnRecord], name: &str) -> Value {
 
 /// The last few lines spoken at one place, oldest first. A world query, not a
 /// simulation fact: it reads the event log the world already carries.
+///
+/// Provenance is the `spoken` flag on the event (ticket #4): a line enters
+/// conversation history iff a villager actually said words there. Deaths,
+/// births, foundings, halts, rejections, silent chores, and observer prose
+/// (whispers, rumors, feasts, oaths, goals) are narrative context, never
+/// dialogue - even with nonempty text at the same place. `spoken` defaults
+/// to `false` for pre-flag saves, so old chronicles exclude rather than
+/// invent speech.
 #[must_use]
 pub fn recent_place_dialogue(w: &World, place: Place, limit: usize) -> Vec<String> {
     let mut out: Vec<String> = w
         .events
         .iter()
         .rev()
-        .filter(|e| e.place == place && !e.divine && !e.text.trim().is_empty())
+        .filter(|e| e.place == place && e.spoken && !e.text.trim().is_empty())
         .take(limit)
         .map(|e| format!("Turn {} {}: {}", e.turn, e.actor, e.text))
         .collect();
@@ -663,6 +671,7 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
                 kind: society_sim::EventKind::Divine,
                 action: "whisper".into(),
                 text: format!("A whisper to {target}: {text}"),
+                spoken: false,
                 social: None,
                 intensity: None,
                 grounded: None,
@@ -697,6 +706,7 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
                 kind: society_sim::EventKind::Divine,
                 action: "gift".into(),
                 text: format!("{amount} measures appear beside {target}."),
+                spoken: false,
                 social: None,
                 intensity: None,
                 grounded: None,
@@ -727,6 +737,7 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
                 kind: society_sim::EventKind::Divine,
                 action: "weather".into(),
                 text: weather_text,
+                spoken: false,
                 social: None,
                 intensity: None,
                 grounded: None,
@@ -778,6 +789,7 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
                 kind: society_sim::EventKind::Divine,
                 action: "rumor".into(),
                 text: format!("Rumor at {}: {text}", place.id()),
+                spoken: false,
                 social: Some(society_sim::SocialAct::Gossip.id().into()),
                 intensity: Some(3.2),
                 grounded: None,
@@ -843,6 +855,8 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
                     place.id(),
                     village_morale
                 ),
+                // Feasts narrate; they speak nothing (ticket #4).
+                spoken: false,
                 social: None,
                 intensity: Some(3.0),
                 grounded: None,
@@ -904,6 +918,7 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
                 kind: society_sim::EventKind::Divine,
                 action: "oath".into(),
                 text: format!("{target} swore an oath to {to}: {text}"),
+                spoken: false,
                 social: None,
                 intensity: Some(3.0),
                 grounded: None,
@@ -954,6 +969,7 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
                 kind: society_sim::EventKind::Divine,
                 action: "goal".into(),
                 text: format!("{target} sets a new goal: {text}"),
+                spoken: false,
                 social: None,
                 intensity: None,
                 grounded: None,
@@ -1266,5 +1282,137 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let _ = std::fs::remove_dir_all(&root);
         let _ = turn;
+    }
+
+    fn dialogue_event(
+        w: &World,
+        turn: u64,
+        actor: &str,
+        kind: society_sim::EventKind,
+        action: &str,
+        text: &str,
+        spoken: bool,
+    ) -> Event {
+        Event {
+            turn,
+            actor: actor.into(),
+            place: w.agent(actor).map_or(Place::Granary, |a| a.place),
+            kind,
+            action: action.into(),
+            text: text.into(),
+            spoken,
+            social: None,
+            intensity: None,
+            grounded: None,
+            divine: false,
+        }
+    }
+
+    #[test]
+    fn dialogue_excludes_narration_and_keeps_spoken_lines() {
+        // Ticket #4: a mixed market chronicle - a spoken promise, a death,
+        // a birth, an empty line, a rejection note - yields only the spoken
+        // line, oldest first, capped by the limit.
+        use society_sim::EventKind;
+        let mut w = World::founding(4);
+        let ada = w.agents[0].name.clone();
+        let bo = w.agents[1].name.clone();
+        let market = Place::Market;
+        w.agent_mut(&ada).unwrap().place = market;
+        w.agent_mut(&bo).unwrap().place = market;
+        w.push_event(dialogue_event(
+            &w,
+            1,
+            &ada,
+            EventKind::Promise,
+            "promise",
+            "I will feed you.",
+            true,
+        ));
+        w.push_event(dialogue_event(
+            &w,
+            2,
+            &bo,
+            EventKind::Death,
+            "death",
+            "Bo died of hunger.",
+            false,
+        ));
+        w.push_event(dialogue_event(
+            &w,
+            3,
+            &ada,
+            EventKind::Birth,
+            "birth",
+            "Ash was born to Ada and Bo.",
+            false,
+        ));
+        w.push_event(dialogue_event(
+            &w,
+            4,
+            &ada,
+            EventKind::Confusion,
+            "give",
+            "no food to give",
+            false,
+        ));
+        w.push_event(dialogue_event(
+            &w,
+            5,
+            &ada,
+            EventKind::Transfer,
+            "give",
+            "   ",
+            true,
+        ));
+        w.push_event(dialogue_event(
+            &w,
+            6,
+            &bo,
+            EventKind::System,
+            "halt",
+            "halted",
+            false,
+        ));
+        let lines = recent_place_dialogue(&w, market, 10);
+        assert_eq!(lines, vec![format!("Turn 1 {ada}: I will feed you.")]);
+        // The cap counts spoken lines, not narrative: a limit of one still
+        // returns the single spoken line even with six events behind it.
+        assert_eq!(recent_place_dialogue(&w, market, 1).len(), 1);
+    }
+
+    #[test]
+    fn dialogue_counts_only_spoken_lines_within_the_limit() {
+        // Ticket #4: the limit bounds eligible spoken lines, so two spoken
+        // lines amid narration return the two newest-first-capped lines in
+        // oldest-first order.
+        use society_sim::EventKind;
+        let mut w = World::founding(4);
+        let ada = w.agents[0].name.clone();
+        w.agent_mut(&ada).unwrap().place = Place::Market;
+        for (t, text, spoken) in [
+            (1_u64, "first words", true),
+            (2, "a death in the market", false),
+            (3, "second words", true),
+            (4, "third words", true),
+        ] {
+            w.push_event(dialogue_event(
+                &w,
+                t,
+                &ada,
+                EventKind::Speech,
+                "speak",
+                text,
+                spoken,
+            ));
+        }
+        let lines = recent_place_dialogue(&w, Place::Market, 2);
+        assert_eq!(
+            lines,
+            vec![
+                format!("Turn 3 {ada}: second words"),
+                format!("Turn 4 {ada}: third words"),
+            ]
+        );
     }
 }

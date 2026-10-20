@@ -351,6 +351,7 @@ pub(crate) fn apply_village_systems(w: &mut World) -> usize {
             kind: EventKind::System,
             action: festival_name.into(),
             text: text.into(),
+            spoken: false,
             social: Some("communal".into()),
             intensity: Some(0.85),
             grounded: Some(1.0),
@@ -397,6 +398,7 @@ pub(crate) fn apply_village_systems(w: &mut World) -> usize {
                     text: format!(
                         "{donor_name} distributed emergency parish grain to {recipient_name}."
                     ),
+                    spoken: false,
                     social: Some("altruistic".into()),
                     intensity: Some(0.65),
                     grounded: Some(1.0),
@@ -425,6 +427,7 @@ pub(crate) fn apply_village_systems(w: &mut World) -> usize {
                     text: format!(
                         "{donor_name} shared a skin of well water with parched {recipient_name}."
                     ),
+                    spoken: false,
                     social: Some("supportive".into()),
                     intensity: Some(0.60),
                     grounded: Some(1.0),
@@ -479,6 +482,7 @@ pub(crate) fn apply_village_systems(w: &mut World) -> usize {
                     text: format!(
                         "{healer_name} steeped bitter herbs to tend {patient_name}'s constitution."
                     ),
+                    spoken: false,
                     social: Some("caring".into()),
                     intensity: Some(0.70),
                     grounded: Some(1.0),
@@ -555,6 +559,7 @@ pub(crate) fn apply_village_systems(w: &mut World) -> usize {
                 text: format!(
                     "{mentor_name} instructed {pupil_name} in the finer points of {skill}."
                 ),
+                spoken: false,
                 social: Some("mentorship".into()),
                 intensity: Some(0.55),
                 grounded: Some(1.0),
@@ -1236,6 +1241,7 @@ impl App {
                         kind: EventKind::System,
                         action: "assembly_bell".into(),
                         text: "The bronze parish bell tolled across the commons, summoning all living villagers to the Market square.".into(),
+                        spoken: false,
                         social: Some("civic".into()),
                         intensity: Some(0.9),
                         grounded: Some(1.0),
@@ -1259,6 +1265,7 @@ impl App {
                         kind: EventKind::Harvest,
                         action: "grand_feast".into(),
                         text: "A communal feast of fresh loaves, cider, and roasted roots restored every villager's spirit.".into(),
+                        spoken: false,
                         social: Some("celebration".into()),
                         intensity: Some(0.95),
                         grounded: Some(1.0),
@@ -1282,6 +1289,7 @@ impl App {
                         kind: EventKind::Trade,
                         action: "caravan_arrival".into(),
                         text: "Wagons from the valley road rolled into the Market, trading iron tools, grain, and silver coin.".into(),
+                        spoken: false,
                         social: Some("mercantile".into()),
                         intensity: Some(0.8),
                         grounded: Some(1.0),
@@ -1305,6 +1313,7 @@ impl App {
                         kind: EventKind::Divine,
                         action: "providence_blessing".into(),
                         text: "Warm golden light settled over the Shrine stones, lifting dread and kindling hope across the parish.".into(),
+                        spoken: false,
                         social: Some("sacred".into()),
                         intensity: Some(1.0),
                         grounded: Some(1.0),
@@ -1326,6 +1335,7 @@ impl App {
                         kind: EventKind::Heal,
                         action: "parish_remedy".into(),
                         text: "Steeped willow-bark and clean spring draughts cleared every fever and ailment in the village.".into(),
+                        spoken: false,
                         social: Some("healing".into()),
                         intensity: Some(0.9),
                         grounded: Some(1.0),
@@ -1359,6 +1369,7 @@ impl App {
                 kind: EventKind::Divine,
                 action: "decree".into(),
                 text,
+                spoken: false,
                 social: Some("providence".into()),
                 intensity: Some(0.85),
                 grounded: Some(1.0),
@@ -3263,6 +3274,7 @@ mod tests {
                 kind,
                 action: action.into(),
                 text: format!("saved {action}"),
+                spoken: false,
                 social: None,
                 intensity: None,
                 grounded: None,

@@ -1138,6 +1138,14 @@ pub struct Event {
     pub kind: EventKind,
     pub action: String,
     pub text: String,
+    /// Actual spoken words (`true`) vs narrator/system prose (`false`).
+    /// Only spoken lines enter conversation history
+    /// (`recent_place_dialogue`): deaths, births, foundings, halts,
+    /// rejections, and observer prose are narrative context, never dialogue.
+    /// Pre-flag saves deserialize as `false` (narrative): excluding a line
+    /// from dialogue is the safe direction.
+    #[serde(default)]
+    pub spoken: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub social: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1361,6 +1369,7 @@ impl World {
             kind: EventKind::System,
             action: "founding".into(),
             text: "Nine villagers wake in a settlement with nine measures of grain.".into(),
+            spoken: false,
             social: None,
             intensity: None,
             grounded: None,
@@ -1559,6 +1568,7 @@ impl World {
                 kind: EventKind::Death,
                 action: "death".into(),
                 text: format!("{name} died of hunger."),
+                spoken: false,
                 social: None,
                 intensity: Some(4.0),
                 grounded: None,
@@ -1774,6 +1784,7 @@ impl World {
             kind: EventKind::Birth,
             action: "birth".into(),
             text: format!("{name} was born to {mother} and {father}."),
+            spoken: false,
             social: None,
             intensity: Some(3.5),
             grounded: None,
@@ -1809,6 +1820,7 @@ impl World {
             kind: EventKind::System,
             action: "halt".into(),
             text: reason,
+            spoken: false,
             social: None,
             intensity: None,
             grounded: None,
@@ -1995,6 +2007,7 @@ mod tests {
                     kind: EventKind::Rest,
                     action: "rest".into(),
                     text: String::new(),
+                    spoken: false,
                     social: None,
                     intensity: None,
                     grounded: None,

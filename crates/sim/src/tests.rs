@@ -578,6 +578,7 @@ fn broken_promise_becomes_a_scar() {
                 kind: EventKind::Move,
                 action: "go:market".into(),
                 text: String::new(),
+                spoken: false,
                 social: None,
                 intensity: None,
                 grounded: None,
