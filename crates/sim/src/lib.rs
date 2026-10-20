@@ -39,11 +39,12 @@ pub use memory::{Belief, Fact, Memory, MemoryKind, MEMORY_CAP, REFLECTION_BUDGET
 pub use policy::{
     addressee_of, agent_rng, decide, derive_motive, is_survival, obligation_against, Candidate,
     Decision, Dilemma, Motive, DILEMMA_MARGIN, DILEMMA_RUNNERUP_MASS, OBLIGATION_GRUDGE,
-    POLICY_TEMPERATURE, PROMISE_OVERDUE_TURNS, SURVIVAL_HUNGER, SURVIVAL_THIRST, SURVIVAL_WARMTH,
+    POLICY_TEMPERATURE, PROMISE_OVERDUE_TURNS, SATIETY_MEASURES, SURVIVAL_HUNGER, SURVIVAL_THIRST,
+    SURVIVAL_WARMTH,
 };
 pub use profession::{
-    available_orders, maker_quality, profession_for, quality, yield_multiplier, Profession,
-    WorkOrder, PROFESSIONS,
+    available_orders, maker_quality, profession_for, quality, stocked_order_places,
+    yield_multiplier, Profession, WorkOrder, PROFESSIONS,
 };
 pub use rng::Rng;
 pub use speaker::{

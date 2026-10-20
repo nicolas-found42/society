@@ -78,8 +78,20 @@ pub fn speak(w: &World, name: &str, d: &Decision) -> Option<Line> {
         d.action.clone()
     };
 
-    let (text, mut claims) = render(w, a, d, &key, register, &mut rng);
-
+    // Exhaustion: every rendering is spent, so the villager says the plain
+    // fallback outside the grammar rather than repeat - unless the fallback
+    // itself is spent, in which case silence (ticket #21: the fallback is
+    // one shared line, so two exhausted turns running would repeat it
+    // inside the window).
+    let (text, mut claims) = if let Some(rendered) = render(w, a, d, &key, register, &mut rng) {
+        rendered
+    } else {
+        let fallback = sentence("I will see to it");
+        if recent_lines(w, a).contains(&fallback) {
+            return None;
+        }
+        (fallback, Vec::new())
+    };
     // Lie mode (ticket #14): the rate comes from the lie table, the clause
     // carries a false claim, and the check does the rest.
     let rate = lie_rate(w, a, d.addressee.as_deref());
@@ -138,7 +150,8 @@ fn sentence(s: &str) -> String {
 }
 
 /// Render the first clause from the cell's rules and fill the second when the
-/// budget holds. Returns (text, claims).
+/// budget holds. Returns `None` when every rendering is spent: the caller
+/// falls back to a line outside the grammar rather than repeat.
 fn render(
     w: &World,
     a: &Agent,
@@ -146,8 +159,11 @@ fn render(
     key: &str,
     register: &str,
     rng: &mut crate::rng::Rng,
-) -> (String, Vec<Claim>) {
-    // Ledger: exact repeats forbidden inside the window.
+) -> Option<(String, Vec<Claim>)> {
+    // Ledger: exact repeats forbidden inside the window. The ledger holds
+    // finished lines (ticket #21: raw templates never equal ledger entries,
+    // so comparing unfinished text could never fire), so candidates are
+    // finished first, then compared, in rng order.
     let spent: Vec<String> = recent_lines(w, a);
     let cell: Vec<&&'static str> = FIRST
         .iter()
@@ -166,46 +182,62 @@ fn render(
         cell
     };
     if cell.is_empty() {
-        return ("I will see to it.".to_owned(), Vec::new());
+        return None;
     }
 
-    let mut chosen: Option<(&'static str, String, Vec<Claim>)> = None;
-    // Try each rule in an rng-chosen order; the first that renders outside the
-    // ledger wins.
+    let second = second_for(key);
     let mut order: Vec<usize> = (0..cell.len()).collect();
     rng.shuffle(&mut order);
     for idx in &order {
         let template = cell[*idx];
-        let (text, claims) = fill(w, a, d, template, rng);
-        if !spent.contains(&text) {
-            chosen = Some((template, text, claims));
-            break;
-        }
-        if chosen.is_none() {
-            chosen = Some((template, text, claims));
-        }
-    }
-    let Some((template, mut text, mut claims)) = chosen else {
-        return ("I will see to it.".to_owned(), Vec::new());
-    };
-
-    // Second clause, matched to the family, inside the word budget.
-    if rng.chance(SECOND_CLAUSE_RATE) {
-        if let Some((connective, forms)) = second_for(key) {
-            let form = forms[rng.below(forms.len())];
-            let (clause, mut more) = fill(w, a, d, form, rng);
-            let words = text.split_whitespace().count() + clause.split_whitespace().count() + 1;
-            if words <= WORD_BUDGET {
-                claims.append(&mut more);
-                text = format!("{text}, {connective} {clause}");
+        // The second clause is decided per candidate: trying the bare clause
+        // only would report exhaustion when a decorated rendering is still
+        // free, and trying only the decorated one would miss the bare form.
+        for decorated in [true, false] {
+            let branch = rng.next_u64();
+            let seeded = crate::rng::Rng::new(branch);
+            if let Some((text, claims)) =
+                finish_candidate(w, a, d, template, second, decorated, seeded)
+            {
+                if !spent.contains(&text) {
+                    *rng = crate::rng::Rng::new(branch.wrapping_add(1));
+                    return Some((text, claims));
+                }
             }
         }
     }
-    let _ = template;
-    (text, claims)
+    None
 }
 
-/// Fill a template's slots from what the villager can observe or remember.
+/// One candidate rendering of a template: filled, finished, and decorated
+/// with the matched second clause when asked and inside the word budget.
+fn finish_candidate(
+    w: &World,
+    a: &Agent,
+    d: &Decision,
+    template: &str,
+    second: Option<(&'static str, [&'static str; 3])>,
+    decorated: bool,
+    mut rng: crate::rng::Rng,
+) -> Option<(String, Vec<Claim>)> {
+    let (text, claims) = fill(w, a, d, template, &mut rng);
+    if !decorated {
+        return Some((sentence(&text), claims));
+    }
+    if !rng.chance(SECOND_CLAUSE_RATE) {
+        return None;
+    }
+    let (connective, forms) = second?;
+    let form = forms[rng.below(forms.len())];
+    let (clause, mut more) = fill(w, a, d, form, &mut rng);
+    let words = text.split_whitespace().count() + clause.split_whitespace().count() + 1;
+    if words > WORD_BUDGET {
+        return None;
+    }
+    let mut claims = claims;
+    claims.append(&mut more);
+    Some((sentence(&format!("{text}, {connective} {clause}")), claims))
+}
 /// Every filled count slot contributes its claim; a person contributes their
 /// presence.
 #[allow(
@@ -563,12 +595,65 @@ pub(crate) fn render_lie_kind(
     (settles_false || unverifiable).then_some((text, claim))
 }
 
-/// The registers the grammar keys on, re-exported for the registry test.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::check;
     use crate::policy;
+
+    #[test]
+    fn an_exhausted_cell_returns_no_spent_line() {
+        // Ticket #21: the (console, plain) cell holds two templates. With
+        // both finished lines spent, render must report exhaustion rather
+        // than repeat one of them; the ledger check runs on finished lines,
+        // because raw templates never equal ledger entries.
+        let mut w = World::founding(77);
+        w.agents.clear();
+        let ada = Agent::new("Ada", "plain", Place::Hut, 2, 0, 0, 0, vec![], &[]);
+        let bo = Agent::new("Bo", "plain", Place::Hut, 2, 0, 0, 0, vec![], &[]);
+        w.agents.push(ada);
+        w.agents.push(bo);
+        // Spend every finished rendering of the two-templated (console,
+        // plain) cell: both first clauses, each with and without its matched
+        // second clause, as committed through the real seam.
+        for seed in 0..200_u64 {
+            let mut w2 = World::founding(seed);
+            w2.agents.clear();
+            w2.agents.push(Agent::new("Ada", "plain", Place::Hut, 2, 0, 0, 0, vec![], &[]));
+            w2.agents.push(Agent::new("Bo", "plain", Place::Hut, 2, 0, 0, 0, vec![], &[]));
+            let d2 = Decision {
+                action: "console".to_owned(),
+                verb: crate::action::Verb::Console,
+                place: None,
+                act: SocialAct::Counsel,
+                addressee: Some("Bo".to_owned()),
+                motive: policy::Motive::Duty,
+                job: None,
+                confidence: 1.0,
+                dilemma: None,
+                factors: vec![],
+            };
+            if let Some(line) = speak(&w2, "Ada", &d2) {
+                ledger_push(&mut w, "Ada", &line.text);
+            }
+        }
+        let a = w.agent("Ada").unwrap().clone();
+        let d = Decision {
+            action: "console".to_owned(),
+            verb: crate::action::Verb::Console,
+            place: None,
+            act: SocialAct::Counsel,
+            addressee: Some("Bo".to_owned()),
+            motive: policy::Motive::Duty,
+            job: None,
+            confidence: 1.0,
+            dilemma: None,
+            factors: vec![],
+        };
+        let mut rng = crate::rng::Rng::new(1);
+        let out = render(&w, &a, &d, "console", "plain", &mut rng);
+        assert!(out.is_none(), "exhausted cell returned spent {out:?}");
+    }
 
     fn world_alone() -> World {
         let mut w = World::founding(11);

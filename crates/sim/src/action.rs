@@ -385,7 +385,12 @@ fn representative(
 
     // A work order waiting here is the work representative: the villager's
     // profession names what their hands are for, and the shortlist should
-    // show that one rather than the first work verb in list order.
+    // show that one rather than the first work verb in list order. Deep
+    // lapse names prayer when no order waits (ticket #24): below 0.5
+    // devotion `pray` joins the menu, so a full verb gets exercised without
+    // displacing early-game labor - the turn-21 seed-99 prayer that tipped
+    // a woods cascade came from a 1.0 threshold firing too early. Orders
+    // come first so prayer fills idle time without displacing stocked work.
     if category == Category::Work {
         if let Some(order) = crate::profession::available_orders(w, a).iter().find(|o| {
             options
@@ -397,6 +402,11 @@ fn representative(
                 .find(|action| Intent::parse(action, a.place).is_some_and(|i| i.verb == order.verb))
             {
                 return Some((*action).clone());
+            }
+        }
+        if a.devotion < 0.5 {
+            if let Some(pray) = options.iter().find(|action| action.as_str() == "pray") {
+                return Some((*pray).clone());
             }
         }
     }
@@ -940,11 +950,24 @@ fn apply_resolved(
             (true, kind, note)
         },
         Plan::Give { target } => {
-            let place = w.agent(actor).expect("actor exists").place;
+            let keeps = w.agent(actor).is_some_and(|a| {
+                a.promise.as_ref().is_some_and(|pr| pr.kept.is_none() && pr.to == target)
+            });
             if let Some(a) = w.agent_mut(actor) {
                 a.food -= 1;
                 a.adjust_trust(&target, 0.25);
                 a.standing = (a.standing + 0.15).min(4.0);
+                if keeps {
+                    if let Some(pr) = a.promise.as_mut() {
+                        pr.kept = Some(true);
+                    }
+                    a.remember(Memory::new(
+                        turn,
+                        format!("You kept your word to {target}."),
+                        0.9,
+                        MemoryKind::Own,
+                    ));
+                }
             }
             if let Some(t) = w.agent_mut(&target) {
                 t.food += 1;
@@ -957,8 +980,16 @@ fn apply_resolved(
                     0.75,
                     MemoryKind::Witnessed,
                 ));
+                if keeps {
+                    t.adjust_trust(actor, 0.4);
+                    t.remember(Memory::new(
+                        turn,
+                        format!("{actor} kept their word to you."),
+                        0.9,
+                        MemoryKind::Witnessed,
+                    ));
+                }
             }
-            let _ = place;
             (true, EventKind::Transfer, Some(format!("to {target}")))
         },
         Plan::Promise { to } => {
@@ -1056,11 +1087,26 @@ fn apply_resolved(
                 let st = w.place_state_mut(place);
                 st.herbs = st.herbs.saturating_sub(1);
             }
+            let keeps = target != actor
+                && w.agent(actor).is_some_and(|a| {
+                    a.promise.as_ref().is_some_and(|pr| pr.kept.is_none() && pr.to == *target)
+                });
             if let Some(a) = w.agent_mut(actor) {
                 a.skills.herbalism = (a.skills.herbalism + 1).min(5);
                 if target != actor {
                     a.standing = (a.standing + 0.2).min(4.0);
                     a.adjust_trust(&target, 0.25);
+                }
+                if keeps {
+                    if let Some(pr) = a.promise.as_mut() {
+                        pr.kept = Some(true);
+                    }
+                    a.remember(Memory::new(
+                        turn,
+                        format!("You kept your word to {target}."),
+                        0.9,
+                        MemoryKind::Own,
+                    ));
                 }
             }
             if let Some(t) = w.agent_mut(&target) {
@@ -1069,6 +1115,15 @@ fn apply_resolved(
                 t.stress = (t.stress - 0.5).max(0.0);
                 if target != actor {
                     t.adjust_trust(actor, 0.65);
+                }
+                if keeps {
+                    t.adjust_trust(actor, 0.4);
+                    t.remember(Memory::new(
+                        turn,
+                        format!("{actor} kept their word to you."),
+                        0.9,
+                        MemoryKind::Witnessed,
+                    ));
                 }
             }
             (true, EventKind::Heal, Some(format!("healed {target}")))
@@ -1128,14 +1183,37 @@ fn apply_resolved(
             )
         },
         Plan::Console { target } => {
+            let keeps = w.agent(actor).is_some_and(|a| {
+                a.promise.as_ref().is_some_and(|pr| pr.kept.is_none() && pr.to == *target)
+            });
             if let Some(a) = w.agent_mut(actor) {
                 a.skills.counsel = (a.skills.counsel + 1).min(5);
                 a.adjust_trust(&target, 0.3);
+                if keeps {
+                    if let Some(pr) = a.promise.as_mut() {
+                        pr.kept = Some(true);
+                    }
+                    a.remember(Memory::new(
+                        turn,
+                        format!("You kept your word to {target}."),
+                        0.9,
+                        MemoryKind::Own,
+                    ));
+                }
             }
             if let Some(t) = w.agent_mut(&target) {
                 t.stress = (t.stress - 0.6).max(0.0);
                 t.hope = (t.hope + 0.4).min(4.0);
                 t.adjust_trust(actor, 0.45);
+                if keeps {
+                    t.adjust_trust(actor, 0.4);
+                    t.remember(Memory::new(
+                        turn,
+                        format!("{actor} kept their word to you."),
+                        0.9,
+                        MemoryKind::Witnessed,
+                    ));
+                }
             }
             (true, EventKind::Bond, Some(format!("consoled {target}")))
         },
@@ -1449,6 +1527,37 @@ mod tests {
         assert_eq!(promise.to, other);
     }
 
+    #[test]
+    fn a_gift_to_the_promisee_keeps_the_promise() {
+        // Ticket #22: a kept promise exists. Giving food to the promisee
+        // marks the unkept promise kept, with trust and memory at keeping
+        // time - not ten turns later as a scar.
+        let mut w = World::founding(308);
+        let names: Vec<String> = w.living().map(|a| a.name.clone()).collect();
+        let (keeper, owed) = (names[0].clone(), names[1].clone());
+        let place = w.agent(&keeper).unwrap().place;
+        w.agent_mut(&owed).unwrap().place = place;
+        w.agent_mut(&keeper).unwrap().food = 2;
+        w.agent_mut(&keeper).unwrap().promise = Some(Promise {
+            to: owed.clone(),
+            text: "I will feed you.".into(),
+            made_turn: w.turn,
+            kept: None,
+        });
+        let trust_before = w.agent(&owed).unwrap().trust_of(&keeper);
+        let intent = Intent::parse("give", place).unwrap();
+        let out = apply(&mut w, &keeper, &intent, "take this", SocialAct::Gift);
+        assert!(out.accepted);
+        let kept = w.agent(&keeper).unwrap().promise.as_ref().expect("promise stored").kept;
+        assert_eq!(kept, Some(true), "a gift to the promisee keeps the promise");
+        assert!(w.agent(&owed).unwrap().trust_of(&keeper) > trust_before);
+        assert!(w
+            .agent(&owed)
+            .unwrap()
+            .memories
+            .iter()
+            .any(|m| m.text.contains("kept")));
+    }
     // ---- shortlist ----
 
     /// Two villagers at the field, which offers every category: food to take

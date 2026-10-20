@@ -84,6 +84,31 @@ impl Place {
             Woods => &[Field, Shrine],
         }
     }
+    #[must_use]
+    pub const fn ring_index(self) -> usize {
+        match self {
+            Self::Granary => 0,
+            Self::Market => 1,
+            Self::Well => 2,
+            Self::Hut => 3,
+            Self::Shrine => 4,
+            Self::Woods => 5,
+            Self::Field => 6,
+        }
+    }
+
+    /// Steps along the ring between two places (0..=3 on seven places).
+    #[must_use]
+    pub const fn ring_distance(self, other: Self) -> usize {
+        let a = self.ring_index();
+        let b = other.ring_index();
+        let d = a.abs_diff(b);
+        if d > 3 {
+            7 - d
+        } else {
+            d
+        }
+    }
 
     #[must_use]
     pub const fn can_harvest(self) -> bool {
@@ -1365,6 +1390,17 @@ impl World {
             let well = self.place_state_mut(Place::Well);
             well.water = (well.water + rain_bonus).min(20);
         };
+        // Winter cold cracks the buildings (ticket #25): every third winter
+        // turn one place wears down one step to a floor of 1 (never ruin -
+        // the village can always repair back). Confined to winter so the
+        // other three seasons run the proven food equilibrium undisturbed;
+        // repair (+1, to 5) catches up the rest of the year. Decay and
+        // repair move condition in both directions across the year.
+        if season == Season::Winter && turn.is_multiple_of(3) {
+            let cracked = Place::ALL[(turn as usize + 3) % Place::ALL.len()];
+            let st = self.place_state_mut(cracked);
+            st.condition = st.condition.saturating_sub(1).max(1);
+        }
         if turn.is_multiple_of(3) {
             let woods = self.place_state_mut(Place::Woods);
             woods.wood = (woods.wood + 1).min(16);
@@ -1383,7 +1419,6 @@ impl World {
         }
         let hut_lit = self.place_state(Place::Hut).hearth_lit;
         let mut died = Vec::new();
-        let mut scars = Vec::new();
         // Villagers eat when they can, and get hungry on every second turn.
         // The ratio matters: at one measure per villager per turn, eight
         // villagers outrun any harvest this land can produce and the colony
@@ -1425,6 +1460,12 @@ impl World {
                 a.health = (a.health + 1).min(10);
             }
             a.energy = (a.energy + 1).min(10);
+            // Devotion fades a little every turn and only prayer restores it
+            // (ticket #24: a standing faith need pulls villagers shrine-ward
+            // in ordinary states, not just grief). The rate is 0.05 a turn
+            // from a 2.0 founding, so the shrine calls after ~10 turns
+            // without prayer, and one prayer (+0.3) covers six turns.
+            a.devotion = (a.devotion - 0.05).max(0.0);
 
             if a.hunger >= 3 {
                 a.starving_turns += 1;
@@ -1432,13 +1473,6 @@ impl World {
                 if a.starving_turns >= 3 {
                     a.alive = false;
                     died.push((a.name.clone(), a.place));
-                }
-            }
-            // Broken promise: overdue by ten turns and to someone still alive.
-            if let Some(pr) = &a.promise {
-                if turn.saturating_sub(pr.made_turn) > 10 && pr.kept.is_none() {
-                    let to = pr.to.clone();
-                    scars.push((a.name.clone(), format!("You broke your word to {to}.")));
                 }
             }
             a.refresh_mood_and_goal(season);
@@ -1465,18 +1499,51 @@ impl World {
                 other.stress = (other.stress + 1.0).min(4.0);
             }
         }
-        for (who, text) in scars {
+        // Broken promise: overdue by ten turns. No "broke your word" scar
+        // without a reachable keeping action (ticket #22): reachability is
+        // a shared place with the promisee at any point in the ten turns,
+        // read from the event record (actions imply presence) - not just
+        // the expiry turn. Without that the promise lapses unkept: cleared
+        // and remembered, but no scar and no trust lost, because the keeper
+        // was never given the choice.
+        let overdue: Vec<(String, String, bool)> = self
+            .agents
+            .iter()
+            .filter(|a| a.alive)
+            .filter_map(|a| {
+                a.promise.as_ref().and_then(|pr| {
+                    (turn.saturating_sub(pr.made_turn) > 10 && pr.kept.is_none()).then(|| {
+                        // Co-location anywhere in the ten-turn window: both
+                        // acted at the same place on the same turn. Actions
+                        // imply presence, so the event record is the history.
+                        let reachable = (pr.made_turn..=turn).any(|t| {
+                            self.events.iter().any(|e| {
+                                e.turn == t
+                                    && e.actor == pr.to
+                                    && self.events.iter().any(|k| {
+                                        k.turn == t && k.actor == a.name && k.place == e.place
+                                    })
+                            })
+                        });
+                        (a.name.clone(), pr.to.clone(), reachable)
+                    })
+                })
+            })
+            .collect();
+        for (who, to, reachable) in overdue {
             if let Some(a) = self.agent_mut(&who) {
-                a.remember(Memory::scar(turn, text));
-                a.promise = None;
-            }
-        }
-        for a in self.agents.iter_mut().filter(|a| a.alive) {
-            if let Some(pr) = a.promise.clone() {
-                if turn.saturating_sub(pr.made_turn) > 10 {
-                    a.set_trust(&pr.to, a.trust_of(&pr.to) - 0.4);
-                    a.promise = None;
+                if reachable {
+                    a.remember(Memory::scar(turn, format!("You broke your word to {to}.")));
+                    a.set_trust(&to, a.trust_of(&to) - 0.4);
+                } else {
+                    a.remember(Memory::new(
+                        turn,
+                        format!("Your word to {to} lapsed unkept."),
+                        0.5,
+                        MemoryKind::Witnessed,
+                    ));
                 }
+                a.promise = None;
             }
         }
         // A birth is the counterpart of a death: settled in the same pass, on
@@ -1767,5 +1834,66 @@ mod tests {
             .expect("the serialized agent carries the field");
         let back: Agent = serde_json::from_value(value).unwrap();
         assert_eq!(back.motive, None);
+    }
+
+    fn promise_world() -> World {
+        let mut w = World::founding(99);
+        w.agents.clear();
+        let mut ada = Agent::new("Ada", "plain", Place::Hut, 2, 0, 0, 0, vec![], &["Bo".to_owned()]);
+        ada.promise = Some(Promise {
+            to: "Bo".into(),
+            text: "feed you".into(),
+            made_turn: 0,
+            kept: None,
+        });
+        w.agents.push(ada);
+        w.agents.push(Agent::new("Bo", "plain", Place::Hut, 2, 0, 0, 0, vec![], &["Ada".to_owned()]));
+        w
+    }
+
+    #[test]
+    fn an_overdue_promise_breaks_only_with_a_reachable_keeping_action() {
+        // Ticket #22: no "broke your word" scar without a reachable keeping
+        // action - a shared place with the promisee at any point in the ten
+        // turns, read from the event record - when the promise expires.
+        // Together in the window: a broken word.
+        let mut w = promise_world();
+        for t in 5..8_u64 {
+            for actor in ["Ada", "Bo"] {
+                w.events.push(Event {
+                    turn: t,
+                    actor: actor.into(),
+                    place: Place::Hut,
+                    kind: EventKind::Rest,
+                    action: "rest".into(),
+                    text: String::new(),
+                    social: None,
+                    intensity: None,
+                    grounded: None,
+                    divine: false,
+                });
+            }
+        }
+        w.turn = 11;
+        w.settle();
+        let ada = w.agent("Ada").unwrap();
+        assert!(ada.promise.is_none(), "overdue promises clear");
+        assert!(
+            ada.memories.iter().any(|m| m.text.contains("broke your word")),
+            "together in the window: a broken word"
+        );
+        // Never in the same place: the word lapses, it does not break.
+        let mut w = promise_world();
+        w.turn = 11;
+        w.settle();
+        let ada = w.agent("Ada").unwrap();
+        assert!(
+            ada.memories.iter().any(|m| m.text.contains("lapsed unkept")),
+            "never together: lapse, not break"
+        );
+        assert!(
+            !ada.memories.iter().any(|m| m.text.contains("broke your word")),
+            "no broken-word scar without reachability"
+        );
     }
 }

@@ -269,6 +269,25 @@ pub fn available_orders<'p>(w: &World, a: &Agent) -> Vec<&'p WorkOrder> {
         .collect()
 }
 
+/// The places whose work orders of the villager's profession are stocked.
+///
+/// The order's place holds its input, wherever the villager stands. An
+/// approach is only worth scoring when there is work to arrive to; an empty
+/// shelf is not a destination.
+#[must_use]
+pub fn stocked_order_places(w: &World, a: &Agent) -> Vec<Place> {
+    let Some(p) = profession_for(a.role) else {
+        return Vec::new();
+    };
+    let mut places = Vec::new();
+    for o in p.orders {
+        if place_has_input(w.place_state(o.place), o.input) && !places.contains(&o.place) {
+            places.push(o.place);
+        }
+    }
+    places
+}
+
 /// The order a candidate advances, when the candidate's verb and place match
 /// an available order. Ties keep the table's order.
 #[must_use]
