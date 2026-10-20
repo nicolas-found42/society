@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::action::{self, SocialAct};
 use crate::check;
-use crate::policy::{self, Decision, Dilemma};
+use crate::policy::{self, Decision, Dilemma, Rejected};
 use crate::speaker::{self, Line};
 use crate::world::{EventKind, Mood, World};
 
@@ -82,6 +82,10 @@ pub const THREAT_MORALE_THRESHOLD: f32 = 3.0;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentTurn {
     pub name: String,
+    /// `{seed}:{turn}:{name}`. The join key between a turn record, the
+    /// world's event feed, and the diagnostics journal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_id: Option<String>,
     pub action: String,
     pub accepted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -111,6 +115,14 @@ pub struct AgentTurn {
     /// The chosen candidate's term contributions.
     #[serde(default)]
     pub factors: Vec<(String, f32)>,
+    /// The strongest candidates considered and not taken, most relevant
+    /// first. The observable answer to "why didn't she do X".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rejected: Vec<Rejected>,
+    /// Half-open index range into `World.events` as it stood after this
+    /// villager's commit: `[start, end)`. The events this turn caused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_range: Option<(usize, usize)>,
     /// The work order advanced, when the action was work.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job: Option<String>,
@@ -118,7 +130,6 @@ pub struct AgentTurn {
     #[serde(default)]
     pub lie: bool,
 }
-
 /// A child born during the turn's settlement.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BirthRecord {
@@ -158,6 +169,10 @@ pub struct TurnRecord {
 /// # Errors
 ///
 /// A halted world reports its reason; the caller says so rather than acting.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one sequential seam: decide, speak, check, apply, settle"
+)]
 pub fn step(w: &mut World) -> Result<TurnRecord, String> {
     if let Some(reason) = w.halted.clone() {
         return Err(reason);
@@ -204,6 +219,7 @@ pub fn step(w: &mut World) -> Result<TurnRecord, String> {
         let failing = line
             .as_ref()
             .and_then(|l| check::failing(w, &name, &l.claims).map(check::Claim::describe));
+        let events_start = w.events.len();
         let outcome = action::apply_decision(
             w,
             &name,
@@ -214,11 +230,13 @@ pub fn step(w: &mut World) -> Result<TurnRecord, String> {
             intensity,
             failing.as_deref(),
         );
+        let events_end = w.events.len();
         if let Some(l) = &line {
             speaker::ledger_push(w, &name, &l.text);
         }
         agents.push(AgentTurn {
             name: name.clone(),
+            decision_id: Some(format!("{}:{turn}:{name}", w.seed)),
             action: decision.action.clone(),
             accepted: outcome.accepted,
             note: outcome.note,
@@ -236,6 +254,16 @@ pub fn step(w: &mut World) -> Result<TurnRecord, String> {
                 .iter()
                 .map(|(t, c)| ((*t).to_owned(), *c))
                 .collect(),
+            rejected: decision
+                .rejected
+                .iter()
+                .map(|r| Rejected {
+                    candidate: r.candidate.clone(),
+                    score: r.score,
+                    reason: r.reason.clone(),
+                })
+                .collect(),
+            event_range: Some((events_start, events_end)),
             job: decision.job.map(str::to_owned),
             lie,
         });

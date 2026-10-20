@@ -262,7 +262,9 @@ You cannot edit minds or kill directly.
 | GET | `/agent/{name}` | one villager, with the factors behind their last decision |
 | GET | `/places/{id}` | one place: stores, owner, condition, hearth, fertility |
 | GET | `/events?since=N&limit=M` | append-only event log |
-| GET | `/log?since_turn=T` | per-turn records: actions, lines, acts, the turn digest |
+| GET | `/log?since_turn=T` | per-turn records: actions, lines, acts, the turn digest (journal-backed past the in-memory cap) |
+| GET | `/diagnostics?limit=N` | observer/shell audit: boots, turns, resets, injects, halts, save errors |
+| GET | `/verify?since_turn=T&limit=N` | re-step the journal through the engine; names the first divergent turn |
 | POST | `/turn` | `{"turns":N}` |
 | POST | `/reset` | `{"seed":N}` — clears world and save |
 | POST | `/inject` | `{"kind":"whisper\|gift\|weather",...}` |
@@ -274,6 +276,24 @@ curl -s localhost:8100/log | jq '.rows[-1].agents[] | {name,action,say,intensity
 curl -s -X POST localhost:8100/inject -H 'content-type: application/json' \
   -d '{"kind":"whisper","target":"Ada","text":"the granary door was open last night"}'
 ```
+
+## Diagnostics (what happened, and why not)
+
+Every committed turn is journaled durably next to the save as
+`<save>.journal.jsonl` (one fsynced JSONL line per turn with a
+`{save_version, build, seed, turn, wall_time}` envelope), so `/log` reads
+back past the 240-turn in-memory cap and across restarts. Observer and shell
+actions land in `<save>.diagnostics.jsonl`: boots, turns committed, resets,
+injects (kind + target only, never observer prose), halts, and save errors.
+`/health` reports the build, save/journal versions, journal depth, and the
+last save error. `/verify` re-steps a journal slice through the engine and
+names the first divergent turn.
+
+Each `AgentTurn` carries a `decision_id` (`{seed}:{turn}:{name}`) joining it
+to the event feed, up to three `rejected` runners-up (`tier` = filtered
+before scoring, `outscored` = scored below the winner), and the
+`event_range` it caused. Each agent counts `evicted_memories` so belief
+churn is measurable without persisting every evicted line.
 
 ## Crates
 

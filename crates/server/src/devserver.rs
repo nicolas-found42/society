@@ -24,6 +24,9 @@ pub struct AppState {
     pub run: Arc<tokio::sync::Mutex<Vec<turn::TurnRecord>>>,
     /// Where this village lives on disk. The only path the server knows.
     pub save_path: std::path::PathBuf,
+    /// The last save failure, if any. Kept in memory for `/health`: the
+    /// durable half of a save error lives in the audit log.
+    pub save_error: Arc<tokio::sync::Mutex<Option<String>>>,
 }
 
 impl AppState {
@@ -41,6 +44,68 @@ impl AppState {
     pub async fn record(&self, recs: impl IntoIterator<Item = turn::TurnRecord>) {
         crate::push_bounded(&mut *self.run.lock().await, recs);
     }
+
+    /// The last save failure, if any, for `/health`.
+    pub async fn last_save_error(&self) -> Option<String> {
+        self.save_error.lock().await.clone()
+    }
+
+    async fn note_save_error(&self, err: Option<String>) {
+        *self.save_error.lock().await = err;
+    }
+
+    /// Persist and remember the outcome for `/health`.
+    ///
+    /// A failure is also audited durably; the caller's response still
+    /// carries the error.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `SaveError` when the world cannot be written.
+    pub async fn save_and_track(&self, world: &World) -> Result<(), crate::persistence::SaveError> {
+        match self.save(world) {
+            Ok(()) => {
+                self.note_save_error(None).await;
+                Ok(())
+            },
+            Err(e) => {
+                let msg = e.to_string();
+                self.note_save_error(Some(msg.clone())).await;
+                self.audit("save_error", world.turn, serde_json::json!({"error": msg}));
+                Err(e)
+            },
+        }
+    }
+
+    /// Durably journal committed turns: fsynced JSONL next to the save, so
+    /// history survives restarts and outlives the in-memory cap.
+    ///
+    /// Failures are reported to the caller, never silently swallowed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a string when the journal cannot be appended to.
+    pub fn journal(&self, seed: u64, recs: &[turn::TurnRecord]) -> Result<(), String> {
+        for r in recs {
+            crate::diagnostics::append_turn(
+                &self.save_path,
+                seed,
+                r,
+                &crate::diagnostics::build_version(),
+                crate::persistence::SAVE_VERSION,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Durably audit one observer/shell event. Best-effort by design: the
+    /// audit must never break a mutation, so failures return as strings for
+    /// the response body rather than failing the call.
+    pub fn audit(&self, action: &str, turn: u64, detail: Value) {
+        if let Err(e) = crate::diagnostics::append_audit(&self.save_path, action, turn, detail) {
+            eprintln!("diagnostics audit `{action}` not recorded: {e}");
+        }
+    }
 }
 
 pub fn router(state: AppState) -> Router {
@@ -52,6 +117,8 @@ pub fn router(state: AppState) -> Router {
         .route("/places/{id}", get(place_detail))
         .route("/events", get(events))
         .route("/log", get(log_tail))
+        .route("/diagnostics", get(diagnostics_tail))
+        .route("/verify", get(verify_replay))
         .route("/turn", post(run_turns))
         .route("/reset", post(reset))
         .route("/inject", post(inject))
@@ -65,15 +132,28 @@ pub fn router(state: AppState) -> Router {
 /// code in the process: there is no external dependency to probe, so `ok`
 /// means the router is answering and nothing else.
 async fn health(State(s): State<AppState>) -> impl IntoResponse {
-    let halted = s.world.lock().await.halted.clone();
+    let world = s.world.lock().await;
+    let halted = world.halted.clone();
+    let turn = world.turn;
+    drop(world);
+    let (journal_oldest, journal_turns, journal_bytes) =
+        crate::diagnostics::journal_depth(&s.save_path);
     Json(json!({
         "ok": halted.is_none(),
         "engine": "code",
         "halted": halted,
         "population_cap": society_sim::POPULATION_CAP,
         "birth_cost": society_sim::BIRTH_COST,
+        "build": crate::diagnostics::build_version(),
+        "save_version": crate::persistence::SAVE_VERSION,
+        "journal_version": crate::diagnostics::JOURNAL_VERSION,
         "save_path": s.save_path.display().to_string(),
         "log_cap": crate::TURN_LOG_CAP,
+        "journal_oldest_turn": journal_oldest,
+        "journal_turns": journal_turns,
+        "journal_bytes": journal_bytes,
+        "last_save_error": s.last_save_error().await,
+        "turn": turn,
     }))
 }
 
@@ -316,14 +396,74 @@ struct LogQuery {
     reason = "the world lock is held for the whole request on purpose"
 )]
 async fn log_tail(State(s): State<AppState>, Query(q): Query<LogQuery>) -> Json<Value> {
-    let run = s.run.lock().await;
     let since = q.since_turn.unwrap_or(0);
     let limit = q.limit.unwrap_or(20);
-    let rows: Vec<&turn::TurnRecord> = run.iter().filter(|r| r.turn >= since).take(limit).collect();
+    let rows: Vec<turn::TurnRecord> = {
+        let run = s.run.lock().await;
+        run.iter().filter(|r| r.turn >= since).take(limit).cloned().collect()
+    };
+    let from_memory = rows.len();
+    let (journal, journal_corrupt) = if rows.len() < limit {
+        crate::diagnostics::read_journal(&s.save_path, since, limit - rows.len())
+    } else {
+        (Vec::new(), 0)
+    };
+    // Journal fallback: turns that aged out of the in-memory cap (or that a
+    // restart wiped) still read back, oldest first, ahead of the live tail.
+    let mut merged: Vec<Value> = journal
+        .into_iter()
+        .map(|e| serde_json::to_value(&e.record).unwrap_or(Value::Null))
+        .collect();
+    let journal_rows = merged.len();
+    for r in &rows {
+        merged.push(serde_json::to_value(r).unwrap_or(Value::Null));
+    }
     Json(json!({
-        "turns": run.len(),
+        "turns": merged.len(),
         "cap": crate::TURN_LOG_CAP,
-        "rows": rows,
+        "from_memory": from_memory,
+        "from_journal": journal_rows,
+        "journal_corrupt_lines": journal_corrupt,
+        "rows": merged,
+    }))
+}
+
+#[derive(Deserialize)]
+struct DiagnosticsQuery {
+    limit: Option<usize>,
+}
+
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the world lock is held for the whole request on purpose"
+)]
+async fn diagnostics_tail(State(s): State<AppState>, Query(q): Query<DiagnosticsQuery>) -> Json<Value> {
+    let (entries, corrupt) = crate::diagnostics::read_audit(&s.save_path, q.limit.unwrap_or(100));
+    Json(json!({
+        "entries": entries,
+        "corrupt_lines": corrupt,
+    }))
+}
+
+#[derive(Deserialize)]
+struct VerifyQuery {
+    since_turn: Option<u64>,
+    limit: Option<usize>,
+}
+
+/// Re-step the journal slice through the engine and name the first turn where
+/// the world stops matching its history. `None` divergence means the slice
+/// replays identically: the automatic half of diagnosis.
+async fn verify_replay(State(s): State<AppState>, Query(q): Query<VerifyQuery>) -> Json<Value> {
+    let since = q.since_turn.unwrap_or(0);
+    let limit = q.limit.unwrap_or(200);
+    let (entries, corrupt) = crate::diagnostics::read_journal(&s.save_path, since, limit);
+    let checked = entries.len();
+    let divergence = crate::diagnostics::verify_journal(&entries);
+    Json(json!({
+        "checked": checked,
+        "corrupt_lines": corrupt,
+        "divergence": divergence,
     }))
 }
 
@@ -353,10 +493,10 @@ async fn run_turns(State(s): State<AppState>, Json(req): Json<TurnRequest>) -> i
         match turn::step(&mut world) {
             Ok(rec) => {
                 records.push(rec.clone());
-                // The seam is pure, so the shell owns the save. Per turn, the
-                // way the engine always did it: an unwritten world is a reset
-                // waiting to happen.
-                if let Err(e) = s.save(&world) {
+                // The seam is pure, so the shell owns the save and the
+                // journal. Per turn, the way the engine always did it: an
+                // unwritten world is a reset waiting to happen.
+                if let Err(e) = s.save_and_track(&world).await {
                     error = Some(format!("turn {} committed but not saved: {e}", rec.turn));
                     break;
                 }
@@ -367,6 +507,15 @@ async fn run_turns(State(s): State<AppState>, Json(req): Json<TurnRequest>) -> i
             },
         }
     }
+    let committed = records.len();
+    let world_turn = world.turn;
+    let seed = world.seed;
+    drop(world);
+    let journal_error = if committed > 0 {
+        s.journal(seed, &records).err()
+    } else {
+        None
+    };
     if !records.is_empty() {
         s.record(records.iter().cloned()).await;
     }
@@ -375,19 +524,24 @@ async fn run_turns(State(s): State<AppState>, Json(req): Json<TurnRequest>) -> i
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({
                 "error": reason,
-                "halted": world.halted,
-                "committed": records.len(),
-                "turn": world.turn,
+                "committed": committed,
+                "journal_error": journal_error,
+                "turn": world_turn,
             })),
         );
     }
+    s.audit(
+        "turns",
+        world_turn,
+        json!({"committed": committed, "journal_error": journal_error}),
+    );
     (
         StatusCode::OK,
         Json(json!({
-            "turns": records.len(),
-            "turn": world.turn,
-            "day": world.day,
+            "turns": committed,
+            "turn": world_turn,
             "saved": true,
+            "journal_error": journal_error,
             "records": records,
         })),
     )
@@ -402,7 +556,7 @@ struct ResetRequest {
     clippy::significant_drop_tightening,
     reason = "the world lock is held for the whole request on purpose"
 )]
-async fn reset(State(s): State<AppState>, Json(req): Json<ResetRequest>) -> impl IntoResponse {
+async fn reset(State(s): State<AppState>, Json(req): Json<ResetRequest>) -> (StatusCode, Json<Value>) {
     let mut world = s.world.lock().await;
     // The API and the flag mean the same thing by "reset": the world and its
     // save go together, so a restart cannot resurrect what was discarded.
@@ -417,9 +571,15 @@ async fn reset(State(s): State<AppState>, Json(req): Json<ResetRequest>) -> impl
     };
     *world = World::founding(req.seed.unwrap_or(7));
     crate::persistence::mark_reset(&mut world, "the observer reset the village");
-    let saved = s.save(&world);
-    s.run.lock().await.clear();
+    let world_turn = world.turn;
     let seed = world.seed;
+    let saved = s.save_and_track(&world).await;
+    s.run.lock().await.clear();
+    s.audit(
+        "reset",
+        world_turn,
+        json!({"seed": seed, "save_cleared": cleared, "saved": saved.is_ok()}),
+    );
     let body = json!({
         "ok": saved.is_ok(),
         "seed": seed,
@@ -450,9 +610,16 @@ struct InjectRequest {
     reason = "the world lock is held for the whole request on purpose"
 )]
 async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> impl IntoResponse {
+    let kind = req.kind.clone();
+    let summary = crate::diagnostics::inject_summary(
+        &req.kind,
+        req.target.as_deref(),
+        req.to.as_deref(),
+        req.place.as_deref(),
+    );
     let mut w = s.world.lock().await;
     let turn = w.turn;
-    let (status, body) = match req.kind.as_str() {
+    let (status, body) = match kind.as_str() {
         "whisper" => {
             let Some(target) = req.target else {
                 return (
@@ -789,8 +956,12 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
     };
     // A mutating control call is saved immediately, so a restart cannot
     // resurrect a world that already moved on.
-    match s.save(&w) {
-        Ok(()) => (status, Json(body)),
+    let world_turn = w.turn;
+    match s.save_and_track(&w).await {
+        Ok(()) => {
+            s.audit("inject", world_turn, summary);
+            (status, Json(body))
+        },
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"ok": false, "save_error": e.to_string()})),
@@ -806,12 +977,17 @@ async fn halt(State(s): State<AppState>, Json(req): Json<Value>) -> impl IntoRes
     let reason = req
         .get("reason")
         .and_then(|r| r.as_str())
-        .unwrap_or("halted by observer");
+        .unwrap_or("halted by observer")
+        .to_owned();
     let mut w = s.world.lock().await;
-    w.halt(reason);
+    w.halt(&reason);
     let halted = w.halted.clone();
-    match s.save(&w) {
-        Ok(()) => Json(json!({ "ok": true, "halted": halted })),
+    let world_turn = w.turn;
+    match s.save_and_track(&w).await {
+        Ok(()) => {
+            s.audit("halt", world_turn, json!({"reason": reason}));
+            Json(json!({ "ok": true, "halted": halted }))
+        },
         Err(e) => Json(json!({ "ok": false, "halted": halted, "save_error": e.to_string() })),
     }
 }
@@ -910,6 +1086,7 @@ mod tests {
     fn agent_factors_come_from_the_last_recorded_turn() {
         let at = |factors: Vec<(String, f32)>| turn::AgentTurn {
             name: "Ada".into(),
+            decision_id: None,
             action: "craft".into(),
             accepted: true,
             note: None,
@@ -923,6 +1100,8 @@ mod tests {
             grounded: None,
             confidence: None,
             factors,
+            rejected: Vec::new(),
+            event_range: None,
             job: None,
             lie: false,
         };
@@ -973,5 +1152,98 @@ mod tests {
         assert_eq!(social["feuds"].as_array().unwrap().len(), 1);
         assert_eq!(social["promises"][0]["overdue"], true);
         assert_eq!(social["stewardship"][0]["steward"], "Ada");
+    }
+
+    fn test_state(dir: &str) -> (AppState, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("society-srv-{}-{dir}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let save = root.join("v.json");
+        let state = AppState {
+            world: Arc::new(tokio::sync::Mutex::new(World::founding(7))),
+            run: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            save_path: save.clone(),
+            save_error: Arc::new(tokio::sync::Mutex::new(None)),
+        };
+        (state, root)
+    }
+
+    #[tokio::test]
+    async fn journal_survives_a_restart_of_the_in_memory_log() {
+        // Diagnostics item 1: turns outlive the in-memory cap and restarts.
+        let (s, root) = test_state("journal");
+        let mut w = s.world.lock().await;
+        let mut recs = Vec::new();
+        for _ in 0..3 {
+            recs.push(turn::step(&mut w).unwrap());
+        }
+        let seed = w.seed;
+        drop(w);
+        s.journal(seed, &recs).unwrap();
+        // Wipe the live log the way a restart does; the journal still reads.
+        s.run.lock().await.clear();
+        let (entries, corrupt) = crate::diagnostics::read_journal(&s.save_path, 0, 10);
+        assert_eq!(corrupt, 0);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].turn, recs[0].turn);
+        assert_eq!(entries[0].seed, seed);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn audit_records_turns_resets_and_injects() {
+        // Diagnostics item 3: observer actions leave a durable summary trail.
+        let (s, root) = test_state("audit");
+        {
+            let w = s.world.lock().await;
+            let seed = w.seed;
+            drop(w);
+            s.journal(seed, &[]).unwrap();
+        }
+        s.audit("turns", 3, json!({"committed": 1}));
+        s.audit("inject", 3, crate::diagnostics::inject_summary("gift", Some("Ada"), None, None));
+        let (entries, corrupt) = crate::diagnostics::read_audit(&s.save_path, 10);
+        assert_eq!(corrupt, 0);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].action, "turns");
+        assert_eq!(entries[1].detail["kind"], "gift");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn verify_flags_a_tampered_journal_turn() {
+        // Diagnostics item 6: replay names the first divergent turn.
+        let (s, root) = test_state("verify");
+        let mut w = s.world.lock().await;
+        let mut recs = Vec::new();
+        for _ in 0..3 {
+            recs.push(turn::step(&mut w).unwrap());
+        }
+        let seed = w.seed;
+        drop(w);
+        s.journal(seed, &recs).unwrap();
+        let (mut entries, _) = crate::diagnostics::read_journal(&s.save_path, 0, 10);
+        assert_eq!(crate::diagnostics::verify_journal(&entries), None);
+        entries[1].record.agents[0].say = "tampered line".into();
+        let div = crate::diagnostics::verify_journal(&entries).expect("divergence");
+        assert_eq!(div.turn, recs[1].turn);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn health_carries_build_and_journal_depth() {
+        // Diagnostics item 4: /health answers "which build, how much
+        // history" without opening the save.
+        let (s, root) = test_state("health");
+        let mut w = s.world.lock().await;
+        let rec = turn::step(&mut w).unwrap();
+        let seed = w.seed;
+        let turn = w.turn;
+        drop(w);
+        s.journal(seed, &[rec]).unwrap();
+        let response = health(State(s.clone())).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = turn;
     }
 }

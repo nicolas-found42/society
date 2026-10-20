@@ -686,12 +686,16 @@ pub struct Agent {
     pub facts: Vec<Fact>,
     #[serde(default)]
     pub reflection_poignancy: f32,
+    /// Memories the cap has evicted, counted so belief loss is measurable.
+    /// Scars are never evicted, so a rising count with intact scars means
+    /// ordinary history is churning, not trauma being forgotten.
+    #[serde(default)]
+    pub evicted_memories: u64,
     /// Recently spoken lines with their turns. The speaker's ledger forbids
     /// an exact repeat inside its window (spec constants: six turns).
     #[serde(default)]
     pub line_ledger: Vec<(u64, String)>,
 }
-
 const fn default_energy() -> u8 {
     8
 }
@@ -795,6 +799,7 @@ impl Agent {
             beliefs: Vec::new(),
             facts: Vec::new(),
             reflection_poignancy: 0.0,
+            evicted_memories: 0,
             line_ledger: Vec::new(),
         }
     }
@@ -1013,6 +1018,7 @@ impl Agent {
             match victim {
                 Some(i) => {
                     self.memories.remove(i);
+                    self.evicted_memories += 1;
                 },
                 None => break,
             }
@@ -1834,6 +1840,27 @@ mod tests {
             .expect("the serialized agent carries the field");
         let back: Agent = serde_json::from_value(value).unwrap();
         assert_eq!(back.motive, None);
+    }
+
+    #[test]
+    fn the_cap_counts_what_it_evicts_and_keeps_scars() {
+        // Diagnostics item 5: belief loss is measurable without persisting
+        // every evicted line. The counter rises, scars stay.
+        let mut a = villager();
+        a.remember(Memory::scar(0, "a scar that must stay"));
+        assert_eq!(a.evicted_memories, 0);
+        for i in 0..(MEMORY_CAP + 5) {
+            a.remember(Memory::new(i as u64, format!("ordinary day {i}"), 0.5, MemoryKind::Witnessed));
+        }
+        assert_eq!(a.memories.len(), MEMORY_CAP);
+        // The scar plus 13 ordinary insertions overflow a cap-8 buffer; the
+        // reflection insight may push once more. Either way the counter is
+        // exact: insertions minus what remains.
+        assert!(a.evicted_memories >= 6, "evicted {}", a.evicted_memories);
+        assert!(
+            a.memories.iter().any(|m| m.permanent),
+            "the scar survives the churn"
+        );
     }
 
     fn promise_world() -> World {

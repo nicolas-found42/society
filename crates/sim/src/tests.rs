@@ -886,6 +886,7 @@ fn a_discredited_line_moves_no_trust() {
         confidence: 0.6,
         dilemma: None,
         factors: vec![("novelty", 0.8)],
+        rejected: vec![],
     };
     let out = crate::action::apply_decision(
         &mut w,
@@ -930,6 +931,7 @@ fn a_credible_act_moves_trust_and_a_credible_threat_bites_morale() {
         confidence: 0.6,
         dilemma: None,
         factors: vec![],
+        rejected: vec![],
     };
     crate::action::apply_decision(
         &mut w,
@@ -1325,6 +1327,7 @@ fn a_lie_clause_carries_its_designed_claim() {
         confidence: 1.0,
         dilemma: None,
         factors: vec![],
+        rejected: vec![],
     };
     let a = w.agent("Ada").unwrap();
     for kind in [

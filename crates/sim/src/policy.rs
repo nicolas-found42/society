@@ -66,8 +66,21 @@ pub struct Dilemma {
     pub alternative_prob: f32,
 }
 
+/// One candidate the policy considered and did not take. `reason` is
+/// `"outscored"` (scored below the winner) or `"tier"` (a hard survival or
+/// obligation tier filtered it before scoring, so it carries no score).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Rejected {
+    pub candidate: String,
+    pub score: Option<f32>,
+    pub reason: String,
+}
+
 /// One candidate's score and the term contributions behind it.
 type Scored = (String, f32, Vec<(&'static str, f32)>);
+
+/// One scored candidate by reference, for runner-up selection.
+type ScoredRef<'a> = &'a Scored;
 
 /// One candidate the policy scores: an (action, act) pair. A dedicated action
 /// fixes its act; a `speak` action carries one candidate per speech-menu act.
@@ -115,6 +128,12 @@ pub struct Decision {
     pub dilemma: Option<Dilemma>,
     /// The chosen candidate's term contributions, six to twelve entries.
     pub factors: Vec<(&'static str, f32)>,
+    /// The three strongest candidates the policy considered and did not
+    /// take, in consideration order: hard-tier rejects first, then the
+    /// nearest outscored runners-up. Bounded at three so the turn record
+    /// stays small; scoring stays total for determinism.
+    #[serde(default)]
+    pub rejected: Vec<Rejected>,
 }
 
 // ---- The feature-term registry (ticket #8) ------------------------------
@@ -1076,6 +1095,40 @@ pub fn decide(w: &World, name: &str) -> Option<Decision> {
     };
     let job = profession::order_for(w, a, chosen.verb).map(|o| o.id);
 
+    // Why-not: tier rejects first (never scored), then the nearest
+    // outscored runners-up. Bounded at three for the record.
+    let mut rejected: Vec<Rejected> = Vec::with_capacity(3);
+    if hard {
+        for c in pool.iter().filter(|c| !scope.iter().any(|s| s.key() == c.key())) {
+            if rejected.len() >= 3 {
+                break;
+            }
+            rejected.push(Rejected {
+                candidate: c.key(),
+                score: None,
+                reason: "tier".to_owned(),
+            });
+        }
+    }
+    {
+        let mut runners: Vec<ScoredRef<'_>> =
+            scored.iter().filter(|(k, _, _)| *k != chosen_key).collect();
+        runners.sort_by(|a, b| b.1.total_cmp(&a.1));
+        for (k, s, _) in runners {
+            if rejected.len() >= 3 {
+                break;
+            }
+            if rejected.iter().any(|r| r.candidate == *k) {
+                continue;
+            }
+            rejected.push(Rejected {
+                candidate: k.clone(),
+                score: Some((s * 100.0).round() / 100.0),
+                reason: "outscored".to_owned(),
+            });
+        }
+    }
+
     let mut decision = Decision {
         action: chosen.action,
         verb: chosen.verb,
@@ -1087,6 +1140,7 @@ pub fn decide(w: &World, name: &str) -> Option<Decision> {
         confidence,
         dilemma,
         factors,
+        rejected,
     };
     decision.motive = derive_motive(w, a, &decision);
     Some(decision)
@@ -1324,5 +1378,35 @@ mod tests {
         w.agents.push(villager("Bo", Place::Hut));
         let a = w.agent("Ada").unwrap();
         assert_eq!(addressee_of(&w, a, &giver("give", Verb::Give)).as_deref(), Some("Bo"));
+    }
+
+    #[test]
+    fn the_decision_names_what_it_did_not_take() {
+        // Diagnostics item 2: the record carries the nearest runners-up so
+        // the observer can ask "why didn't she do X" from the turn alone.
+        let mut w = World::founding(10);
+        w.agents.clear();
+        w.agents.push(villager("Ada", Place::Hut));
+        w.agents.push(villager("Bo", Place::Hut));
+        let d = decide(&w, "Ada").expect("decision");
+        assert!(d.rejected.len() <= 3, "bounded at three: {:?}", d.rejected);
+        assert!(
+            !d.rejected.iter().any(|r| r.candidate == d.action),
+            "the winner is never its own runner-up"
+        );
+        assert!(
+            d.rejected.iter().all(|r| matches!(r.reason.as_str(), "tier" | "outscored")),
+            "every reject names its cause: {:?}",
+            d.rejected
+        );
+        // The turn record joins the decision to the events it caused.
+        let mut w2 = World::founding(10);
+        let rec = crate::turn::step(&mut w2).expect("turn");
+        for at in &rec.agents {
+            let id = at.decision_id.as_deref().expect("decision id");
+            assert_eq!(id, format!("{}:{}:{}", w2.seed, rec.turn, at.name));
+            let (s, e) = at.event_range.expect("event range");
+            assert!(s <= e && e <= w2.events.len(), "range {s}..{e} in bounds");
+        }
     }
 }

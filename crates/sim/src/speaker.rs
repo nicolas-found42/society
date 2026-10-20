@@ -632,6 +632,7 @@ mod tests {
                 confidence: 1.0,
                 dilemma: None,
                 factors: vec![],
+                rejected: vec![],
             };
             if let Some(line) = speak(&w2, "Ada", &d2) {
                 ledger_push(&mut w, "Ada", &line.text);
@@ -649,6 +650,7 @@ mod tests {
             confidence: 1.0,
             dilemma: None,
             factors: vec![],
+            rejected: vec![],
         };
         let mut rng = crate::rng::Rng::new(1);
         let out = render(&w, &a, &d, "console", "plain", &mut rng);

@@ -10,9 +10,10 @@
 )]
 
 pub mod devserver;
+pub mod diagnostics;
 pub mod persistence;
 
-pub use devserver::{build_social_fabric, AppState, DEFAULT_PORT};
+pub use devserver::{AppState, DEFAULT_PORT, build_social_fabric};
 pub use society_sim::turn::{AgentTurn, BirthRecord, TurnRecord, TurnSummary};
 
 use std::path::Path;
@@ -102,9 +103,17 @@ pub fn boot(
         persistence::save(&world, save_path)?;
     }
 
-    Ok(AppState {
+    let state = AppState {
         world: Arc::new(tokio::sync::Mutex::new(world)),
         run: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         save_path: save_path.to_path_buf(),
-    })
+        save_error: Arc::new(tokio::sync::Mutex::new(None)),
+    };
+    let turn = state.world.blocking_lock().turn;
+    state.audit(
+        if reset { "boot_reset" } else { "boot" },
+        turn,
+        serde_json::json!({"seed": seed, "fresh": fresh}),
+    );
+    Ok(state)
 }

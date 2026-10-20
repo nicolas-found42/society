@@ -145,13 +145,15 @@ fn main() {
         )]
         rt.block_on(async move {
             let mut w = st.world.lock().await;
+            let mut warmup_recs = Vec::new();
             for i in 0..n {
                 match society_sim::turn::step(&mut w) {
                     Ok(rec) => {
                         let civic_notes = window::apply_village_systems(&mut w);
                         let (committed, agents) = (rec.turn, rec.agents.len());
+                        warmup_recs.push(rec.clone());
                         st.record(std::iter::once(rec)).await;
-                        if let Err(e) = st.save(&w) {
+                        if let Err(e) = st.save_and_track(&w).await {
                             eprintln!("turn {committed} committed but not saved: {e}");
                             break;
                         }
@@ -170,12 +172,25 @@ fn main() {
                     },
                 }
             }
+            let seed = w.seed;
+            let world_turn = w.turn;
+            drop(w);
+            let journal_error = if warmup_recs.is_empty() {
+                None
+            } else {
+                st.journal(seed, &warmup_recs).err()
+            };
+            st.audit(
+                "warmup",
+                world_turn,
+                serde_json::json!({"committed": warmup_recs.len(), "journal_error": journal_error}),
+            );
         });
     }
 
     if args.headless {
         println!("headless society on http://127.0.0.1:{port}");
-        println!("  GET  /state  /agent/:name  /events  /log  /health");
+        println!("  GET  /state  /agent/:name  /events  /log  /health  /diagnostics  /verify");
         println!("  POST /turn  /reset  /inject  /halt");
         rt.block_on(async {
             tokio::signal::ctrl_c().await.ok();

@@ -127,6 +127,18 @@ enum VillageIntervention {
     HerbalRemedy,
 }
 
+impl VillageIntervention {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::RingBell => "ring_bell",
+            Self::HarvestFeast => "harvest_feast",
+            Self::MerchantCaravan => "merchant_caravan",
+            Self::ShrineBlessing => "shrine_blessing",
+            Self::HerbalRemedy => "herbal_remedy",
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Snapshot {
     turn: u64,
@@ -1322,6 +1334,12 @@ impl App {
                     self.status = "cured village ailments".into();
                 },
             }
+            let turn = w.turn;
+            let label: &'static str = kind.label();
+            drop(w);
+            // Best-effort: the runtime borrows the lock so `save_and_track`
+            // would deadlock; the mutation is already committed in memory.
+            state.audit("intervention", turn, serde_json::json!({"kind": label}));
         }
         self.poll();
     }
@@ -1348,6 +1366,10 @@ impl App {
             });
             self.custom_event_text.clear();
             self.status = "inscribed custom event into village chronicle".into();
+            drop(w);
+            // Chronicle text is observer prose: audit the act, never the words.
+            self.state
+                .audit("chronicle", turn, serde_json::json!({"kind": "decree"}));
         }
         self.poll();
     }
@@ -1379,7 +1401,7 @@ impl App {
                             let committed = r.turn;
                             recs.push(r);
                             // The seam is pure, so the shell owns the save.
-                            if let Err(e) = st.save(&w) {
+                            if let Err(e) = st.save_and_track(&w).await {
                                 err =
                                     Some(format!("turn {committed} committed but not saved: {e}"));
                                 break;
@@ -1391,9 +1413,22 @@ impl App {
                         },
                     }
                 }
+                let seed = w.seed;
+                let world_turn = w.turn;
+                drop(w);
+                let journal_error = if recs.is_empty() {
+                    None
+                } else {
+                    st.journal(seed, &recs).err()
+                };
                 if !recs.is_empty() {
                     st.record(recs.iter().cloned()).await;
                 }
+                st.audit(
+                    "turns",
+                    world_turn,
+                    serde_json::json!({"committed": recs.len(), "journal_error": journal_error}),
+                );
                 (recs, err)
             };
             let _ = tx.send(result);
@@ -3115,6 +3150,7 @@ mod tests {
                 world: Arc::new(tokio::sync::Mutex::new(world)),
                 run: Arc::new(tokio::sync::Mutex::new(Vec::new())),
                 save_path,
+                save_error: Arc::new(tokio::sync::Mutex::new(None)),
             },
             Launch {
                 port: 8100,
@@ -3286,6 +3322,7 @@ mod tests {
             day: 1,
             agents: vec![AgentTurn {
                 name: "Ada".into(),
+                decision_id: Some("7:3:Ada".into()),
                 action: "speak".into(),
                 accepted: true,
                 note: note.map(str::to_owned),
@@ -3299,6 +3336,8 @@ mod tests {
                 grounded: Some(0.7),
                 confidence: Some(0.9),
                 factors: Vec::new(),
+                rejected: Vec::new(),
+                event_range: None,
                 job: None,
                 lie: false,
             }],
@@ -3313,6 +3352,7 @@ mod tests {
     fn silent_turn(note: Option<&str>) -> AgentTurn {
         AgentTurn {
             name: "Ada".into(),
+            decision_id: None,
             action: "speak".into(),
             accepted: true,
             note: note.map(str::to_owned),
@@ -3326,6 +3366,8 @@ mod tests {
             grounded: Some(0.7),
             confidence: Some(0.9),
             factors: Vec::new(),
+            rejected: Vec::new(),
+            event_range: None,
             job: None,
             lie: false,
         }
