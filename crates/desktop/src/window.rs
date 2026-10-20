@@ -1376,12 +1376,14 @@ impl App {
                     match society_sim::turn::step(&mut w) {
                         Ok(r) => {
                             apply_village_systems(&mut w);
+                            let committed = r.turn;
+                            recs.push(r);
                             // The seam is pure, so the shell owns the save.
                             if let Err(e) = st.save(&w) {
-                                err = Some(format!("turn {} committed but not saved: {e}", r.turn));
+                                err =
+                                    Some(format!("turn {committed} committed but not saved: {e}"));
                                 break;
                             }
-                            recs.push(r);
                         },
                         Err(e) => {
                             err = Some(e);

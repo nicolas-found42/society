@@ -149,19 +149,20 @@ fn main() {
                 match society_sim::turn::step(&mut w) {
                     Ok(rec) => {
                         let civic_notes = window::apply_village_systems(&mut w);
+                        let (committed, agents) = (rec.turn, rec.agents.len());
+                        st.record(std::iter::once(rec)).await;
                         if let Err(e) = st.save(&w) {
-                            eprintln!("turn {} committed but not saved: {e}", rec.turn);
+                            eprintln!("turn {committed} committed but not saved: {e}");
                             break;
                         }
                         println!(
                             "[warmup {}/{}] turn {} — {} agent turns ({} civic events)",
                             i + 1,
                             n,
-                            rec.turn,
-                            rec.agents.len(),
+                            committed,
+                            agents,
                             civic_notes
                         );
-                        st.record(std::iter::once(rec)).await;
                     },
                     Err(e) => {
                         eprintln!("warmup halted: {e}");
