@@ -121,6 +121,200 @@ fn giving_transfers_exactly_one_and_raises_trust() {
 }
 
 #[test]
+fn a_gift_to_a_bystander_keeps_nothing() {
+    // Ticket #1: fulfillment is the committed transfer to the promisee.
+    // Feeding a third villager leaves the promise open and awards no
+    // fulfillment footprint to anyone.
+    let mut w = World::founding(308);
+    let names: Vec<String> = w.living().map(|a| a.name.clone()).collect();
+    let (keeper, owed, bystander) = (names[0].clone(), names[1].clone(), names[2].clone());
+    let place = w.agent(&keeper).unwrap().place;
+    w.agent_mut(&owed).unwrap().place = place;
+    w.agent_mut(&bystander).unwrap().place = place;
+    w.agent_mut(&keeper).unwrap().food = 2;
+    w.agent_mut(&keeper).unwrap().promise = Some(crate::world::Promise {
+        to: owed.clone(),
+        text: "I will feed you.".into(),
+        made_turn: w.turn,
+        kept: None,
+    });
+    // Direct the gift at the bystander through the turn seam's addressee.
+    let decision = policy::Decision {
+        action: "give".into(),
+        verb: Verb::Give,
+        place: None,
+        act: SocialAct::Gift,
+        addressee: Some(bystander.clone()),
+        motive: policy::Motive::Duty,
+        job: None,
+        confidence: 0.6,
+        dilemma: None,
+        factors: vec![],
+        rejected: vec![],
+    };
+    let out = crate::action::apply_decision(
+        &mut w,
+        &keeper,
+        &decision,
+        "take this",
+        SocialAct::Gift,
+        check::GROUNDED,
+        2.4,
+        None,
+    );
+    assert!(out.accepted);
+    let pr = w
+        .agent(&keeper)
+        .unwrap()
+        .promise
+        .as_ref()
+        .expect("still open");
+    assert_eq!(pr.kept, None, "a gift to a bystander keeps nothing");
+    // The promisee was in the room and heard the gift speech, so ordinary
+    // social trust may move — but no *fulfillment* lift (the +0.4 keeping
+    // bonus) and no kept-word memories on either side.
+    assert!(
+        !w.agent(&keeper)
+            .unwrap()
+            .memories
+            .iter()
+            .any(|m| m.text.contains("kept your word")),
+        "no fulfillment memory without fulfillment"
+    );
+    assert!(
+        !w.agent(&owed)
+            .unwrap()
+            .memories
+            .iter()
+            .any(|m| m.text.contains("kept their word")),
+        "the promisee heard no keeping"
+    );
+    assert!(
+        w.agent(&bystander)
+            .unwrap()
+            .memories
+            .iter()
+            .any(|m| m.text.contains("gave you food")),
+        "the transfer itself still committed to the bystander"
+    );
+}
+
+#[test]
+fn a_rejected_gift_keeps_nothing() {
+    // Ticket #1 acceptance: the outcome gate. A plan that rejects (here:
+    // nobody present) commits no transfer, so the promise stays open even
+    // though the keeper named the promisee.
+    let mut w = World::founding(308);
+    let names: Vec<String> = w.living().map(|a| a.name.clone()).collect();
+    let keeper = names[0].clone();
+    let owed = names[1].clone();
+    // Empty the hut except the keeper: everyone else to the market, so the
+    // gift finds nobody present and the plan rejects.
+    w.agent_mut(&keeper).unwrap().place = Place::Hut;
+    for n in &names {
+        if *n != keeper {
+            w.agent_mut(n).unwrap().place = Place::Market;
+        }
+    }
+    w.agent_mut(&keeper).unwrap().food = 2;
+    w.agent_mut(&keeper).unwrap().promise = Some(crate::world::Promise {
+        to: owed,
+        text: "I will feed you.".into(),
+        made_turn: w.turn,
+        kept: None,
+    });
+    let intent = Intent::parse("give", Place::Hut).unwrap();
+    let out = apply(&mut w, &keeper, &intent, "take this", SocialAct::Gift);
+    assert!(!out.accepted, "nobody present: the act rejects");
+    let pr = w
+        .agent(&keeper)
+        .unwrap()
+        .promise
+        .as_ref()
+        .expect("still open");
+    assert_eq!(pr.kept, None, "a rejected act keeps nothing");
+}
+
+#[test]
+fn keeping_is_awarded_exactly_once() {
+    // Ticket #1 acceptance: the second evaluation of the same kept promise
+    // is a no-op. Keep once by gift, then give again: the promise stays
+    // kept but no second fulfillment memory or trust lift lands.
+    let mut w = World::founding(308);
+    let names: Vec<String> = w.living().map(|a| a.name.clone()).collect();
+    let (keeper, owed) = (names[0].clone(), names[1].clone());
+    let place = w.agent(&keeper).unwrap().place;
+    w.agent_mut(&owed).unwrap().place = place;
+    w.agent_mut(&keeper).unwrap().food = 3;
+    w.agent_mut(&keeper).unwrap().promise = Some(crate::world::Promise {
+        to: owed.clone(),
+        text: "I will feed you.".into(),
+        made_turn: w.turn,
+        kept: None,
+    });
+    let intent = Intent::parse("give", place).unwrap();
+    let out = apply(&mut w, &keeper, &intent, "take this", SocialAct::Gift);
+    assert!(out.accepted);
+    assert_eq!(
+        w.agent(&keeper)
+            .unwrap()
+            .promise
+            .as_ref()
+            .and_then(|p| p.kept),
+        Some(true)
+    );
+    let memories = w
+        .agent(&keeper)
+        .unwrap()
+        .memories
+        .iter()
+        .filter(|m| m.text.contains("kept your word"))
+        .count();
+    let trust = w.agent(&owed).unwrap().trust_of(&keeper);
+    let intent = Intent::parse("give", place).unwrap();
+    let out = apply(&mut w, &keeper, &intent, "take this", SocialAct::Gift);
+    assert!(out.accepted);
+    assert_eq!(
+        w.agent(&keeper)
+            .unwrap()
+            .memories
+            .iter()
+            .filter(|m| m.text.contains("kept your word"))
+            .count(),
+        memories,
+        "no second fulfillment memory"
+    );
+    // The second gift carries only the ordinary +0.6 lift (clamped at 4),
+    // never the +0.4 keeping bonus again.
+    let expected = (trust + 0.6_f32).clamp(0.0, 4.0);
+    assert!(
+        (w.agent(&owed).unwrap().trust_of(&keeper) - expected).abs() < 1e-4,
+        "only the ordinary gift lift, no second keeping lift"
+    );
+}
+
+#[test]
+fn healing_yourself_with_an_open_promise_keeps_nothing() {
+    // Ticket #1: a keeping effect on the wrong recipient is not keeping.
+    // Healing yourself while owing Bo leaves the promise open.
+    let mut w = World::founding(29);
+    let who = w.agents[0].name.clone();
+    let to = w.agents[1].name.clone();
+    w.agent_mut(&who).unwrap().promise = Some(crate::world::Promise {
+        to,
+        text: "nurse you back".into(),
+        made_turn: 0,
+        kept: None,
+    });
+    w.agent_mut(&who).unwrap().herbs = 1;
+    let intent = Intent::parse("heal", w.agent(&who).unwrap().place).expect("heal");
+    let out = apply(&mut w, &who, &intent, "", SocialAct::Counsel);
+    assert!(out.accepted);
+    let pr = w.agent(&who).unwrap().promise.as_ref().expect("still open");
+    assert_eq!(pr.kept, None, "healing yourself keeps nothing");
+}
+
+#[test]
 fn memory_cap_never_evicts_a_scar() {
     let mut w = World::founding(17);
     let name = w.agents[0].name.clone();
@@ -138,6 +332,176 @@ fn memory_cap_never_evicts_a_scar() {
     let a = w.agent(&name).unwrap();
     assert!(a.memories.len() <= crate::memory::MEMORY_CAP);
     assert!(a.memories.iter().any(|m| m.permanent));
+}
+
+#[test]
+fn positive_and_negative_social_events_compose_through_settlement() {
+    // Ticket #3 acceptance: the full apply-and-settle sequence, multiple
+    // events, one control. Blessings lift relative to silence; a threat
+    // afterwards drags back down but stays above the silent baseline.
+    let mut acted = World::founding(18);
+    let mut silent = World::founding(18);
+    let names: Vec<String> = acted.living().map(|a| a.name.clone()).collect();
+    let (speaker, listener) = (names[0].clone(), names[1].clone());
+    for w in [&mut acted, &mut silent] {
+        let place = w.agent(&speaker).unwrap().place;
+        w.agent_mut(&listener).unwrap().place = place;
+    }
+    let decision = policy::Decision {
+        action: "speak".into(),
+        verb: Verb::Speak,
+        place: None,
+        act: SocialAct::Gratitude,
+        addressee: Some(listener),
+        motive: policy::Motive::Duty,
+        job: None,
+        confidence: 0.6,
+        dilemma: None,
+        factors: vec![],
+        rejected: vec![],
+    };
+    // Two blessings on `acted`, silence on the control.
+    for _ in 0..2 {
+        crate::action::apply_decision(
+            &mut acted,
+            &speaker,
+            &decision,
+            "You kept the field from the frost, and I remember it.",
+            SocialAct::Blessing,
+            check::GROUNDED,
+            2.4,
+            None,
+        );
+    }
+    acted.settle();
+    silent.settle();
+    assert!(
+        acted.village_morale > silent.village_morale,
+        "blessings lift the settled level vs an identical silent turn"
+    );
+    // One threat on top: still above silence, below the pure blessing peak.
+    let peak = acted.village_morale;
+    let mut peak_world = acted.clone();
+    peak_world.settle();
+    crate::action::apply_decision(
+        &mut acted,
+        &speaker,
+        &decision,
+        "Keep the grain back and you will wish you had not.",
+        SocialAct::Threat,
+        check::GROUNDED,
+        turn::derived_intensity(SocialAct::Threat, "plain"),
+        None,
+    );
+    acted.settle();
+    assert!(
+        acted.village_morale < peak,
+        "the threat drags the settled level back down"
+    );
+    let mut silent2 = silent.clone();
+    silent2.settle();
+    assert!(
+        acted.village_morale > silent2.village_morale,
+        "one threat does not erase two blessings"
+    );
+    let _ = peak_world;
+}
+
+#[test]
+fn morale_respects_its_bounds_across_many_events() {
+    // Ticket #3 acceptance: clamping. Ten blessings cannot push past 4,
+    // ten threats cannot drag below 0.
+    let mut w = World::founding(18);
+    let names: Vec<String> = w.living().map(|a| a.name.clone()).collect();
+    let (speaker, listener) = (names[0].clone(), names[1].clone());
+    let place = w.agent(&speaker).unwrap().place;
+    w.agent_mut(&listener).unwrap().place = place;
+    let decision = policy::Decision {
+        action: "speak".into(),
+        verb: Verb::Speak,
+        place: None,
+        act: SocialAct::Gratitude,
+        addressee: Some(listener.clone()),
+        motive: policy::Motive::Duty,
+        job: None,
+        confidence: 0.6,
+        dilemma: None,
+        factors: vec![],
+        rejected: vec![],
+    };
+    for _ in 0..10 {
+        crate::action::apply_decision(
+            &mut w,
+            &speaker,
+            &decision,
+            "You kept the field from the frost.",
+            SocialAct::Blessing,
+            check::GROUNDED,
+            2.4,
+            None,
+        );
+    }
+    w.settle();
+    assert!((0.0..=4.0).contains(&w.village_morale), "in range high");
+    for _ in 0..10 {
+        crate::action::apply_decision(
+            &mut w,
+            &speaker,
+            &decision,
+            "Keep the grain back and you will wish you had not.",
+            SocialAct::Threat,
+            check::GROUNDED,
+            turn::derived_intensity(SocialAct::Threat, "plain"),
+            None,
+        );
+    }
+    w.settle();
+    assert!((0.0..=4.0).contains(&w.village_morale), "in range low");
+}
+
+#[test]
+fn the_morale_bias_survives_a_save_round_trip() {
+    // Ticket #3 acceptance: the lasting effect is modeled state, so a
+    // save and reload carries it — unlike the old direct write, which
+    // settlement could erase before a save ever saw it.
+    let mut w = World::founding(18);
+    let names: Vec<String> = w.living().map(|a| a.name.clone()).collect();
+    let (speaker, listener) = (names[0].clone(), names[1].clone());
+    let place = w.agent(&speaker).unwrap().place;
+    w.agent_mut(&listener).unwrap().place = place;
+    let decision = policy::Decision {
+        action: "speak".into(),
+        verb: Verb::Speak,
+        place: None,
+        act: SocialAct::Blessing,
+        addressee: Some(listener.clone()),
+        motive: policy::Motive::Duty,
+        job: None,
+        confidence: 0.6,
+        dilemma: None,
+        factors: vec![],
+        rejected: vec![],
+    };
+    crate::action::apply_decision(
+        &mut w,
+        &speaker,
+        &decision,
+        "You kept the field from the frost.",
+        SocialAct::Blessing,
+        check::GROUNDED,
+        2.4,
+        None,
+    );
+    assert!(w.morale_bias > 0.0);
+    let text = serde_json::to_string(&w).unwrap();
+    let mut back: World = serde_json::from_str(&text).unwrap();
+    assert!(back.morale_bias > 0.0, "the bias is modeled state");
+    let morale_before = back.village_morale;
+    back.settle();
+    assert!(
+        back.village_morale >= morale_before,
+        "a reloaded blessing still lifts at settle"
+    );
 }
 
 #[test]
@@ -257,10 +621,7 @@ fn a_promise_never_in_reach_lapses_without_a_scar() {
     assert!(a.promise.is_none());
     assert!(!a.memories.iter().any(|m| m.permanent));
     assert_eq!(a.trust_of(&to), before);
-    assert!(a
-        .memories
-        .iter()
-        .any(|m| m.text.contains("lapsed unkept")));
+    assert!(a.memories.iter().any(|m| m.text.contains("lapsed unkept")));
 }
 
 #[test]
@@ -285,9 +646,15 @@ fn healing_the_promisee_keeps_the_word() {
     assert!(out.accepted);
     let keeper = w.agent(&who).unwrap();
     assert_eq!(keeper.promise.as_ref().and_then(|p| p.kept), Some(true));
-    assert!(keeper.memories.iter().any(|m| m.text.contains("kept your word")));
+    assert!(keeper
+        .memories
+        .iter()
+        .any(|m| m.text.contains("kept your word")));
     let kept_to = w.agent(&to).unwrap();
-    assert!(kept_to.memories.iter().any(|m| m.text.contains("kept their word")));
+    assert!(kept_to
+        .memories
+        .iter()
+        .any(|m| m.text.contains("kept their word")));
     assert!(kept_to.trust_of(&who) > before);
 }
 
@@ -309,7 +676,10 @@ fn consoling_the_promisee_keeps_the_word() {
     assert!(out.accepted);
     let keeper = w.agent(&who).unwrap();
     assert_eq!(keeper.promise.as_ref().and_then(|p| p.kept), Some(true));
-    assert!(keeper.memories.iter().any(|m| m.text.contains("kept your word")));
+    assert!(keeper
+        .memories
+        .iter()
+        .any(|m| m.text.contains("kept your word")));
     assert!(w
         .agent(&to)
         .unwrap()
@@ -450,6 +820,7 @@ fn pair_world(seed: u64) -> World {
         weather_kind: crate::world::WeatherKind::Clear,
         temperature_c: 14,
         village_morale: 2.5,
+        morale_bias: 0.0,
         rng: Rng::new(seed),
         halted: None,
     }
@@ -945,8 +1316,11 @@ fn a_credible_act_moves_trust_and_a_credible_threat_bites_morale() {
     );
     assert!(w.agent(&listener).unwrap().trust_of(&speaker) > before);
 
-    // A credible threat at the morale threshold nudges the village down.
-    let morale = w.village_morale;
+    // Ticket #3: the threat writes the bias, and the village level follows
+    // at settle. Compare against an otherwise identical control: same
+    // world, no threat, same settle.
+    let bias = w.morale_bias;
+    let mut control = w.clone();
     crate::action::apply_decision(
         &mut w,
         &speaker,
@@ -957,7 +1331,13 @@ fn a_credible_act_moves_trust_and_a_credible_threat_bites_morale() {
         turn::derived_intensity(SocialAct::Threat, "plain"),
         None,
     );
-    assert!(w.village_morale < morale, "the morale branch fired");
+    assert!(w.morale_bias < bias, "the morale branch fired");
+    w.settle();
+    control.settle();
+    assert!(
+        w.village_morale < control.village_morale,
+        "settle folds the threat bias in"
+    );
 }
 
 #[test]
@@ -1077,8 +1457,7 @@ fn the_soak_forbids_same_villager_repeats_inside_the_window() {
                 assert!(
                     !repeats,
                     "seed {seed} turn {turn}: {} repeats {:?} inside {LEDGER_WINDOW} turns",
-                    a.name,
-                    a.say
+                    a.name, a.say
                 );
                 past.push((turn, a.say.clone()));
             }
@@ -1102,7 +1481,11 @@ fn a_kept_promise_exists_in_a_300_turn_run() {
             .flat_map(|a| a.memories.iter())
             .filter(|m| m.text.contains("kept their word") || m.text.contains("kept your word"))
             .count();
-        let promises: usize = w.events.iter().filter(|e| e.kind == EventKind::Promise).count();
+        let promises: usize = w
+            .events
+            .iter()
+            .filter(|e| e.kind == EventKind::Promise)
+            .count();
         assert!(
             kept > 0 || promises == 0,
             "seed {seed}: {promises} promises, none kept"
@@ -1124,7 +1507,8 @@ fn gifts_do_not_concentrate_food_in_one_villager() {
     carried.sort_unstable();
     let median = carried[carried.len() / 2].max(1);
     let max = carried.last().copied().unwrap_or(0);
-    let mut per_recipient: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut per_recipient: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     let mut gives = 0_usize;
     for rec in &recs {
         for a in &rec.agents {
@@ -1214,12 +1598,23 @@ fn winter_cracks_the_buildings_and_repair_answers() {
         Place::Woods,
         Place::Field,
     ];
-    let min = all.iter().map(|p| w.place_state(*p).condition).min().unwrap();
-    let max = all.iter().map(|p| w.place_state(*p).condition).max().unwrap();
+    let min = all
+        .iter()
+        .map(|p| w.place_state(*p).condition)
+        .min()
+        .unwrap();
+    let max = all
+        .iter()
+        .map(|p| w.place_state(*p).condition)
+        .max()
+        .unwrap();
     let repairs = w.events.iter().filter(|e| e.action == "repair").count();
     assert!(min < 5, "seed 7: decay never fired, all places at 5");
     assert!(max == 5, "seed 7: repair never restores, max {max}");
-    assert!(repairs >= 10, "seed 7: repair not ongoing, {repairs} repairs (pre-fix 3)");
+    assert!(
+        repairs >= 10,
+        "seed 7: repair not ongoing, {repairs} repairs (pre-fix 3)"
+    );
 }
 #[test]
 fn the_soak_holds_the_invariants() {

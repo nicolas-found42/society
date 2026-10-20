@@ -360,9 +360,13 @@ mod tests {
         w.turn = 31;
         w.day = 2;
         w.weather = 1.37;
+        w.morale_bias = 0.17;
         w.halted = Some("the last villager died".into());
         w.agent_mut("Ada").unwrap().food = 3;
         w.agent_mut("Ada").unwrap().hunger = 0;
+        w.agent_mut("Ada")
+            .unwrap()
+            .adopt_explicit_goal("raise the granary roof");
         w.agent_mut("Ada").unwrap().set_trust("Bo", 0.35);
         w.agent_mut("Bo").unwrap().promise = Some(Promise {
             to: "Ada".into(),

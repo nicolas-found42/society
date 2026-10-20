@@ -671,6 +671,13 @@ pub struct Agent {
     pub devotion: f32,
     #[serde(default)]
     pub current_goal: String,
+    /// An observer-set resolve that survives ordinary settlement until a
+    /// documented transition (completion, cancellation, override). The goal
+    /// ladder below only borrows it when no survival pressure fires and the
+    /// promise step is quiet, so survival never silently deletes it; an
+    /// explicit transition clears or replaces it in one place.
+    #[serde(default)]
+    pub explicit_goal: Option<String>,
     /// Why this villager is doing what they are doing, in one word:
     /// "hunger", "thirst", "kinship", "promise", "fear", "duty". Derived by
     /// the policy each turn; `None` before the villager's first decision.
@@ -793,6 +800,7 @@ impl Agent {
             hope: 2.5,
             devotion: 2.0,
             current_goal: "secure food and keep the settlement whole".into(),
+            explicit_goal: None,
             motive: None,
             partner: None,
             relations,
@@ -952,6 +960,15 @@ impl Agent {
             _ => None,
         };
 
+        // Explicit goal lifecycle (ticket #2): an observer-set resolve wins
+        // over motive and role, and survives every ordinary refresh. Only
+        // survival pressure, the unkept promise, or an explicit transition
+        // may set it aside for a turn — and none of them clears it, so the
+        // resolve is still there when the emergency passes. Ordinary speech
+        // never writes here: `synthesize_goal` is gone, and `motive` (a
+        // one-word policy label) only refines the goal when no explicit
+        // resolve and no promise are active.
+        let explicit = self.explicit_goal.clone();
         self.current_goal = if self.hunger >= 2 && self.food == 0 {
             "find grain or forage immediately before starving".into()
         } else if self.thirst >= 2 && self.water == 0 {
@@ -961,7 +978,29 @@ impl Agent {
         } else if season == Season::Winter && self.warmth <= 1 {
             "gather firewood and warm by the hut hearth".into()
         } else if let Some(pr) = &self.promise {
-            format!("keep promise to {}", pr.to)
+            if pr.kept.is_none() {
+                format!("keep promise to {}", pr.to)
+            } else if let Some(goal) = explicit {
+                goal
+            } else if let Some(goal) = motive_goal {
+                goal.into()
+            } else {
+                match self.role {
+                    Role::Steward => "balance the granary stores and prevent theft".into(),
+                    Role::Farmer => "tend the barley field and bring in the harvest".into(),
+                    Role::Woodcutter => {
+                        "keep the settlement stocked with timber and firewood".into()
+                    },
+                    Role::Herbalist => "gather medicinal herbs and heal the sick".into(),
+                    Role::Artisan => "craft sturdy tools and keep structures in repair".into(),
+                    Role::Watchman => "patrol the ring and guard against betrayal".into(),
+                    Role::Elder => "counsel the anxious and preserve village memory".into(),
+                    Role::Trader => "circulate tools, timber, and grain at the market".into(),
+                    Role::Forager => "search the woods and field margins for wild stores".into(),
+                }
+            }
+        } else if let Some(goal) = explicit {
+            goal
         } else if let Some(goal) = motive_goal {
             goal.into()
         } else {
@@ -977,6 +1016,28 @@ impl Agent {
                 Role::Forager => "search the woods and field margins for wild stores".into(),
             }
         };
+    }
+
+    /// Adopt an observer-set resolve: the only way `explicit_goal` is born.
+    /// Ordinary speech never calls this; the observer intervention and the
+    /// oath path are the callers. The ladder picks it up on the next
+    /// refresh unless survival or an unkept promise is louder that turn.
+    pub fn adopt_explicit_goal(&mut self, goal: impl Into<String>) {
+        let goal = goal.into();
+        self.explicit_goal = Some(goal.clone());
+        self.current_goal = goal;
+    }
+
+    /// Complete the resolve when its work is done. Only an explicit
+    /// completion or cancellation clears `explicit_goal`; survival and
+    /// promises may borrow `current_goal` for a turn but never clear this.
+    pub fn complete_explicit_goal(&mut self) {
+        self.explicit_goal = None;
+    }
+
+    /// Cancel the resolve. Symmetric with completion: one place clears.
+    pub fn cancel_explicit_goal(&mut self) {
+        self.explicit_goal = None;
     }
 
     /// Insert a memory, then enforce the cap. Scars are never evicted.
@@ -1109,6 +1170,12 @@ pub struct World {
     pub temperature_c: i32,
     #[serde(default)]
     pub village_morale: f32,
+    /// Event-driven morale that survives settlement: blessings, threats and
+    /// feasts write here, and settlement folds it into the hope/stress
+    /// baseline instead of overwriting it. Decays toward zero each settle
+    /// so a feast is a season, not a permanent offset.
+    #[serde(default)]
+    pub morale_bias: f32,
     pub rng: Rng,
     pub halted: Option<String>,
 }
@@ -1280,6 +1347,7 @@ impl World {
             weather_kind: WeatherKind::Clear,
             temperature_c: 14,
             village_morale: 2.5,
+            morale_bias: 0.0,
             rng,
             halted: None,
         };
@@ -1558,14 +1626,22 @@ impl World {
         // population curve legible.
         self.settle_birth(turn);
 
-        // Update village morale average.
+        // Morale settlement (ticket #3): the hope/stress baseline plus the
+        // event-driven bias, clamped to 0..4. `apply` and the feast write
+        // `morale_bias`, never `village_morale` directly, so settlement can
+        // no longer erase a social event from the same turn. The bias then
+        // decays toward zero, so a feast is a season that fades rather than
+        // a permanent offset or a one-turn blip.
         let living_count = self.living().count();
         if living_count > 0 {
             let sum_hope: f32 = self
                 .living()
                 .map(|a| f32::midpoint(a.hope, (4.0 - a.stress).max(0.0)))
                 .sum();
-            self.village_morale = ((sum_hope / living_count as f32) * 100.0).round() / 100.0;
+            let baseline = sum_hope / living_count as f32;
+            self.village_morale = ((baseline + self.morale_bias) * 100.0).round() / 100.0;
+            self.village_morale = self.village_morale.clamp(0.0, 4.0);
+            self.morale_bias = (self.morale_bias * 0.9 * 100.0).round() / 100.0;
         }
 
         self.turn += 1;
@@ -1850,7 +1926,12 @@ mod tests {
         a.remember(Memory::scar(0, "a scar that must stay"));
         assert_eq!(a.evicted_memories, 0);
         for i in 0..(MEMORY_CAP + 5) {
-            a.remember(Memory::new(i as u64, format!("ordinary day {i}"), 0.5, MemoryKind::Witnessed));
+            a.remember(Memory::new(
+                i as u64,
+                format!("ordinary day {i}"),
+                0.5,
+                MemoryKind::Witnessed,
+            ));
         }
         assert_eq!(a.memories.len(), MEMORY_CAP);
         // The scar plus 13 ordinary insertions overflow a cap-8 buffer; the
@@ -1866,7 +1947,17 @@ mod tests {
     fn promise_world() -> World {
         let mut w = World::founding(99);
         w.agents.clear();
-        let mut ada = Agent::new("Ada", "plain", Place::Hut, 2, 0, 0, 0, vec![], &["Bo".to_owned()]);
+        let mut ada = Agent::new(
+            "Ada",
+            "plain",
+            Place::Hut,
+            2,
+            0,
+            0,
+            0,
+            vec![],
+            &["Bo".to_owned()],
+        );
         ada.promise = Some(Promise {
             to: "Bo".into(),
             text: "feed you".into(),
@@ -1874,7 +1965,17 @@ mod tests {
             kept: None,
         });
         w.agents.push(ada);
-        w.agents.push(Agent::new("Bo", "plain", Place::Hut, 2, 0, 0, 0, vec![], &["Ada".to_owned()]));
+        w.agents.push(Agent::new(
+            "Bo",
+            "plain",
+            Place::Hut,
+            2,
+            0,
+            0,
+            0,
+            vec![],
+            &["Ada".to_owned()],
+        ));
         w
     }
 
@@ -1906,7 +2007,9 @@ mod tests {
         let ada = w.agent("Ada").unwrap();
         assert!(ada.promise.is_none(), "overdue promises clear");
         assert!(
-            ada.memories.iter().any(|m| m.text.contains("broke your word")),
+            ada.memories
+                .iter()
+                .any(|m| m.text.contains("broke your word")),
             "together in the window: a broken word"
         );
         // Never in the same place: the word lapses, it does not break.
@@ -1915,12 +2018,106 @@ mod tests {
         w.settle();
         let ada = w.agent("Ada").unwrap();
         assert!(
-            ada.memories.iter().any(|m| m.text.contains("lapsed unkept")),
+            ada.memories
+                .iter()
+                .any(|m| m.text.contains("lapsed unkept")),
             "never together: lapse, not break"
         );
         assert!(
-            !ada.memories.iter().any(|m| m.text.contains("broke your word")),
+            !ada.memories
+                .iter()
+                .any(|m| m.text.contains("broke your word")),
             "no broken-word scar without reachability"
         );
+    }
+
+    #[test]
+    fn an_observer_goal_survives_ordinary_refresh_and_settlement() {
+        // Ticket #2: adoption is the only birth of an explicit goal, and
+        // ordinary refresh plus full settlement never clear it. Survival
+        // borrows the display line for a turn but the resolve stays.
+        let mut a = villager();
+        a.adopt_explicit_goal("raise the granary roof");
+        assert_eq!(goal_after_refresh(&mut a), "raise the granary roof");
+        assert_eq!(a.explicit_goal.as_deref(), Some("raise the granary roof"));
+        // A hungry-but-fed motive cannot evict it.
+        a.motive = Some("kinship".into());
+        assert_eq!(goal_after_refresh(&mut a), "raise the granary roof");
+        // Starvation borrows the line without deleting the resolve.
+        a.hunger = 2;
+        a.food = 0;
+        assert_eq!(
+            goal_after_refresh(&mut a),
+            "find grain or forage immediately before starving"
+        );
+        assert_eq!(a.explicit_goal.as_deref(), Some("raise the granary roof"));
+        // Fed again: the resolve is back on the line.
+        a.hunger = 0;
+        a.food = 2;
+        assert_eq!(goal_after_refresh(&mut a), "raise the granary roof");
+    }
+
+    #[test]
+    fn an_unkept_promise_outranks_the_explicit_goal_without_clearing_it() {
+        // Ticket #2: the obligation ladder wins the turn, the resolve waits.
+        let mut a = villager();
+        a.adopt_explicit_goal("raise the granary roof");
+        a.promise = Some(Promise {
+            to: "Bo".into(),
+            text: "bring grain to the hut".into(),
+            made_turn: 1,
+            kept: None,
+        });
+        assert_eq!(goal_after_refresh(&mut a), "keep promise to Bo");
+        assert_eq!(a.explicit_goal.as_deref(), Some("raise the granary roof"));
+    }
+
+    #[test]
+    fn only_completion_or_cancellation_clears_the_explicit_goal() {
+        // Ticket #2: survival and promises borrow; only an explicit
+        // transition clears. After clearing, the ladder falls back to
+        // motive then role.
+        let mut a = villager();
+        a.adopt_explicit_goal("raise the granary roof");
+        a.hunger = 2;
+        a.food = 0;
+        goal_after_refresh(&mut a);
+        assert!(
+            a.explicit_goal.is_some(),
+            "survival borrows the line, it does not cancel the resolve"
+        );
+        a.hunger = 0;
+        a.food = 2;
+        a.complete_explicit_goal();
+        assert_eq!(a.explicit_goal, None);
+        a.motive = Some("kinship".into());
+        assert_eq!(goal_after_refresh(&mut a), "keep the family close and fed");
+        a.adopt_explicit_goal("raise the granary roof");
+        a.cancel_explicit_goal();
+        assert_eq!(goal_after_refresh(&mut a), "keep the family close and fed");
+    }
+
+    #[test]
+    fn the_explicit_goal_survives_a_serde_round_trip() {
+        // Ticket #2 acceptance: saved and reloaded state preserves the
+        // lasting resolve, like every other agent field.
+        let mut a = villager();
+        a.adopt_explicit_goal("raise the granary roof");
+        let text = serde_json::to_string(&a).unwrap();
+        let back: Agent = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            back.explicit_goal.as_deref(),
+            Some("raise the granary roof")
+        );
+        assert_eq!(back.current_goal, "raise the granary roof");
+        // An old save without the field loads with no resolve, not a crash.
+        let mut value = serde_json::to_value(&a).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("explicit_goal")
+            .expect("field present");
+        let back: Agent = serde_json::from_value(value).unwrap();
+        assert_eq!(back.explicit_goal, None);
     }
 }

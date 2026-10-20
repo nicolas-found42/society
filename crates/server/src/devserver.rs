@@ -400,7 +400,11 @@ async fn log_tail(State(s): State<AppState>, Query(q): Query<LogQuery>) -> Json<
     let limit = q.limit.unwrap_or(20);
     let rows: Vec<turn::TurnRecord> = {
         let run = s.run.lock().await;
-        run.iter().filter(|r| r.turn >= since).take(limit).cloned().collect()
+        run.iter()
+            .filter(|r| r.turn >= since)
+            .take(limit)
+            .cloned()
+            .collect()
     };
     let from_memory = rows.len();
     let (journal, journal_corrupt) = if rows.len() < limit {
@@ -437,7 +441,10 @@ struct DiagnosticsQuery {
     clippy::significant_drop_tightening,
     reason = "the world lock is held for the whole request on purpose"
 )]
-async fn diagnostics_tail(State(s): State<AppState>, Query(q): Query<DiagnosticsQuery>) -> Json<Value> {
+async fn diagnostics_tail(
+    State(s): State<AppState>,
+    Query(q): Query<DiagnosticsQuery>,
+) -> Json<Value> {
     let (entries, corrupt) = crate::diagnostics::read_audit(&s.save_path, q.limit.unwrap_or(100));
     Json(json!({
         "entries": entries,
@@ -556,7 +563,10 @@ struct ResetRequest {
     clippy::significant_drop_tightening,
     reason = "the world lock is held for the whole request on purpose"
 )]
-async fn reset(State(s): State<AppState>, Json(req): Json<ResetRequest>) -> (StatusCode, Json<Value>) {
+async fn reset(
+    State(s): State<AppState>,
+    Json(req): Json<ResetRequest>,
+) -> (StatusCode, Json<Value>) {
     let mut world = s.world.lock().await;
     // The API and the flag mean the same thing by "reset": the world and its
     // save go together, so a restart cannot resurrect what was discarded.
@@ -791,6 +801,10 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
                 .unwrap_or(Place::Market);
             let amount = req.amount.unwrap_or(4).min(10);
             w.place_state_mut(place).food += amount;
+            // A feast writes the bias, not the level (ticket #3): settlement
+            // folds it into the hope/stress baseline, so the lift survives
+            // the turn and then decays instead of vanishing at once.
+            w.morale_bias = (w.morale_bias + 0.15).clamp(-4.0, 4.0);
             w.village_morale = (w.village_morale + 0.15).clamp(0.0, 4.0);
             let attendees: Vec<String> = w
                 .living()
@@ -921,7 +935,10 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
             }
             let place = {
                 let a = w.agent_mut(&target).expect("checked above");
-                a.current_goal.clone_from(&text);
+                // The only birth of an explicit goal (ticket #2): the next
+                // refresh picks it up unless survival or a promise borrows
+                // the turn, and neither clears it.
+                a.adopt_explicit_goal(text.clone());
                 a.remember(society_sim::Memory::new(
                     turn,
                     format!("A new resolve takes hold: {text}"),
@@ -1201,7 +1218,11 @@ mod tests {
             s.journal(seed, &[]).unwrap();
         }
         s.audit("turns", 3, json!({"committed": 1}));
-        s.audit("inject", 3, crate::diagnostics::inject_summary("gift", Some("Ada"), None, None));
+        s.audit(
+            "inject",
+            3,
+            crate::diagnostics::inject_summary("gift", Some("Ada"), None, None),
+        );
         let (entries, corrupt) = crate::diagnostics::read_audit(&s.save_path, 10);
         assert_eq!(corrupt, 0);
         assert_eq!(entries.len(), 2);

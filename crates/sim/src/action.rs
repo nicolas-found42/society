@@ -524,11 +524,49 @@ impl SocialAct {
 }
 
 /// What actually happened after the simulator validated an intent.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Outcome {
     pub accepted: bool,
     pub kind: EventKind,
     pub note: Option<String>,
+}
+
+/// Mark the actor's promise kept exactly once, with the fulfillment footprint
+/// (keeper memory, promisee trust lift, promisee memory) in one place so the
+/// give/heal/console paths cannot drift apart. Call only after the keeping
+/// act itself committed: `accepted` is the gate, the caller passes the real
+/// recipient, and the promise's `to` must match — a rejected act, a gift to
+/// a bystander, or a second call after `kept` is set keeps nothing.
+fn keep_promise(w: &mut World, turn: u64, actor: &str, recipient: &str) -> bool {
+    let owed = w.agent(actor).is_some_and(|a| {
+        a.promise
+            .as_ref()
+            .is_some_and(|pr| pr.kept.is_none() && pr.to == recipient)
+    });
+    if !owed {
+        return false;
+    }
+    if let Some(a) = w.agent_mut(actor) {
+        if let Some(pr) = a.promise.as_mut() {
+            pr.kept = Some(true);
+        }
+        a.remember(Memory::new(
+            turn,
+            format!("You kept your word to {recipient}."),
+            0.9,
+            MemoryKind::Own,
+        ));
+    }
+    if let Some(t) = w.agent_mut(recipient) {
+        t.adjust_trust(actor, 0.4);
+        t.remember(Memory::new(
+            turn,
+            format!("{actor} kept their word to you."),
+            0.9,
+            MemoryKind::Witnessed,
+        ));
+    }
+    true
 }
 
 /// The validated consequence of an intent, computed before any mutation so the
@@ -950,24 +988,10 @@ fn apply_resolved(
             (true, kind, note)
         },
         Plan::Give { target } => {
-            let keeps = w.agent(actor).is_some_and(|a| {
-                a.promise.as_ref().is_some_and(|pr| pr.kept.is_none() && pr.to == target)
-            });
             if let Some(a) = w.agent_mut(actor) {
                 a.food -= 1;
                 a.adjust_trust(&target, 0.25);
                 a.standing = (a.standing + 0.15).min(4.0);
-                if keeps {
-                    if let Some(pr) = a.promise.as_mut() {
-                        pr.kept = Some(true);
-                    }
-                    a.remember(Memory::new(
-                        turn,
-                        format!("You kept your word to {target}."),
-                        0.9,
-                        MemoryKind::Own,
-                    ));
-                }
             }
             if let Some(t) = w.agent_mut(&target) {
                 t.food += 1;
@@ -980,16 +1004,10 @@ fn apply_resolved(
                     0.75,
                     MemoryKind::Witnessed,
                 ));
-                if keeps {
-                    t.adjust_trust(actor, 0.4);
-                    t.remember(Memory::new(
-                        turn,
-                        format!("{actor} kept their word to you."),
-                        0.9,
-                        MemoryKind::Witnessed,
-                    ));
-                }
             }
+            // Fulfillment is the committed transfer to the promisee, not the
+            // speech around it: same-recipient, keeping effect, applied once.
+            keep_promise(w, turn, actor, &target);
             (true, EventKind::Transfer, Some(format!("to {target}")))
         },
         Plan::Promise { to } => {
@@ -1087,26 +1105,12 @@ fn apply_resolved(
                 let st = w.place_state_mut(place);
                 st.herbs = st.herbs.saturating_sub(1);
             }
-            let keeps = target != actor
-                && w.agent(actor).is_some_and(|a| {
-                    a.promise.as_ref().is_some_and(|pr| pr.kept.is_none() && pr.to == *target)
-                });
+            let kept_target = (target != actor).then(|| target.clone());
             if let Some(a) = w.agent_mut(actor) {
                 a.skills.herbalism = (a.skills.herbalism + 1).min(5);
                 if target != actor {
                     a.standing = (a.standing + 0.2).min(4.0);
                     a.adjust_trust(&target, 0.25);
-                }
-                if keeps {
-                    if let Some(pr) = a.promise.as_mut() {
-                        pr.kept = Some(true);
-                    }
-                    a.remember(Memory::new(
-                        turn,
-                        format!("You kept your word to {target}."),
-                        0.9,
-                        MemoryKind::Own,
-                    ));
                 }
             }
             if let Some(t) = w.agent_mut(&target) {
@@ -1116,15 +1120,11 @@ fn apply_resolved(
                 if target != actor {
                     t.adjust_trust(actor, 0.65);
                 }
-                if keeps {
-                    t.adjust_trust(actor, 0.4);
-                    t.remember(Memory::new(
-                        turn,
-                        format!("{actor} kept their word to you."),
-                        0.9,
-                        MemoryKind::Witnessed,
-                    ));
-                }
+            }
+            // Same gate as give: the healed villager must be the promisee.
+            // Healing yourself keeps nothing, even with an open promise.
+            if let Some(to) = kept_target {
+                keep_promise(w, turn, actor, &to);
             }
             (true, EventKind::Heal, Some(format!("healed {target}")))
         },
@@ -1183,38 +1183,18 @@ fn apply_resolved(
             )
         },
         Plan::Console { target } => {
-            let keeps = w.agent(actor).is_some_and(|a| {
-                a.promise.as_ref().is_some_and(|pr| pr.kept.is_none() && pr.to == *target)
-            });
             if let Some(a) = w.agent_mut(actor) {
                 a.skills.counsel = (a.skills.counsel + 1).min(5);
                 a.adjust_trust(&target, 0.3);
-                if keeps {
-                    if let Some(pr) = a.promise.as_mut() {
-                        pr.kept = Some(true);
-                    }
-                    a.remember(Memory::new(
-                        turn,
-                        format!("You kept your word to {target}."),
-                        0.9,
-                        MemoryKind::Own,
-                    ));
-                }
             }
             if let Some(t) = w.agent_mut(&target) {
                 t.stress = (t.stress - 0.6).max(0.0);
                 t.hope = (t.hope + 0.4).min(4.0);
                 t.adjust_trust(actor, 0.45);
-                if keeps {
-                    t.adjust_trust(actor, 0.4);
-                    t.remember(Memory::new(
-                        turn,
-                        format!("{actor} kept their word to you."),
-                        0.9,
-                        MemoryKind::Witnessed,
-                    ));
-                }
             }
+            // Consoling is a keeping act only toward the promisee: the
+            // recipient match inside `keep_promise` is the whole check.
+            keep_promise(w, turn, actor, &target);
             (true, EventKind::Bond, Some(format!("consoled {target}")))
         },
     };
@@ -1311,12 +1291,12 @@ fn apply_resolved(
         if credible {
             match social {
                 SocialAct::Blessing | SocialAct::Forgiveness | SocialAct::Gratitude => {
-                    w.village_morale = (w.village_morale + 0.02).clamp(0.0, 4.0);
+                    w.morale_bias = (w.morale_bias + 0.02).clamp(-4.0, 4.0);
                 },
                 SocialAct::Threat | SocialAct::Accusation
                     if intensity.is_some_and(|i| i >= crate::turn::THREAT_MORALE_THRESHOLD) =>
                 {
-                    w.village_morale = (w.village_morale - 0.02).clamp(0.0, 4.0);
+                    w.morale_bias = (w.morale_bias - 0.02).clamp(-4.0, 4.0);
                 },
                 _ => {},
             }
@@ -1548,7 +1528,13 @@ mod tests {
         let intent = Intent::parse("give", place).unwrap();
         let out = apply(&mut w, &keeper, &intent, "take this", SocialAct::Gift);
         assert!(out.accepted);
-        let kept = w.agent(&keeper).unwrap().promise.as_ref().expect("promise stored").kept;
+        let kept = w
+            .agent(&keeper)
+            .unwrap()
+            .promise
+            .as_ref()
+            .expect("promise stored")
+            .kept;
         assert_eq!(kept, Some(true), "a gift to the promisee keeps the promise");
         assert!(w.agent(&owed).unwrap().trust_of(&keeper) > trust_before);
         assert!(w
