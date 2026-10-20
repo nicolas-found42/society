@@ -189,3 +189,17 @@ _Avoid_: gate, verifier, validator, judge
 One assertion a line makes about the world: a count, a person, a possession, a
 place, an obligation.
 _Avoid_: fact, statement, detail
+
+## Retired with the old engine
+
+**Judgment state**:
+The rendered JSON brief a model once read before choosing an action. Nothing
+reads it: the policy reads the world directly, and the inspector shows the
+decision factors.
+_Avoid_: reviving it for the factors panel
+
+**The card**:
+The prompt card of examples and context a model once read before writing a
+line. Nothing renders it: the speaker writes from the grammar, and what a
+villager knows is enforced as knowledge scope in the rules.
+_Avoid_: prompt, context window, few-shot

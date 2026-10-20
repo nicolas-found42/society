@@ -19,7 +19,7 @@ use society_sim::{Event, EventKind, Place, World};
 
 /// Bumped whenever the serialised shape changes incompatibly. A save carrying
 /// any other version is rejected with its path, not misparsed.
-pub const SAVE_VERSION: u32 = 1;
+pub const SAVE_VERSION: u32 = 2;
 
 /// Overrides where the village file lives, so several villages can sit side by
 /// side: `SOCIETY_SAVE_PATH=data/second.json cargo run`.
@@ -360,7 +360,7 @@ mod tests {
         w.turn = 31;
         w.day = 2;
         w.weather = 1.37;
-        w.halted = Some("judgment layer unreachable".into());
+        w.halted = Some("the last villager died".into());
         w.agent_mut("Ada").unwrap().food = 3;
         w.agent_mut("Ada").unwrap().hunger = 0;
         w.agent_mut("Ada").unwrap().set_trust("Bo", 0.35);
@@ -417,7 +417,7 @@ mod tests {
 
         let loaded = load(&path).unwrap().expect("a village");
         assert_eq!(json(&loaded), json(&world));
-        assert_eq!(loaded.halted.as_deref(), Some("judgment layer unreachable"));
+        assert_eq!(loaded.halted.as_deref(), Some("the last villager died"));
         assert_eq!(loaded.agent("Ash").unwrap().parents, vec!["Ada", "Bo"]);
         assert_eq!(loaded.agent("Ash").unwrap().generation, 1);
     }
@@ -570,10 +570,10 @@ mod tests {
         let dir = TempDir::new();
         let path = dir.join("village.json");
         let mut w = World::founding(19);
-        w.halt("judgment layer unreachable");
+        w.halt("the last villager died");
         save(&w, &path).unwrap();
         let loaded = load(&path).unwrap().unwrap();
-        assert_eq!(loaded.halted.as_deref(), Some("judgment layer unreachable"));
+        assert_eq!(loaded.halted.as_deref(), Some("the last villager died"));
     }
 
     #[test]
@@ -588,9 +588,6 @@ mod tests {
         assert_eq!(summary.seed, 23);
         assert_eq!(summary.turn, 31);
         assert_eq!(summary.day, 2);
-        assert_eq!(
-            summary.halted.as_deref(),
-            Some("judgment layer unreachable")
-        );
+        assert_eq!(summary.halted.as_deref(), Some("the last villager died"));
     }
 }

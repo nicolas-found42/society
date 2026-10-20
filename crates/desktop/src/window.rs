@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 use egui::{Color32, RichText};
-use society_server::legacy::AgentTurn;
 use society_server::{AppState, TurnRecord};
+use society_sim::turn::AgentTurn;
 use society_sim::{Agent, Event, EventKind, Place, PlaceState, World};
 
 const MAP_W: f32 = 420.0;
@@ -21,7 +21,7 @@ pub(crate) struct Launch<'a> {
     pub port: u16,
     pub view: &'a str,
     pub select: Option<&'a str>,
-    pub expand_state: bool,
+    pub expand_factors: bool,
     pub select_none: bool,
     pub size: Option<(f32, f32)>,
     pub autostart: bool,
@@ -78,8 +78,8 @@ struct App {
     feed_search: String,
     custom_event_text: String,
     theme_applied: bool,
-    /// Open the judgment-state disclosure on first draw. Screenshot aid only.
-    expand_state: bool,
+    /// Open the decision-factors disclosure on first draw. Screenshot aid only.
+    expand_factors: bool,
     auto: bool,
     speed: f32,
     last_turn: Instant,
@@ -1066,7 +1066,9 @@ impl Snapshot {
 struct Inspector {
     name: String,
     persona: String,
-    judgment_state: serde_json::Value,
+    /// The policy's term contributions from the villager's last recorded
+    /// decision, newest first. Empty until she has taken a turn this session.
+    factors: Vec<(String, f32)>,
 }
 
 fn fixed_place_pos(id: &str) -> egui::Pos2 {
@@ -1101,7 +1103,7 @@ impl App {
             port,
             view,
             select,
-            expand_state,
+            expand_factors,
             select_none,
             autostart,
             ..
@@ -1126,7 +1128,7 @@ impl App {
                 Some(select.map_or(first, str::to_owned))
             },
             selected_place: None,
-            expand_state,
+            expand_factors,
             inspector: None,
             // A view flag lets a screenshot capture each panel without a click,
             // so observing the society never takes focus from the observer.
@@ -1192,7 +1194,12 @@ impl App {
                 .map(|a| Inspector {
                     name: a.name.clone(),
                     persona: a.persona.clone(),
-                    judgment_state: society_sim::judgment_state(&w, a),
+                    factors: self
+                        .turns
+                        .iter()
+                        .rev()
+                        .find_map(|r| r.agents.iter().find(|at| at.name == a.name))
+                        .map_or(Vec::new(), |at| at.factors.clone()),
                 });
         }
         if let Ok(run) = self.state.run.try_lock() {
@@ -1366,13 +1373,18 @@ impl App {
                 let mut recs = Vec::new();
                 let mut err = None;
                 for _ in 0..n {
-                    match st.engine.step(&mut w).await {
+                    match society_sim::turn::step(&mut w) {
                         Ok(r) => {
                             apply_village_systems(&mut w);
+                            // The seam is pure, so the shell owns the save.
+                            if let Err(e) = st.save(&w) {
+                                err = Some(format!("turn {} committed but not saved: {e}", r.turn));
+                                break;
+                            }
                             recs.push(r);
                         },
                         Err(e) => {
-                            err = Some(e.to_string());
+                            err = Some(e);
                             break;
                         },
                     }
@@ -1449,10 +1461,6 @@ impl eframe::App for App {
                             .color(Color32::from_rgb(210, 185, 140)),
                     );
                     ui.separator();
-                    ui.label(format!(
-                        "cost ${:.4}",
-                        society_server::total_cost(&self.turns).max(0.0)
-                    ));
                 }
                 ui.separator();
                 ui.label(format!(":{0}", self.port));
@@ -2350,7 +2358,7 @@ impl App {
                     .hint_text("Search feed…"),
             );
         });
-        // Merge the saved event history with this session's inference details.
+        // Merge the saved event history with this session's turn records.
         // A restart no longer hides crafting, healing, trade, prayer, or bonds.
         let turns: BTreeSet<u64> = s
             .events
@@ -2367,15 +2375,7 @@ impl App {
                     day_divider(ui, &format!("turn {turn}"));
                     let rec = self.turns.iter().find(|r| r.turn == turn);
                     if let Some(rec) = rec {
-                        ui.label(
-                            RichText::new(format!(
-                                "day {} · ${:.5}",
-                                rec.day,
-                                society_server::turn_cost(rec)
-                            ))
-                            .weak()
-                            .small(),
-                        );
+                        ui.label(RichText::new(format!("day {}", rec.day)).weak().small());
                     }
                     for e in s.events.iter().filter(|e| e.turn == turn) {
                         if !matches_feed_filter(e.kind, self.feed_filter) {
@@ -2447,8 +2447,8 @@ impl App {
                                 humanize(&a.action),
                                 if a.accepted { "Accepted" } else { "Rejected" }
                             ));
-                            // This row has no gate-score metadata line, but the
-                            // judgment layer's labels still belong to the turn.
+                            // This row has no metadata line, but the turn's
+                            // labels still belong to it.
                             if let Some(labels) = turn_labels(a) {
                                 ui.label(RichText::new(labels).weak().small());
                             }
@@ -2783,13 +2783,20 @@ impl App {
                         }
                     },
                 );
-                egui::CollapsingHeader::new("Judgment state (what Jev sees)")
-                    .default_open(self.expand_state)
+                egui::CollapsingHeader::new("Decision factors (last turn)")
+                    .default_open(self.expand_factors)
                     .show(ui, |ui| {
-                        ui.code(
-                            serde_json::to_string_pretty(&insp.judgment_state)
-                                .unwrap_or_else(|_| "{}".into()),
-                        );
+                        if insp.factors.is_empty() {
+                            ui.label(
+                                RichText::new("no decision recorded this session")
+                                    .weak()
+                                    .small(),
+                            );
+                        } else {
+                            for (term, contribution) in &insp.factors {
+                                ui.label(format!("{term}: {contribution:.2}"));
+                            }
+                        }
                     });
             });
     }
@@ -2843,9 +2850,9 @@ fn fmt(v: Option<f32>) -> String {
     v.map_or_else(|| "—".into(), |x| format!("{x:.2}"))
 }
 
-/// The per-turn metadata line: verdict and gate scores, then the judgment
-/// layer's own labels. Optional fields are omitted, not rendered blank, so a
-/// turn saved before they existed still reads as one line.
+/// The per-turn metadata line: verdict and scores, then the turn's own
+/// labels. Optional fields are omitted, not rendered blank, so a turn saved
+/// before they existed still reads as one line.
 #[must_use]
 fn turn_meta(a: &AgentTurn) -> String {
     let base = format!(
@@ -2861,13 +2868,12 @@ fn turn_meta(a: &AgentTurn) -> String {
     }
 }
 
-/// The judgment layer's labels for a turn: motive, register, addressee.
+/// The turn's labels: motive, register, addressee.
 ///
-/// `why` used to be the voice model's own rationale and is now the motive
-/// label the judgment layer chose, so it is worth showing; `register` and
-/// `addressee` are derived in code and were computed but never rendered.
-/// Absent fields are omitted rather than rendered blank, which keeps a turn
-/// saved before they existed readable.
+/// `why` is the policy's motive label, so it is worth showing; `register`
+/// and `addressee` are derived in code. Absent fields are omitted rather
+/// than rendered blank, which keeps a turn saved before they existed
+/// readable.
 #[must_use]
 fn turn_labels(a: &AgentTurn) -> Option<String> {
     let mut labels = Vec::new();
@@ -2889,9 +2895,9 @@ fn turn_labels(a: &AgentTurn) -> Option<String> {
 
 /// What the feed prints for one turn's words.
 ///
-/// A villager can now be committed silent: the voice model's line was a
-/// verbatim copy of the card it was given, so it was dropped and `say` is
-/// empty while `note` explains why. An empty `say` must not become an empty
+/// A villager can be committed silent: she had nobody to address, so
+/// `say` is empty while `note` explains why. An empty `say` must not become
+/// an empty
 /// label; the note takes the line's place (and keeps the muted style the note
 /// already has), never both.
 #[derive(Debug, PartialEq, Eq)]
@@ -3100,38 +3106,19 @@ mod tests {
     use super::*;
 
     fn observer(world: World, rt: &tokio::runtime::Runtime) -> App {
-        use society_server::inference::judgment::{Judge, JudgeConfig};
-        let judge = Arc::new(Judge::new(JudgeConfig {
-            endpoint: "http://127.0.0.1:1".into(),
-            api_key: "test".into(),
-            model: "test".into(),
-            timeout: Duration::from_secs(1),
-        }));
-        let voice = Arc::new(society_server::Voice::new(
-            society_server::VoiceConfig::default(),
-        ));
         let save_path = std::path::PathBuf::from("/unused-ui-test-save.json");
-        let engine = Arc::new(society_server::Engine::new(
-            Arc::clone(&judge),
-            Arc::clone(&voice),
-            2,
-            save_path.clone(),
-        ));
         App::new(
             rt.handle().clone(),
             AppState {
                 world: Arc::new(tokio::sync::Mutex::new(world)),
                 run: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-                engine,
-                judge,
-                voice,
                 save_path,
             },
             Launch {
                 port: 8100,
                 view: "world",
                 select: Some("Ada"),
-                expand_state: false,
+                expand_factors: false,
                 select_none: false,
                 size: None,
                 autostart: false,
@@ -3295,8 +3282,6 @@ mod tests {
         app.turns.push(TurnRecord {
             turn: 3,
             day: 1,
-            intent_call: None,
-            gate_call: None,
             agents: vec![AgentTurn {
                 name: "Ada".into(),
                 action: "speak".into(),
@@ -3305,23 +3290,24 @@ mod tests {
                 say: say.into(),
                 why: "hunger".into(),
                 social: "speak".into(),
-                grounded: Some(0.7),
-                intensity: Some(1.5),
-                confidence: Some(0.9),
-                latency_ms: 12,
-                model: "test".into(),
-                state: serde_json::Value::Null,
                 addressee: Some("Bo".into()),
                 register: Some("wary and guarded".into()),
                 dilemma: None,
+                intensity: Some(1.5),
+                grounded: Some(0.7),
+                confidence: Some(0.9),
+                factors: Vec::new(),
+                job: None,
+                lie: false,
             }],
             births: Vec::new(),
+            summary: society_sim::turn::TurnSummary::default(),
         });
         render(&mut app, Tab::Feed, [1120.0, 1200.0])
     }
 
     /// A turn with the two fields the observer could not see before, and no
-    /// words: the state the engine commits when it drops a copied line.
+    /// words: the state the engine commits when the villager stays silent.
     fn silent_turn(note: Option<&str>) -> AgentTurn {
         AgentTurn {
             name: "Ada".into(),
@@ -3331,15 +3317,15 @@ mod tests {
             say: String::new(),
             why: "hunger".into(),
             social: "speak".into(),
-            grounded: Some(0.7),
-            intensity: Some(1.5),
-            confidence: Some(0.9),
-            latency_ms: 12,
-            model: "test".into(),
-            state: serde_json::Value::Null,
             addressee: Some("Bo".into()),
             register: Some("wary and guarded".into()),
             dilemma: None,
+            intensity: Some(1.5),
+            grounded: Some(0.7),
+            confidence: Some(0.9),
+            factors: Vec::new(),
+            job: None,
+            lie: false,
         }
     }
 
@@ -3365,7 +3351,7 @@ mod tests {
         assert_eq!(row.last().copied(), Some(note), "{feed}");
         let turn = silent_turn(Some(note));
         assert_eq!(turn_words(&turn), TurnWords::Silent { note });
-        // The judgment layer's labels are visible on the turn row.
+        // The turn's labels are visible on the row.
         assert!(feed.contains("Motive: hunger"), "{feed}");
         assert!(feed.contains("Register: wary and guarded"), "{feed}");
         assert!(feed.contains("To: Bo"), "{feed}");
@@ -3390,7 +3376,36 @@ mod tests {
     }
 
     #[test]
-    fn turn_metadata_prints_judgment_labels_and_omits_absent_ones() {
+    fn inspector_shows_the_recorded_decision_factors() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let w = World::founding(7);
+        let mut app = observer(w, &rt);
+        app.expand_factors = true;
+        app.poll();
+        let insp = render(&mut app, Tab::Inspector, [1120.0, 1200.0]);
+        assert!(insp.contains("Decision factors"), "{insp}");
+        assert!(insp.contains("no decision recorded this session"), "{insp}");
+
+        app.turns.push(TurnRecord {
+            turn: 1,
+            day: 0,
+            agents: vec![{
+                let mut at = silent_turn(None);
+                at.name = "Ada".into();
+                at.factors = vec![("profession_ready".into(), 3.0), ("mood_pull".into(), 1.0)];
+                at
+            }],
+            births: Vec::new(),
+            summary: society_sim::turn::TurnSummary::default(),
+        });
+        app.poll();
+        let insp = render(&mut app, Tab::Inspector, [1120.0, 1200.0]);
+        assert!(insp.contains("profession_ready: 3.00"), "{insp}");
+        assert!(insp.contains("mood_pull: 1.00"), "{insp}");
+    }
+
+    #[test]
+    fn turn_metadata_prints_labels_and_omits_absent_ones() {
         let turn = silent_turn(Some("silent"));
         assert_eq!(
             turn_meta(&turn),

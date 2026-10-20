@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-/// A memory the agent carries. `salience` is written once, by the judgment
-/// layer, at the moment the memory is formed; age decay happens in code.
+/// A memory the agent carries. `salience` is written once, when the memory
+/// is formed; age decay happens in code.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Memory {
     pub turn: u64,
@@ -50,7 +50,7 @@ impl Memory {
             turn,
             text: text.into(),
             // Quantise at writing time: an f32 that reaches JSON as
-            // 0.8999999761581421 is noise in every log and every prompt.
+            // 0.8999999761581421 is noise in every log and every line.
             salience: round2(salience.clamp(0.0, 1.0)),
             kind,
             permanent: false,

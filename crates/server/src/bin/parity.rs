@@ -14,7 +14,7 @@
 //!   cargo run -p society-server --bin parity -- report <round>
 //!
 //! Environment: the endpoint and model come from `JEV_API_URL` and
-//! `JEV_MODEL` (development configuration), the key from `OPENROUTER_API_KEY`.
+//! `JEV_MODEL` (development configuration), the key from `JEV_API_KEY`.
 
 // The harness does bounded small-count arithmetic (win rates, spreads); every
 // cast below is value-checked by the surrounding clamps and the pair counts.
@@ -131,8 +131,7 @@ fn endpoint() -> Result<(String, String, String), String> {
     )]
     let url = std::env::var("JEV_API_URL").map_err(|e| format!("JEV_API_URL is not set ({e})"))?;
     let model = std::env::var("JEV_MODEL").unwrap_or_else(|_| "typesafe/jev-1.14".into());
-    let key = std::env::var("OPENROUTER_API_KEY")
-        .map_err(|_e| "OPENROUTER_API_KEY is not set".to_owned())?;
+    let key = std::env::var("JEV_API_KEY").map_err(|_e| "JEV_API_KEY is not set".to_owned())?;
     Ok((url, model, key))
 }
 

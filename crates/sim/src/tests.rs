@@ -276,7 +276,7 @@ fn turn_advances_and_day_rolls_at_twelve() {
 #[test]
 fn halt_is_sticky_and_logged() {
     let mut w = World::founding(47);
-    w.halt("judgment layer unreachable");
+    w.halt("every villager is dead");
     assert!(w.halted.is_some());
     assert_eq!(w.events.last().unwrap().kind, EventKind::System);
 }
@@ -696,19 +696,6 @@ fn healing_cures_ailments_and_restores_health() {
     assert!(out.accepted);
     assert!(w.agent(&patient).unwrap().ailment.is_none());
     assert_eq!(w.agent(&patient).unwrap().health, 9);
-}
-
-#[test]
-fn village_ui_renders_map_resources_and_inspector() {
-    let w = World::founding(223);
-    let ui = crate::card::render_village_ui(&w, 5);
-    assert!(ui.contains("VILLAGE COMMONS"));
-    assert!(ui.contains("PLACES & STOCKPILES"));
-    assert!(ui.contains("VILLAGERS"));
-
-    let dossier = crate::card::render_villager_inspector(&w, "Ada").unwrap();
-    assert!(dossier.contains("VILLAGER DOSSIER: Ada"));
-    assert!(dossier.contains("STEWARD"));
 }
 
 #[test]

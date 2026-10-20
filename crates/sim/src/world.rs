@@ -646,10 +646,9 @@ pub struct Agent {
     pub devotion: f32,
     #[serde(default)]
     pub current_goal: String,
-    /// Why this villager is doing what they are doing, in the judgment
-    /// layer's words: "hunger", "thirst", "kinship", "promise", "fear", "duty".
-    /// Set by the engine each turn; `None` when the judgment layer has not
-    /// answered yet.
+    /// Why this villager is doing what they are doing, in one word:
+    /// "hunger", "thirst", "kinship", "promise", "fear", "duty". Derived by
+    /// the policy each turn; `None` before the villager's first decision.
     #[serde(default)]
     pub motive: Option<String>,
     #[serde(default)]
@@ -901,13 +900,13 @@ impl Agent {
             Mood::Content
         };
 
-        // The judgment layer answers *why* this villager acts; the answer is a
-        // single word, and the goal ladder is where it becomes a goal.
+        // The policy derives *why* this villager acts; the motive is a single
+        // word, and the goal ladder is where it becomes a goal.
         //
         // Order matters: survival first, then the unkept promise, then the
         // motive, then the role. The survival ladder must always win, because
-        // a villager who is starving does not get to be loyal: no motive the
-        // judge returns may talk someone out of finding food or water. The
+        // a villager who is starving does not get to be loyal: no motive may
+        // talk someone out of finding food or water. The
         // motive sits below the promise because a promise is a concrete
         // obligation already in the world state, and above the role because
         // the role is the fallback for when nothing finer is known.
@@ -918,8 +917,8 @@ impl Agent {
             Some("fear") => Some("keep clear of the quarrel"),
             // "promise" is already the unkept-promise step below, and "duty"
             // is exactly the role goal; neither adds a second phrasing. An
-            // unknown label must not invent a goal, and neither must an
-            // unanswered judgment: all of them fall through to the role.
+            // unknown label must not invent a goal, and neither must none:
+            // all of them fall through to the role.
             _ => None,
         };
 

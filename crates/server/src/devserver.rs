@@ -14,21 +14,14 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use society_sim::{Event, World};
-
-use crate::inference::judgment::Judge;
-use crate::inference::voice::Voice;
-use crate::legacy::{Engine, EngineError, TurnRecord};
+use society_sim::{turn, Event, Place, World};
 
 pub const DEFAULT_PORT: u16 = 8100;
 
 #[derive(Clone, Debug)]
 pub struct AppState {
     pub world: Arc<tokio::sync::Mutex<World>>,
-    pub run: Arc<tokio::sync::Mutex<Vec<TurnRecord>>>,
-    pub engine: Arc<Engine>,
-    pub judge: Arc<Judge>,
-    pub voice: Arc<Voice>,
+    pub run: Arc<tokio::sync::Mutex<Vec<turn::TurnRecord>>>,
     /// Where this village lives on disk. The only path the server knows.
     pub save_path: std::path::PathBuf,
 }
@@ -45,7 +38,7 @@ impl AppState {
     }
 
     /// Append turn records, keeping the in-memory log bounded.
-    pub async fn record(&self, recs: impl IntoIterator<Item = TurnRecord>) {
+    pub async fn record(&self, recs: impl IntoIterator<Item = turn::TurnRecord>) {
         crate::push_bounded(&mut *self.run.lock().await, recs);
     }
 }
@@ -68,38 +61,20 @@ pub fn router(state: AppState) -> Router {
 
 /// Nothing here is a simulation fact; it is the harness proving itself alive.
 /// The cap and the save path are static configuration, so this is where an
-/// observer tells "growth is slow" from "growth is blocked".
+/// observer tells "growth is slow" from "growth is blocked". The engine is
+/// code in the process: there is no external dependency to probe, so `ok`
+/// means the router is answering and nothing else.
 async fn health(State(s): State<AppState>) -> impl IntoResponse {
-    let resolved = s.voice.probe().await.unwrap_or_default();
-    let voice = voice_status(&s.voice.configured_models(), &resolved);
-    let judge_ok = s.judge.probe().await.is_ok();
+    let halted = s.world.lock().await.halted.clone();
     Json(json!({
-        "ok": judge_ok && voice["reachable"] == true,
-        "judgment": { "reachable": judge_ok, "required": true },
-        "voice": voice,
-        "permits": s.engine.available_permits(),
+        "ok": halted.is_none(),
+        "engine": "code",
+        "halted": halted,
         "population_cap": society_sim::POPULATION_CAP,
         "birth_cost": society_sim::BIRTH_COST,
         "save_path": s.save_path.display().to_string(),
         "log_cap": crate::TURN_LOG_CAP,
     }))
-}
-
-/// A cloud-only setup resolves nothing from `/api/tags`, so `reachable` cannot
-/// mean "some models exist": it means every model a turn will call resolved,
-/// and `missing` names the ones that did not. Split out so the rule is testable
-/// without a daemon.
-fn voice_status(configured: &[String], resolved: &[String]) -> Value {
-    let missing: Vec<&String> = configured
-        .iter()
-        .filter(|m| !resolved.contains(m))
-        .collect();
-    json!({
-        "reachable": !configured.is_empty() && missing.is_empty(),
-        "models": resolved,
-        "configured": configured,
-        "missing": missing,
-    })
 }
 
 /// Serialize the complete agent record, preserving the existing public shape
@@ -132,7 +107,7 @@ fn world_snapshot(w: &World) -> Value {
             value["id"] = json!(p.id());
             value["adjacent"] = json!(p.adjacent().iter().map(|q| q.id()).collect::<Vec<_>>());
             value["present"] = json!(w.living().filter(|a| a.place == *p).map(|a| a.name.clone()).collect::<Vec<_>>());
-            value["recent_dialogue"] = json!(crate::legacy::recent_place_dialogue(w, *p, 4));
+            value["recent_dialogue"] = json!(recent_place_dialogue(w, *p, 4));
             value
         }).collect::<Vec<_>>(),
         "social": build_social_fabric(w),
@@ -259,7 +234,7 @@ async fn place_detail(
         .filter(|a| a.place == *place)
         .map(agent_snapshot)
         .collect::<Vec<_>>());
-    value["recent_dialogue"] = json!(crate::legacy::recent_place_dialogue(&w, *place, 10));
+    value["recent_dialogue"] = json!(recent_place_dialogue(&w, *place, 10));
     Ok(Json(value))
 }
 
@@ -274,8 +249,38 @@ async fn agent_detail(
     let w = s.world.lock().await;
     let a = w.agent(&name).ok_or(StatusCode::NOT_FOUND)?;
     let mut value = agent_snapshot(a);
-    value["judgment_state"] = crate::legacy::enrich_judgment_state(&w, a);
+    // The policy's decision factors for this villager's last recorded turn:
+    // what the inspector's factors panel shows, and the observable answer to
+    // "why did she do that".
+    let run = s.run.lock().await;
+    value["factors"] = last_factors(&run, &a.name);
     Ok(Json(value))
+}
+
+/// The recorded term contributions from the villager's last turn, or `null`
+/// when she has not spoken a decision into the retained log yet.
+#[must_use]
+pub fn last_factors(run: &[turn::TurnRecord], name: &str) -> Value {
+    run.iter()
+        .rev()
+        .find_map(|r| r.agents.iter().find(|at| at.name == name))
+        .map_or(Value::Null, |at| json!(at.factors))
+}
+
+/// The last few lines spoken at one place, oldest first. A world query, not a
+/// simulation fact: it reads the event log the world already carries.
+#[must_use]
+pub fn recent_place_dialogue(w: &World, place: Place, limit: usize) -> Vec<String> {
+    let mut out: Vec<String> = w
+        .events
+        .iter()
+        .rev()
+        .filter(|e| e.place == place && !e.divine && !e.text.trim().is_empty())
+        .take(limit)
+        .map(|e| format!("Turn {} {}: {}", e.turn, e.actor, e.text))
+        .collect();
+    out.reverse();
+    out
 }
 
 #[derive(Deserialize)]
@@ -314,26 +319,25 @@ async fn log_tail(State(s): State<AppState>, Query(q): Query<LogQuery>) -> Json<
     let run = s.run.lock().await;
     let since = q.since_turn.unwrap_or(0);
     let limit = q.limit.unwrap_or(20);
-    let rows: Vec<&TurnRecord> = run.iter().filter(|r| r.turn >= since).take(limit).collect();
+    let rows: Vec<&turn::TurnRecord> = run.iter().filter(|r| r.turn >= since).take(limit).collect();
     Json(json!({
         "turns": run.len(),
         "cap": crate::TURN_LOG_CAP,
         "rows": rows,
-        "total_cost": crate::total_cost(&run),
     }))
 }
 
 #[derive(Deserialize)]
 struct TurnRequest {
     turns: Option<usize>,
-    /// Refuse to run past this wall-clock budget, so a hung Ollama cannot
-    /// wedge the control surface.
-    timeout_ms: Option<u64>,
 }
 
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the world lock is held for the whole request on purpose"
+)]
 async fn run_turns(State(s): State<AppState>, Json(req): Json<TurnRequest>) -> impl IntoResponse {
     let n = req.turns.unwrap_or(1).min(200);
-    let budget = std::time::Duration::from_millis(req.timeout_ms.unwrap_or(120_000));
     let mut world = s.world.lock().await;
     if let Some(reason) = &world.halted {
         return (
@@ -341,50 +345,52 @@ async fn run_turns(State(s): State<AppState>, Json(req): Json<TurnRequest>) -> i
             Json(json!({ "error": "halted", "reason": reason })),
         );
     }
-    // Records live outside the future so turns that committed before a failure
-    // are still reported and logged: the world moved, and the observer must see
-    // how far.
+    // The engine is synchronous, in-process code: a turn either completes or
+    // reports its error, and there is no hung daemon to fence with a budget.
     let mut records = Vec::new();
-    let fut = async {
-        for _ in 0..n {
-            let rec = s.engine.step(&mut world).await?;
-            records.push(rec);
+    let mut error = None;
+    for _ in 0..n {
+        match turn::step(&mut world) {
+            Ok(rec) => {
+                records.push(rec.clone());
+                // The seam is pure, so the shell owns the save. Per turn, the
+                // way the engine always did it: an unwritten world is a reset
+                // waiting to happen.
+                if let Err(e) = s.save(&world) {
+                    error = Some(format!("turn {} committed but not saved: {e}", rec.turn));
+                    break;
+                }
+            },
+            Err(reason) => {
+                error = Some(reason);
+                break;
+            },
         }
-        Ok::<_, EngineError>(())
-    };
-    let outcome = tokio::time::timeout(budget, fut).await;
+    }
     if !records.is_empty() {
         s.record(records.iter().cloned()).await;
     }
-    match outcome {
-        Ok(Ok(())) => (
-            StatusCode::OK,
-            Json(json!({
-                "turns": records.len(),
-                "turn": world.turn,
-                "day": world.day,
-                "saved": true,
-                "records": records,
-            })),
-        ),
-        Ok(Err(e)) => (
+    if let Some(reason) = error {
+        return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({
-                "error": e.to_string(),
+                "error": reason,
                 "halted": world.halted,
                 "committed": records.len(),
                 "turn": world.turn,
             })),
-        ),
-        Err(_) => (
-            StatusCode::GATEWAY_TIMEOUT,
-            Json(json!({
-                "error": "turn budget exceeded",
-                "committed": records.len(),
-                "turn": world.turn,
-            })),
-        ),
+        );
     }
+    (
+        StatusCode::OK,
+        Json(json!({
+            "turns": records.len(),
+            "turn": world.turn,
+            "day": world.day,
+            "saved": true,
+            "records": records,
+        })),
+    )
 }
 
 #[derive(Deserialize)]
@@ -467,7 +473,7 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
                 let a = w.agent_mut(&target).expect("checked above");
                 a.remember(society_sim::Memory::new(
                     turn,
-                    format!("A voice in the dark: {text}"),
+                    format!("A whisper from the observer: {text}"),
                     0.95,
                     society_sim::MemoryKind::Witnessed,
                 ));
@@ -525,6 +531,10 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
             )
         },
         "weather" => {
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "an injected amount is 0..=5; no precision to lose"
+            )]
             let amount = req.amount.unwrap_or(2).min(5) as f32;
             w.set_weather(amount.mul_add(0.35, 0.4));
             let weather = w.weather;
@@ -536,7 +546,7 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
             w.push_event(Event {
                 turn,
                 actor: "observer".into(),
-                place: society_sim::Place::Field,
+                place: Place::Field,
                 kind: society_sim::EventKind::Divine,
                 action: "weather".into(),
                 text: weather_text,
@@ -568,7 +578,7 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
                         .as_deref()
                         .and_then(|t| w.agent(t).map(|a| a.place))
                 })
-                .unwrap_or(society_sim::Place::Market);
+                .unwrap_or(Place::Market);
             let hearers: Vec<String> = w
                 .living()
                 .filter(|a| a.place == place)
@@ -611,7 +621,7 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
                         .find(|(p, _)| p.id().eq_ignore_ascii_case(id))
                         .map(|(p, _)| *p)
                 })
-                .unwrap_or(society_sim::Place::Market);
+                .unwrap_or(Place::Market);
             let amount = req.amount.unwrap_or(4).min(10);
             w.place_state_mut(place).food += amount;
             w.village_morale = (w.village_morale + 0.15).clamp(0.0, 4.0);
@@ -838,37 +848,13 @@ mod tests {
     }
 
     #[test]
-    fn health_names_the_voice_model_that_failed_to_resolve() {
-        let configured = vec!["beam:cloud".to_owned(), "gone:cloud".to_owned()];
-
-        // A cloud-only setup resolves through /api/show; both present is healthy.
-        let both = voice_status(&configured, &configured);
-        assert_eq!(both["reachable"], true);
-        assert_eq!(both["missing"], json!([]));
-
-        // One unresolvable model is not "a working setup": it is exactly the
-        // model a turn would fail on, and it must be named.
-        let partial = vec!["beam:cloud".to_owned()];
-        let status = voice_status(&configured, &partial);
-        assert_eq!(status["reachable"], false);
-        assert_eq!(status["missing"], json!(["gone:cloud"]));
-        assert_eq!(status["models"], json!(["beam:cloud"]));
-
-        // Nothing configured is not reachable either, even with no missing.
-        let none = voice_status(&[], &[]);
-        assert_eq!(none["reachable"], false);
-        assert_eq!(none["missing"], json!([]));
-    }
-
-    #[test]
     fn the_turn_log_stays_bounded_and_keeps_the_newest() {
-        let rec = |turn| TurnRecord {
-            turn,
-            day: turn / 12,
-            intent_call: None,
-            gate_call: None,
+        let rec = |t: u64| turn::TurnRecord {
+            turn: t,
+            day: t / 12,
             agents: Vec::new(),
             births: Vec::new(),
+            summary: turn::TurnSummary::default(),
         };
         let mut run = Vec::new();
         for t in 0..(crate::TURN_LOG_CAP as u64 * 2) {
@@ -921,6 +907,50 @@ mod tests {
     }
 
     #[test]
+    fn agent_factors_come_from_the_last_recorded_turn() {
+        let at = |factors: Vec<(String, f32)>| turn::AgentTurn {
+            name: "Ada".into(),
+            action: "craft".into(),
+            accepted: true,
+            note: None,
+            say: String::new(),
+            why: "duty".into(),
+            social: "none".into(),
+            addressee: None,
+            register: None,
+            dilemma: None,
+            intensity: None,
+            grounded: None,
+            confidence: None,
+            factors,
+            job: None,
+            lie: false,
+        };
+        let older = turn::TurnRecord {
+            turn: 1,
+            day: 0,
+            agents: vec![at(vec![("stale".into(), 1.0)])],
+            births: Vec::new(),
+            summary: turn::TurnSummary::default(),
+        };
+        let newer = turn::TurnRecord {
+            turn: 2,
+            day: 0,
+            agents: vec![at(vec![("profession_ready".into(), 3.0)])],
+            births: Vec::new(),
+            summary: turn::TurnSummary::default(),
+        };
+        let factors = last_factors(&[older, newer.clone()], "Ada");
+        assert_eq!(
+            factors,
+            json!([["profession_ready", 3.0]]),
+            "the newest turn wins"
+        );
+        assert_eq!(last_factors(&[], "Ada"), Value::Null);
+        assert_eq!(last_factors(&[newer], "Nobody"), Value::Null);
+    }
+
+    #[test]
     fn social_fabric_tracks_alliances_feuds_and_overdue_promises() {
         let mut w = World::founding(7);
         w.turn = 20;
@@ -936,7 +966,7 @@ mod tests {
             made_turn: 5,
             kept: None,
         });
-        w.place_state_mut(society_sim::Place::Granary).owner = Some("Ada".into());
+        w.place_state_mut(Place::Granary).owner = Some("Ada".into());
 
         let social = build_social_fabric(&w);
         assert_eq!(social["alliances"].as_array().unwrap().len(), 1);

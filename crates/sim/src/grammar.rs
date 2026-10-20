@@ -28,8 +28,9 @@ pub(crate) const REGISTERS: [&str; 5] = ["cold", "wary", "plain", "warm", "urgen
 /// The register keys, exported under a distinct name from the feed labels.
 pub const REGISTER_KEYS: [&str; 5] = REGISTERS;
 
-/// The register key for a mood. Same mapping the old engine derived from the
-/// judge's dropped tone question.
+/// The register key for a mood. Same mapping the old engine used; the tone
+/// question was dropped because it answered "plain and neutral" 38 of 45
+/// times while still moving trust.
 #[must_use]
 pub(crate) const fn register_for_mood(mood: Mood) -> &'static str {
     match mood {

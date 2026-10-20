@@ -1,24 +1,19 @@
-//! Library half of the binary: engine wiring shared by the window and the
-//! headless runner.
+//! Library half of the binary: wiring shared by the window and the headless
+//! runner. The engine is the pure simulation crate; this crate is the shell
+//! around it: persistence, the control surface, the window.
 
+// `App`-level wiring and JSON snapshots are bags of small fields; splitting
+// them hides the shapes the control surface publishes.
 #![allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    reason = "milliseconds, confidences and counts that are small by construction"
+    clippy::struct_field_names,
+    reason = "snapshot structs mirror the published API shapes"
 )]
 
-pub mod copy;
 pub mod devserver;
-pub mod inference;
-pub mod legacy;
 pub mod persistence;
 
 pub use devserver::{build_social_fabric, AppState, DEFAULT_PORT};
-pub use inference::{Dilemma, Judge, Judgment, JudgmentError, Voice, VoiceConfig, VoiceError};
-pub use legacy::{Engine, EngineError, TurnRecord};
-pub use persistence::{SaveError, SaveSummary, SAVE_VERSION};
+pub use society_sim::turn::{AgentTurn, BirthRecord, TurnRecord, TurnSummary};
 
 use std::path::Path;
 use std::sync::Arc;
@@ -79,19 +74,6 @@ pub fn push_bounded(run: &mut Vec<TurnRecord>, recs: impl IntoIterator<Item = Tu
     }
 }
 
-/// Judgment spend for one committed turn: the intent and gate calls together.
-#[must_use]
-pub fn turn_cost(rec: &TurnRecord) -> f64 {
-    rec.intent_call.as_ref().map_or(0.0, |c| c.cost)
-        + rec.gate_call.as_ref().map_or(0.0, |c| c.cost)
-}
-
-/// Session spend for the retained log. `/log` and the window's top bar both
-/// read this, so the number an observer sees is the number the API reports.
-pub fn total_cost(run: &[TurnRecord]) -> f64 {
-    run.iter().map(turn_cost).sum()
-}
-
 /// Boot at the resolved save path. `--reset` clears the save first, then founds
 /// a new world and records the discontinuity in it.
 ///
@@ -100,19 +82,9 @@ pub fn total_cost(run: &[TurnRecord]) -> f64 {
 /// Returns a `SaveError` if the save cannot be cleared, loaded or written.
 pub fn boot(
     seed: u64,
-    permits: usize,
     save_path: &Path,
     reset: bool,
 ) -> Result<AppState, Box<dyn std::error::Error>> {
-    let judge = Arc::new(Judge::from_env()?);
-    let voice = Arc::new(Voice::new(VoiceConfig::default()));
-    let engine = Arc::new(Engine::new(
-        Arc::clone(&judge),
-        Arc::clone(&voice),
-        permits,
-        save_path.to_path_buf(),
-    ));
-
     let (world, fresh) = if reset {
         persistence::clear(save_path)?;
         let mut w = World::founding(seed);
@@ -133,9 +105,6 @@ pub fn boot(
     Ok(AppState {
         world: Arc::new(tokio::sync::Mutex::new(world)),
         run: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-        engine,
-        judge,
-        voice,
         save_path: save_path.to_path_buf(),
     })
 }

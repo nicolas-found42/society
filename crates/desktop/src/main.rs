@@ -1,4 +1,4 @@
-//! `society` — a persistent society of small models.
+//! `society` — a persistent society that runs on code.
 //!
 //! Two run modes share one engine:
 //!   `society`            — native window, dev server on :8100
@@ -24,7 +24,7 @@ use clap::Parser;
 use society_server::{boot, devserver, DEFAULT_PORT};
 
 #[derive(Parser, Debug)]
-#[command(name = "society", about = "A small society of models")]
+#[command(name = "society", about = "A small society that runs on code")]
 struct Args {
     /// Run without opening a window.
     #[arg(long)]
@@ -40,10 +40,6 @@ struct Args {
     /// seed alone must not overwrite a village that already lived.
     #[arg(long)]
     reset: bool,
-    /// Concurrent voice calls. Caps concurrency for nine-villager turns (a
-    /// turn issues at most one call per living villager, cap 12).
-    #[arg(long, default_value_t = 8)]
-    permits: usize,
     /// Advance this many turns immediately, then continue live.
     #[arg(long, default_value_t = 0)]
     warmup: usize,
@@ -54,10 +50,10 @@ struct Args {
     /// script show a particular person without clicking.
     #[arg(long)]
     select: Option<String>,
-    /// Open the inspector's judgment-state disclosure. Capture aid: a
+    /// Open the inspector's decision-factors disclosure. Capture aid: a
     /// screenshot cannot click a disclosure arrow.
     #[arg(long)]
-    expand_state: bool,
+    expand_factors: bool,
     /// Open with no inspector selection, which is what an empty inspector
     /// looks like before the observer picks a villager. Capture aid.
     #[arg(long)]
@@ -94,13 +90,10 @@ fn main() {
         .expect("tokio runtime");
 
     let save_path = society_server::persistence::save_path();
-    let state = match boot(args.seed, args.permits, &save_path, args.reset) {
+    let state = match boot(args.seed, &save_path, args.reset) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("cannot start: {e}");
-            if std::env::var_os("OPENROUTER_API_KEY").is_none() {
-                eprintln!("the judgment layer is required; set OPENROUTER_API_KEY");
-            }
             std::process::exit(2);
         },
     };
@@ -153,9 +146,13 @@ fn main() {
         rt.block_on(async move {
             let mut w = st.world.lock().await;
             for i in 0..n {
-                match st.engine.step(&mut w).await {
+                match society_sim::turn::step(&mut w) {
                     Ok(rec) => {
                         let civic_notes = window::apply_village_systems(&mut w);
+                        if let Err(e) = st.save(&w) {
+                            eprintln!("turn {} committed but not saved: {e}", rec.turn);
+                            break;
+                        }
                         println!(
                             "[warmup {}/{}] turn {} — {} agent turns ({} civic events)",
                             i + 1,
@@ -192,7 +189,7 @@ fn main() {
             port,
             view: &args.view,
             select: args.select.as_deref(),
-            expand_state: args.expand_state,
+            expand_factors: args.expand_factors,
             select_none: args.no_select,
             size: args.size,
             autostart: !args.paused,

@@ -114,16 +114,13 @@ impl Intent {
     }
 }
 
-/// Prose rendering of a wire action id, for prompts that must not leak the id.
+/// Prose rendering of a wire action id, for the lines and memories.
 ///
-/// The voice model copies the nearest salient string in its card; a raw id like
-/// `draw_water` is exactly what it copied (measured: 5 of 45 lines in a 5-turn
-/// run were the action id, verbatim). Any surface the model reads — the card's
-/// decision line and the actor's own memory — must therefore carry the phrase,
-/// never the id.
-///
-/// A place id is kept verbatim (`go:market` -> "leave for market"); an unknown
-/// id falls back to its own spelling with underscores turned into spaces.
+/// Lines and memories carry the phrase, never the id: a raw id like
+/// `draw_water` in past speech would be read back as a word the villager
+/// once said. A place id becomes a direction (`go:market` -> "leave for
+/// market"); an unknown id falls back to its own spelling with underscores
+/// turned into spaces.
 #[must_use]
 pub fn action_phrase(action: &str) -> String {
     if let Some(place) = action.strip_prefix("go:") {
@@ -301,7 +298,7 @@ fn recent_actions<'w>(w: &'w World, name: &str) -> (HashSet<&'w str>, HashSet<&'
     (in_three, in_two)
 }
 
-/// The menu the judgment layer chooses from: a handful of actions that cover
+/// The menu the policy chooses from: a handful of actions that cover
 /// the kinds of act available, not every legal action.
 ///
 /// Measured, 27 of 45 decisions (60 %) were communicative (`speak`, `help`,
@@ -801,8 +798,9 @@ fn plan(w: &World, actor: &str, intent: &Intent, target: Option<&str>, yield_mul
 /// Validate and apply one intent. Returns what was committed. Speech is passed
 /// in because rendering already happened; this only moves state.
 ///
-/// The legacy path: no addressee override, no job quality, and a line the
-/// check has not seen. The turn seam uses [`apply_decision`].
+/// The unresolved path: no addressee override, no job quality, and a line the
+/// check has not seen. The turn seam uses [`apply_decision`]; this form is
+/// for tests that commit intents directly.
 ///
 /// # Panics
 ///
@@ -964,14 +962,11 @@ fn apply_resolved(
             (true, EventKind::Transfer, Some(format!("to {target}")))
         },
         Plan::Promise { to } => {
-            // A promise is a speech act: without words there is no promise. The
-            // copy filter drops lines that repeat the card, so an empty speech
-            // here means the model had nothing to say and the line was
-            // discarded. Storing it anyway hangs an empty quotation in the
-            // chronicle and the next card. Do not substitute a stand-in phrase
-            // either: any string the promise carries is a string the voice model
-            // reads back out of the card and copies, which is the loop this
-            // filter exists to break.
+            // A promise is a speech act: without words there is no promise. An
+            // empty speech means the villager stayed silent, and storing it
+            // hangs an empty quotation in the chronicle. Do not substitute a
+            // stand-in phrase either: any string the promise carries is a
+            // string the villager is remembered to have said.
             if speech.trim().is_empty() {
                 (false, EventKind::Confusion, Some("promised nothing".into()))
             } else {
@@ -1360,8 +1355,8 @@ mod tests {
     #[test]
     fn no_action_phrase_leaks_an_underscore() {
         // Every id the wire vocabulary can carry, including the `move` verb id
-        // (the model never chooses it; `go:<place>` replaces it) and every
-        // place form. A prompt that shows an underscore shows the wire id.
+        // (the policy never chooses it; `go:<place>` replaces it) and every
+        // place form. A line that shows an underscore shows the wire id.
         let verbs = [
             Verb::Speak,
             Verb::Rest,
@@ -1424,8 +1419,7 @@ mod tests {
         let other = w.agents[1].name.clone();
         w.agent_mut(&other).unwrap().place = place;
         let intent = Intent::parse("promise", place).unwrap();
-        // The copy filter drops a line that repeats the card, so the speech act
-        // reaches `apply` with nothing left to say.
+        // Silence reaches `apply` with nothing to say.
         let out = apply(&mut w, &name, &intent, "   ", SocialAct::None);
         assert!(!out.accepted);
         assert_eq!(out.kind, EventKind::Confusion);

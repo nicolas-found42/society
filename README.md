@@ -6,13 +6,6 @@ themselves, and are watched doing it. There is no language model in the loop:
 every decision, every spoken line and every check is a rule in the simulation,
 and the whole village replays identically from a seed.
 
-> **Status.** This README describes the code-only engine decided in
-> [ADR 0001](docs/adr/0001-replace-the-judgment-layer-and-the-voice-model-with-code.md)
-> and specified in [issue #5](https://github.com/nicolas-found42/society/issues/5).
-> That rewrite is in progress: **the tree on `main` still runs the judgment layer
-> and the local voice model**, so the install lines above and the "Then" column
-> below describe what works today, and the "Now" column describes the target.
-
 ```bash
 git clone https://github.com/nicolas-found42/society.git
 cd society
@@ -29,14 +22,8 @@ SOCIETY_SAVE_PATH=data/second.json cargo run --release -- --port 8101
 cargo run --release -- --reset      # start the observed village over
 ```
 
-No API key, no model to pull, no daemon to keep alive - **once the rewrite
-lands.** Until then, `main` still needs the old backends, and these two lines
-are the whole setup:
-
-```bash
-export OPENROUTER_API_KEY=...                                     # today only
-ollama pull hf.co/LiquidAI/LFM2.5-350M-GGUF:Q4_K_M                # today only
-```
+No API key, no model to pull, no daemon to keep alive. There is no setup
+beyond the build.
 
 The village is written to disk after every committed turn and read back at
 startup. Close the window, come back later, and it is where you left it: same
@@ -48,16 +35,9 @@ the file, never a silent reset.
 |---|---|---|
 | `SOCIETY_SAVE_PATH` | `data/society.json` | village file; one file per village |
 
-The old engine additionally reads `OPENROUTER_API_KEY`, `SOCIETY_JEV_ENDPOINT`,
-`SOCIETY_JEV_MODEL`, `OLLAMA_HOST`, `SOCIETY_ACTOR_MODEL`,
-`SOCIETY_ELDER_MODEL`, `SOCIETY_ACTOR_THINK` and `SOCIETY_ELDER_THINK`; all
-eight go at the cutover, with the `--permits` flag.
-
-A turn costs a fraction of a millisecond once the rewrite lands: there is then no
-call to rate-limit, retry or queue, and no permission window to size. The same
-seed and the same save produce the same turns, the same lines and the same
-village, every time. Today a turn is a network round trip, and two runs of one
-seed differ.
+A turn costs a fraction of a millisecond: there is no call to rate-limit,
+retry or queue, and no permission window to size. The same seed and the same
+save produce the same turns, the same lines and the same village, every time.
 
 The window never takes focus and never raises itself, so it can sit behind what
 you are working on. Screenshot it at any time, from any app, with:
@@ -81,7 +61,7 @@ said. Every structural decision was measured on this machine before it was
 written down, and the measurements are in `models/research-*.md` and in the
 notes at the end of this file.
 
-| Task | Then | Now |
+| Task | Old engine | This engine |
 |---|---|---|
 | Which moves are legal, what they cost, who owns what | code | code |
 | Among 2-5 legal actions, which one now | the judge, 3.88/4 blind-judged | the policy, in code |
@@ -107,23 +87,31 @@ Four things ended the judgment layer, each of them measured:
 3. **A gate can only find a false claim if something can write one.** A
    350M model invents numbers - 38% of its lines were discredited, 21% for the
    better 0.6B model - so it needed a gate. A speaker that writes from a
-   grammar cannot invent a number, so what the gate has left to do is check the
-   claims the line actually makes.
+   grammar cannot invent a number, so what the check has left to do is verify
+   the claims the line actually makes.
 4. **The action choice is a choice among two to five options the code already
    computed.** The judge read a richer set of contextual features than a naive
    policy, and it scored 3.88/4 against that policy's 3.12/4, blind-judged by
-   the 12B. That is a real gap and it is the bar this rewrite is held to: the
-   policy is measured against the same judge, on the same recorded states, and
-   parity - not a claim - is what closes it.
+   the 12B. That gap became the parity bar, measured with the same judge on
+   the same recorded states.
 
 What it cost: two cloud calls and up to eighteen local calls per turn, about
 $0.001 and 20,759 input tokens per turn, an API key the app refused to start
 without, and a village that halted when a network call failed.
 
-The judge itself is not thrown away. It is now the **oracle**: the same model
-that produced the 3.88/4 decisions blind-judges the new engine's decisions
-against the old engine's, on the same recorded states, and decides whether the
-rewrite met the bar.
+**How the parity bar came out** (`baseline/PARITY_REPORT.md` has the full
+numbers). The old engine's recorded states were replayed through the new
+engine and the judge scored old choice against new choice, blind and paired.
+The grammar reached it: the new lines sit within the noise band of the old
+ones on the first measurement, with no revision spent. The action choice did
+not: three measured revision rounds lifted the new win rate from 25.0% to
+about 35%, still below the bar, and the spec's stop condition ended the work
+with a report rather than a lowered bar. The observer then accepted the lower
+bar, and this tree runs the code-only engine: deterministic, offline, and
+free per turn, with the decision gap on record. The judge family also scored
+its own prior choices in that comparison, so the measured gap likely
+overstates the real one; the number is the number anyway, and it is the
+reason the old engine's corpus and the harness stay in the tree.
 
 Two rules are designed around explicitly:
 
@@ -165,12 +153,11 @@ Three layers, in order:
    That is where confidence comes from, and where the **dilemma** comes from -
    the same margin the judge used to report, computed in code.
 
-The judge is offered a shortlist of the legal actions, one per kind of act
-(need, social, work, rest, move) minus whatever the villager has just done for
-two turns running, instead of all of them: a menu of eighteen is not a choice,
-and an unchanging menu invites the same answer twice. A legal action outside
-the shortlist stays legal and is still accepted - the menu is a prompt, not the
-law.
+The shortlist is the legal actions, one per kind of act (need, social, work,
+rest, move) minus whatever the villager has just done for two turns running:
+a menu of eighteen is not a choice, and an unchanging menu invites the same
+choice twice. A legal action outside the shortlist stays legal and is still
+accepted - the shortlist keeps the policy honest, it is not the law.
 
 ### The speaker
 
@@ -321,17 +308,21 @@ rumor threshold, the motive survives the turn while the survival ladder still
 wins over it, the shortlist is a subset of the legal actions and breaks a
 groove, and no line outside lie mode makes a claim the world does not support.
 
-Five measurements are held over the rewrite, and they are the acceptance bar:
+Five measurements were held over the rewrite, and they were the acceptance
+bar. All five ran; the results are on record in `baseline/`:
 
 1. **A live multi-turn run** on the real stack: the village lives, grows and
    does not stall.
-2. **A metrics diff** against the old engine on the same seed: trust
-   distribution, scar count, births and deaths, event-kind mix, distinct-line
-   count, discredited rate, turn latency, cost.
-3. **The judge A/B.** The old engine records the state, the decision and the
-   line for every villager and turn; the new policy is fed those same recorded
-   states and the judge scores old choice against new choice, blind. The state
-   is identical on both sides, so the comparison isolates the decision.
+2. **A metrics diff** against the old engine on the same seed
+   (`baseline/side_by_side.json` beside the old `metrics.json`): the new world
+   is a harder place - every designed lie gets caught, so the discredited rate
+   is 7.6% where the old engine's was 0.0%, and trust runs lower and wider.
+3. **The judge A/B** (`crates/server/src/bin/parity`). The old engine recorded
+   the state, the decision and the line for every villager and turn; the new
+   engine is fed those same recorded states and the judge scores old choice
+   against new choice, blind and paired. The lines reached parity on the first
+   measurement; the decisions did not reach it in three revision rounds, the
+   stop condition fired, and the observer accepted the lower bar.
 4. **A soak**: two hundred turns, with the invariants checked - no starvation
    spiral, births happen, trust stays bounded, memory caps hold, no line
    repeats inside its window, the discredited rate inside its band.
@@ -351,23 +342,21 @@ path and fails, and a save that would not load back never replaces a good one.
 
 ## Notes and sources
 
-The research notes below are local working files in `models/`; they are not
-tracked in this repository, so a clone will not contain them.
-
 - `docs/adr/0001-replace-the-judgment-layer-and-the-voice-model-with-code.md` —
   why the judgment layer and the voice model went, and what was rejected.
+- `baseline/` — the frozen replay corpus, the outcome metrics, the parity
+  harness results and `PARITY_REPORT.md`, the record of how the bar came out.
 - `GLOSSARY.md` — the vocabulary of the village, and the words that were
   retired with the old engine.
-- `models/research-simulation-code.md` — Generative Agents, Concordia, OASIS,
-  AgentSociety, AI Town: what to port and what to skip.
-- `models/research-memory-code.md` — Letta, MemoryOS, A-MEM, mem0, Graphiti,
-  Reflexion, ToMi: tiers, write policy, contradiction handling, belief state.
-- `models/research-small-models.md` — constrained decoding, small-model agent
-  capability, Rust crates, and why the planner/caller split was forced.
-- `models/research-small-voice-models.md` — the model comparison behind the
-  38% discredited figure.
-- `models/research-turn-latency.md` — where the turn time went, and what the
-  local model was and was not buying.
+- `models/research-small-voice-models.md` (tracked) — the model comparison
+  behind the 38% discredited figure.
+- `models/research-turn-latency.md` (tracked) — where the turn time went, and
+  what the local model was and was not buying.
+- `models/research-simulation-code.md`, `models/research-memory-code.md` and
+  `models/research-small-models.md` — local working files, not tracked: the
+  survey behind the architecture (Generative Agents, Concordia, OASIS,
+  AgentSociety; Letta, MemoryOS, A-MEM, mem0, Graphiti; constrained decoding
+  and small-model agent capability).
 
 Adopted from that reading: reasoning field before the answer in every schema
 (field order is what structured-output studies actually fix), 2–5 candidates for

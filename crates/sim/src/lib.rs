@@ -1,7 +1,8 @@
 //! Pure simulation state machine. No IO, no network, no clock.
 //!
-//! Everything here is deterministic given (state, seed, inputs). The server
-//! owns inference; this crate owns legality, arithmetic, and commit.
+//! Everything here is deterministic given (state, seed, inputs). The policy,
+//! the speaker and the check are code in this crate; the server crate is the
+//! shell around them: persistence, the control surface, the window.
 
 // The sim does bounded arithmetic on small counts and unit-range f32 scores;
 // every cast below is value-checked by the surrounding clamps and tests.
@@ -14,7 +15,6 @@
 )]
 
 mod action;
-mod card;
 mod catalog;
 mod check;
 mod grammar;
@@ -25,16 +25,12 @@ mod policy;
 mod profession;
 mod rng;
 mod speaker;
-mod turn;
+pub mod turn;
 mod world;
 
 pub use action::{
     action_phrase, affordances, apply, apply_decision, shortlist, Intent, Outcome, SocialAct, Verb,
     NOVELTY_WINDOW,
-};
-pub use card::{
-    agent_card, judgment_state, render_place_map, render_social_matrix, render_village_ui,
-    render_villager_inspector, world_brief,
 };
 pub use catalog::{meta_for, ActionMeta, Category, Need, ACTIONS, GO_META, SPEECH_MENU};
 pub use check::{grounded, settle, Claim, Pred, Verdict, DISCREDITED, GROUNDED};

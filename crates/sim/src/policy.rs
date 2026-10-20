@@ -15,7 +15,7 @@ use crate::profession;
 use crate::rng::Rng;
 use crate::world::{Agent, Kinship, Mood, Place, Season, World};
 
-/// The judge's dilemma margin, kept (spec constants).
+/// The dilemma margin, kept from the measured spec constants.
 pub const DILEMMA_MARGIN: f32 = 0.12;
 /// The runner-up must hold at least a fifth of the mass for a dilemma.
 pub const DILEMMA_RUNNERUP_MASS: f32 = 0.20;

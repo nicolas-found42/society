@@ -1,6 +1,6 @@
 # Replace the judgment layer and the voice model with code
 
-Status: accepted (2026-10-19)
+Status: accepted and landed (2026-10-19)
 
 The society will run with no language model in the loop at all. The two cloud
 backends the runtime depended on - a judgment layer that chose each villager's
@@ -83,3 +83,25 @@ to start without, and a world that halts when a network call fails.
 - The 3.88 against 3.12 gap becomes the acceptance bar rather than a footnote.
   The bar is parity, measured by the same judge that produced the original
   number, and a failure to reach it stops the work rather than lowering it.
+
+## Outcome
+
+Landed the same day, with the parity result on record in
+`baseline/PARITY_REPORT.md`. The speaker reached the bar: blind and paired on
+the frozen corpus, the grammar's lines sit within the noise band of the old
+lines on the first measurement, with no revision spent. The policy did not:
+three measured revision rounds lifted the new win rate from 25.0% to about
+35%, short of the bar, and the stop condition ended the revisions with a
+report instead of a lowered bar. One caveat is recorded with the number: the
+judge that scored the pairs is the same family that produced the old
+choices, so self-consistency plausibly inflates the old side by an amount the
+protocol cannot separate.
+
+The cutover then went ahead on the observer's explicit decision to accept the
+lower bar. What shipped: the pure turn seam (policy, speaker, check,
+professions) as the only runtime; the legacy engine, the inference clients,
+the copy filter, the card, the judgment-state document, the permits and the
+AIMD window, the retry paths, the halt-on-unreachable path and the key
+requirement all deleted; the save format bumped to version 2 with no
+migration. The old engine's frozen corpus, outcome metrics and the parity
+harness stay in the tree, so the comparison stays reproducible.

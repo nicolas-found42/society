@@ -1,7 +1,9 @@
-//! The pure turn seam (spec #5, ticket #8): one function over the world whose
-//! seeded RNG is part of it. It enumerates affordances, shortlists, decides,
-//! speaks, checks, applies and settles, returning the mutated world's record.
-//! No IO, no clock, no network, no async runtime.
+//! The pure turn seam (spec #5, ticket #8).
+//!
+//! One function over the world whose seeded RNG is part of it: it enumerates
+//! affordances, shortlists, decides, speaks, checks, applies and settles,
+//! returning the mutated world's record. No IO, no clock, no network, no async
+//! runtime.
 //!
 //! Turn shape (each stage pure, per villager in roster order):
 //!   1. the policy decides from the shortlist
@@ -20,8 +22,8 @@ use crate::speaker::{self, Line};
 use crate::world::{EventKind, Mood, World};
 
 /// The five registers, full labels for the feed. Derived from mood, never
-/// asked (the judge's tone question returned "plain and neutral" for 38 of
-/// 45 lines while still moving trust).
+/// asked (measuring showed "plain and neutral" 38 of 45 times while trust
+/// still moved).
 pub const REGISTERS: [&str; 5] = [
     "cold and clipped",
     "wary and guarded",
