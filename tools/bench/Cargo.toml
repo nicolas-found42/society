@@ -1,0 +1,18 @@
+[package]
+name = "society-bench"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "Standalone latency and allocation baseline harness for the society."
+
+[[bin]]
+name = "society-bench"
+path = "src/main.rs"
+
+# The harness itself is std-only: the counting allocator, the percentile math
+# and the RSS sampling are all written here, with no crate outside the
+# workspace. It borrows the crates under test, not helpers.
+[dependencies]
+society-sim.workspace = true
+society-server = { path = "../../crates/server" }
+serde_json.workspace = true
