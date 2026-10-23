@@ -7,9 +7,11 @@
 
 use std::sync::Arc;
 
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
+use axum::http::header::CONTENT_TYPE;
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -280,7 +282,7 @@ async fn observe_request(
     State(s): State<AppState>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
-) -> axum::response::Response {
+) -> Response {
     let id = crate::telemetry::operation_id();
     let path = route_category(request.uri().path());
     let mutation = request.method() != axum::http::Method::GET;
@@ -336,149 +338,39 @@ async fn health(State(s): State<AppState>) -> impl IntoResponse {
     }))
 }
 
-/// Serialize the complete agent record, preserving the existing public shape
-/// while making newly added simulation fields available to observers.
-fn agent_snapshot(a: &society_sim::Agent) -> Value {
-    let mut value = serde_json::to_value(a).expect("agent serializes");
-    value["standing"] = json!((a.standing * 10.0).round() / 10.0);
-    value["trust"] = json!(a
-        .trust
-        .iter()
-        .map(|(n, v)| json!([n, (v * 10.0).round() / 10.0]))
-        .collect::<Vec<_>>());
-    value
-}
-
-fn world_snapshot(w: &World) -> Value {
-    json!({
-        "turn": w.turn,
-        "day": w.day,
-        "weather": w.weather,
-        "weather_kind": w.weather_kind.id(),
-        "season": w.season().id(),
-        "time_of_day": w.time_of_day().id(),
-        "temperature_c": w.temperature_c,
-        "village_morale": w.village_morale,
-        "halted": w.halted,
-        "agents": w.agents.iter().map(agent_snapshot).collect::<Vec<_>>(),
-        "places": w.places.iter().map(|(p, st)| {
-            let mut value = serde_json::to_value(st).expect("place serializes");
-            value["id"] = json!(p.id());
-            value["adjacent"] = json!(p.adjacent().iter().map(|q| q.id()).collect::<Vec<_>>());
-            value["present"] = json!(w.living().filter(|a| a.place == *p).map(|a| a.name.clone()).collect::<Vec<_>>());
-            value["recent_dialogue"] = json!(recent_place_dialogue(w, *p, 4));
-            value
-        }).collect::<Vec<_>>(),
-        "social": build_social_fabric(w),
-        "event_count": w.events.len(),
-    })
-}
-
-/// Computes the village's living social structure: alliances, feuds, lineages,
-/// active/overdue oaths, elders, and territorial stewardship.
-#[must_use]
-pub fn build_social_fabric(w: &World) -> Value {
-    let living: Vec<&society_sim::Agent> = w.living().collect();
-    let mut alliances = Vec::new();
-    let mut feuds = Vec::new();
-
-    for (i, a) in living.iter().enumerate() {
-        for b in living.iter().skip(i + 1) {
-            let ab = a.trust_of(&b.name);
-            let ba = b.trust_of(&a.name);
-            if ab >= 2.7 && ba >= 2.7 {
-                alliances.push(json!({
-                    "members": [a.name, b.name],
-                    "mutual_trust": (f32::midpoint(ab, ba) * 10.0).round() / 10.0,
-                }));
-            } else if ab <= 1.0 || ba <= 1.0 {
-                feuds.push(json!({
-                    "members": [a.name, b.name],
-                    "min_trust": (ab.min(ba) * 10.0).round() / 10.0,
-                }));
-            }
-        }
-    }
-
-    let promises: Vec<Value> = living
-        .iter()
-        .filter_map(|a| {
-            a.promise.as_ref().map(|p| {
-                let age = w.turn.saturating_sub(p.made_turn);
-                json!({
-                    "from": a.name,
-                    "to": p.to,
-                    "text": p.text,
-                    "made_turn": p.made_turn,
-                    "age_turns": age,
-                    "overdue": p.kept.is_none() && age >= 8,
-                    "kept": p.kept,
-                })
-            })
-        })
-        .collect();
-
-    let lineages: Vec<Value> = living
-        .iter()
-        .filter(|a| !a.parents.is_empty() || a.generation > 0)
-        .map(|a| {
-            json!({
-                "villager": a.name,
-                "generation": a.generation,
-                "parents": a.parents,
-            })
-        })
-        .collect();
-
-    let elders: Vec<String> = living
-        .iter()
-        .filter(|a| a.role == society_sim::Role::Elder)
-        .map(|a| a.name.clone())
-        .collect();
-
-    let stewardship: Vec<Value> = w
-        .places
-        .iter()
-        .filter_map(|(p, st)| {
-            st.owner.as_ref().map(|owner| {
-                json!({
-                    "place": p.id(),
-                    "steward": owner,
-                    "food": st.food,
-                })
-            })
-        })
-        .collect();
-
-    json!({
-        "living_count": living.len(),
-        "elders": elders,
-        "alliances": alliances,
-        "feuds": feuds,
-        "promises": promises,
-        "lineages": lineages,
-        "stewardship": stewardship,
-    })
-}
-
-async fn state_snapshot(State(s): State<AppState>) -> impl IntoResponse {
+async fn state_snapshot(State(s): State<AppState>) -> Response {
     let w = s.world.lock().await;
-    Json(world_snapshot(&w))
-}
-
-async fn social_snapshot(State(s): State<AppState>) -> impl IntoResponse {
-    let w = s.world.lock().await;
-    Json(build_social_fabric(&w))
+    json_response(crate::observer::encode(&w))
 }
 
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the world lock is held for the whole request on purpose"
 )]
-async fn place_detail(
-    State(s): State<AppState>,
-    Path(id): Path<String>,
-) -> (StatusCode, Json<Value>) {
+async fn social_snapshot(State(s): State<AppState>) -> Response {
+    let w = s.world.lock().await;
+    let bytes =
+        serde_json::to_vec(&crate::observer::social_fabric(&w)).expect("the social serialises");
+    json_response(bytes)
+}
+
+/// The bytes of a payload, as a JSON response.
+///
+/// The payload is written straight to the bytes by
+/// [`crate::observer::encode`], so the response never holds a second copy of
+/// the village.
+fn json_response(bytes: Vec<u8>) -> Response {
+    Response::builder()
+        .header(CONTENT_TYPE, "application/json")
+        .body(Body::from(bytes))
+        .expect("the response builds")
+}
+
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the world lock is held for the whole request on purpose"
+)]
+async fn place_detail(State(s): State<AppState>, Path(id): Path<String>) -> Response {
     let w = s.world.lock().await;
     let Some((place, st)) = w
         .places
@@ -488,42 +380,43 @@ async fn place_detail(
         return (
             StatusCode::NOT_FOUND,
             Json(json!({"error": "unknown place", "place": id})),
-        );
+        )
+            .into_response();
     };
-    let mut value = serde_json::to_value(st).expect("place serializes");
-    value["id"] = json!(place.id());
-    value["adjacent"] = json!(place.adjacent().iter().map(|q| q.id()).collect::<Vec<_>>());
-    value["present"] = json!(w
-        .living()
-        .filter(|a| a.place == *place)
-        .map(agent_snapshot)
-        .collect::<Vec<_>>());
-    value["recent_dialogue"] = json!(recent_place_dialogue(&w, *place, 10));
-    (StatusCode::OK, Json(value))
+    let view = crate::observer::place_view(
+        st,
+        *place,
+        w.living()
+            .filter(|a| a.place == *place)
+            .map(crate::observer::AgentView::living)
+            .collect(),
+        crate::observer::recent_place_dialogue(&w, *place, 10),
+    );
+    let bytes = serde_json::to_vec(&view).expect("the place serializes");
+    json_response(bytes)
 }
 
 #[allow(
     clippy::significant_drop_tightening,
     reason = "the world lock is held for the whole request on purpose"
 )]
-async fn agent_detail(
-    State(s): State<AppState>,
-    Path(name): Path<String>,
-) -> (StatusCode, Json<Value>) {
+async fn agent_detail(State(s): State<AppState>, Path(name): Path<String>) -> Response {
     let w = s.world.lock().await;
     let Some(a) = w.agent(&name) else {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({"error": "unknown villager", "name": name})),
-        );
+        )
+            .into_response();
     };
-    let mut value = agent_snapshot(a);
     // The policy's decision factors for this villager's last recorded turn:
     // what the inspector's factors panel shows, and the observable answer to
     // "why did she do that".
     let run = s.run.lock().await;
-    value["factors"] = last_factors(&run, &a.name);
-    (StatusCode::OK, Json(value))
+    let extra = [("factors", last_factors(&run, &a.name))];
+    let bytes = serde_json::to_vec(&crate::observer::AgentView::complete(a).with_extra(&extra))
+        .expect("the agent serializes");
+    json_response(bytes)
 }
 
 /// The recorded term contributions from the villager's last turn, or `null`
@@ -534,30 +427,6 @@ pub fn last_factors(run: &[turn::TurnRecord], name: &str) -> Value {
         .rev()
         .find_map(|r| r.agents.iter().find(|at| at.name == name))
         .map_or(Value::Null, |at| json!(at.factors))
-}
-
-/// The last few lines spoken at one place, oldest first. It is a world query,
-/// not a simulation fact, and reads the event log the world already carries.
-///
-/// Provenance is the `spoken` flag on the event (ticket #4): a line enters
-/// conversation history only when a villager actually said words there.
-/// Deaths, births, foundings, halts, rejections, silent chores, and observer
-/// prose (whispers, rumors, feasts, oaths, goals) are narrative context, never
-/// dialogue, even with nonempty text at the same place. `spoken` defaults to
-/// `false` for pre-flag saves, so old chronicles leave speech out instead of
-/// inventing it.
-#[must_use]
-pub fn recent_place_dialogue(w: &World, place: Place, limit: usize) -> Vec<String> {
-    let mut out: Vec<String> = w
-        .events
-        .iter()
-        .rev()
-        .filter(|e| e.place == place && e.spoken && !e.text.trim().is_empty())
-        .take(limit)
-        .map(|e| format!("Turn {} {}: {}", e.turn, e.actor, e.text))
-        .collect();
-    out.reverse();
-    out
 }
 
 #[derive(Deserialize)]
@@ -1383,13 +1252,13 @@ mod tests {
         assert_eq!(run.last().unwrap().turn, crate::TURN_LOG_CAP as u64 + 4);
     }
     #[test]
-    fn observer_api_exposes_resources_environment_and_complete_agent_records() {
+    fn observer_api_exposes_the_living_village_and_the_whole_memory_of_one_villager() {
         let mut w = World::founding(7);
         w.temperature_c = -8;
         w.village_morale = 1.25;
         w.agent_mut("Ada").unwrap().water = 7;
         w.agent_mut("Ada").unwrap().current_goal = "Find herbs".into();
-        let value = world_snapshot(&w);
+        let value = serde_json::to_value(crate::observer::snapshot(&w)).expect("the snapshot");
         assert_eq!(value["temperature_c"], -8);
         assert_eq!(value["village_morale"], 1.25);
         assert_eq!(value["season"], w.season().id());
@@ -1403,15 +1272,33 @@ mod tests {
             .unwrap();
         assert_eq!(ada["water"], 7);
         assert_eq!(ada["current_goal"], "Find herbs");
-        // Every serialized simulation field must survive the observer API.
+        // Every serialized simulation field must survive the observer API,
+        // except the claims a villager holds: those are the villager's own
+        // history, and they are served by `/agent/{name}`.
         for key in serde_json::to_value(w.agent("Ada").unwrap())
             .unwrap()
             .as_object()
             .unwrap()
             .keys()
         {
+            if key == "facts" {
+                assert!(
+                    ada.get(key).is_none(),
+                    "the living village carries no claims"
+                );
+                continue;
+            }
             assert!(ada.get(key).is_some(), "missing agent field {key}");
         }
+        // The villager's own endpoint carries the whole memory.
+        let whole = serde_json::to_value(crate::observer::AgentView::complete(
+            w.agent("Ada").unwrap(),
+        ))
+        .expect("the agent serialises");
+        assert!(
+            whole.get("facts").is_some(),
+            "the whole memory carries the claims"
+        );
         for ((_, source), place) in w.places.iter().zip(value["places"].as_array().unwrap()) {
             for (key, field) in serde_json::to_value(source).unwrap().as_object().unwrap() {
                 assert_eq!(place.get(key), Some(field), "missing place field {key}");
@@ -1470,7 +1357,7 @@ mod tests {
     fn social_fabric_tracks_alliances_feuds_and_overdue_promises() {
         let mut w = World::founding(7);
         w.turn = 20;
-        let neutral = build_social_fabric(&w);
+        let neutral = serde_json::to_value(crate::observer::social_fabric(&w)).expect("the social");
         assert_eq!(neutral["alliances"].as_array().unwrap().len(), 0);
         assert_eq!(neutral["feuds"].as_array().unwrap().len(), 0);
         w.agent_mut("Ada").unwrap().set_trust("Bo", 3.2);
@@ -1484,7 +1371,7 @@ mod tests {
         });
         w.place_state_mut(Place::Granary).owner = Some("Ada".into());
 
-        let social = build_social_fabric(&w);
+        let social = serde_json::to_value(crate::observer::social_fabric(&w)).expect("the social");
         assert_eq!(social["alliances"].as_array().unwrap().len(), 1);
         assert_eq!(social["feuds"].as_array().unwrap().len(), 1);
         assert_eq!(social["promises"][0]["overdue"], true);
@@ -1887,12 +1774,20 @@ mod tests {
     #[tokio::test]
     async fn missing_agent_and_place_answer_with_the_shared_error_shape() {
         let (s, root) = test_state("not-found-shape");
-        let (status, body) = agent_detail(State(s.clone()), Path("Nobody".into())).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body.0["error"], "unknown villager");
-        let (status, body) = place_detail(State(s.clone()), Path("nowhere".into())).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body.0["error"], "unknown place");
+        let resp = agent_detail(State(s.clone()), Path("Nobody".into())).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"], "unknown villager");
+        let resp = place_detail(State(s.clone()), Path("nowhere".into())).await;
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"], "unknown place");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2091,11 +1986,14 @@ mod tests {
             "halted",
             false,
         ));
-        let lines = recent_place_dialogue(&w, market, 10);
+        let lines = crate::observer::recent_place_dialogue(&w, market, 10);
         assert_eq!(lines, vec![format!("Turn 1 {ada}: I will feed you.")]);
         // The cap counts spoken lines, not narrative: a limit of one still
         // returns the single spoken line even with six events behind it.
-        assert_eq!(recent_place_dialogue(&w, market, 1).len(), 1);
+        assert_eq!(
+            crate::observer::recent_place_dialogue(&w, market, 1).len(),
+            1
+        );
     }
 
     #[test]
@@ -2123,7 +2021,7 @@ mod tests {
                 spoken,
             ));
         }
-        let lines = recent_place_dialogue(&w, Place::Market, 2);
+        let lines = crate::observer::recent_place_dialogue(&w, Place::Market, 2);
         assert_eq!(
             lines,
             vec![
