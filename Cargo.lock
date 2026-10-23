@@ -3662,6 +3662,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "society-bench"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "society-server",
+ "society-sim",
+]
+
+[[package]]
 name = "society-server"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,112 @@
+{
+  "schema": "society.perf-baseline/1",
+  "generated_at": "2026-10-21T08:43:49Z",
+  "iterations": 1000,
+  "warmup": 20,
+  "tolerance": 1.25,
+  "jitter_floor_ms": 0.25,
+  "p95_headroom": 2.0,
+  "machine": {
+    "cpu": "Apple M5 Pro",
+    "cores": 18,
+    "os": "macos",
+    "arch": "aarch64",
+    "kernel": "27.0.0",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+    "profile": "release",
+    "git_commit": "c6e36e5"
+  },
+  "world": {
+    "source": "data/society.json",
+    "seed": 7,
+    "turn": 233,
+    "day": 19,
+    "living": 12,
+    "agents": 12,
+    "events": 2837,
+    "save_bytes": 3712936
+  },
+  "paths": [
+    {
+      "name": "engine_turn",
+      "description": "society_sim::turn::step: policy, speaker, check, apply, settle",
+      "runs_when": "once per committed turn",
+      "iterations": 1000,
+      "latency_ms": {
+        "p50": 0.2,
+        "p95": 0.222,
+        "p99": 0.238,
+        "min": 0.178,
+        "max": 0.319,
+        "mean": 0.202
+      },
+      "memory": {
+        "alloc_bytes_per_iter": 534205,
+        "alloc_calls_per_iter": 4210,
+        "live_growth_bytes": 0,
+        "output_bytes": 9062,
+        "rss_before_kb": 45296,
+        "rss_after_kb": 51664,
+        "rss_peak_kb": 51664
+      },
+      "budget": {
+        "p99_ms": 0.488,
+        "alloc_bytes_per_iter": 667756
+      }
+    },
+    {
+      "name": "durable_save",
+      "description": "society_server::persistence::save: serialise, verify, write, fsync, rename",
+      "runs_when": "once per committed turn, right after it",
+      "iterations": 1000,
+      "latency_ms": {
+        "p50": 13.008,
+        "p95": 13.945,
+        "p99": 14.911,
+        "min": 12.263,
+        "max": 22.162,
+        "mean": 13.107
+      },
+      "memory": {
+        "alloc_bytes_per_iter": 8724884,
+        "alloc_calls_per_iter": 48389,
+        "live_growth_bytes": 0,
+        "output_bytes": 3756013,
+        "rss_before_kb": 51696,
+        "rss_after_kb": 55968,
+        "rss_peak_kb": 55968
+      },
+      "budget": {
+        "p99_ms": 27.889,
+        "alloc_bytes_per_iter": 10906105
+      }
+    },
+    {
+      "name": "observer_snapshot",
+      "description": "society_server::observer::encode: the village as the bytes on the wire",
+      "runs_when": "per observer request (/state, /social)",
+      "iterations": 1000,
+      "latency_ms": {
+        "p50": 0.073,
+        "p95": 0.081,
+        "p99": 0.088,
+        "min": 0.067,
+        "max": 0.098,
+        "mean": 0.073
+      },
+      "memory": {
+        "alloc_bytes_per_iter": 75360,
+        "alloc_calls_per_iter": 33,
+        "live_growth_bytes": 0,
+        "output_bytes": 52412,
+        "rss_before_kb": 55968,
+        "rss_after_kb": 55984,
+        "rss_peak_kb": 55984
+      },
+      "budget": {
+        "p99_ms": 0.338,
+        "alloc_bytes_per_iter": 94200
+      }
+    }
+  ]
+}
