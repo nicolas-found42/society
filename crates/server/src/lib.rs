@@ -11,9 +11,11 @@
 
 pub mod devserver;
 pub mod diagnostics;
+pub mod observer;
 pub mod persistence;
 
-pub use devserver::{AppState, DEFAULT_PORT, build_social_fabric};
+pub use devserver::{AppState, DEFAULT_PORT};
+pub use observer::social_fabric;
 pub use society_sim::turn::{AgentTurn, BirthRecord, TurnRecord, TurnSummary};
 
 use std::path::Path;

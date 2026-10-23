@@ -35,9 +35,13 @@ the file, never a silent reset.
 |---|---|---|
 | `SOCIETY_SAVE_PATH` | `data/society.json` | village file; one file per village |
 
-A turn costs a fraction of a millisecond: there is no call to rate-limit,
+A turn costs a fraction of a millisecond: the engine decides, speaks, checks,
+acts and settles in 0.2 ms, measured, so there is no call to rate-limit,
 retry or queue, and no permission window to size. The same seed and the same
 save produce the same turns, the same lines and the same village, every time.
+Making that turn durable costs more than running it — 13 ms to write and
+fsync the village file — and the numbers behind both are in
+`baseline/PERF_BASELINE.md`.
 
 The window never takes focus and never raises itself, so it can sit behind what
 you are working on. Screenshot it at any time, from any app, with:
@@ -257,9 +261,9 @@ You cannot edit minds or kill directly.
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | the engine's own status: population cap, birth cost, save path |
-| GET | `/state` | world snapshot: agents, places, food, trust, memories |
+| GET | `/state` | the living village: agents, places, food, trust, memories |
 | GET | `/social` | the social and kinship matrix |
-| GET | `/agent/{name}` | one villager, with the factors behind their last decision |
+| GET | `/agent/{name}` | one villager with their whole memory, and the factors behind their last decision |
 | GET | `/places/{id}` | one place: stores, owner, condition, hearth, fertility |
 | GET | `/events?since=N&limit=M` | append-only event log |
 | GET | `/log?since_turn=T` | per-turn records: actions, lines, acts, the turn digest (journal-backed past the in-memory cap) |
@@ -276,6 +280,17 @@ curl -s localhost:8100/log | jq '.rows[-1].agents[] | {name,action,say,intensity
 curl -s -X POST localhost:8100/inject -H 'content-type: application/json' \
   -d '{"kind":"whisper","target":"Ada","text":"the granary door was open last night"}'
 ```
+
+The payload is written straight from the world, and it carries the living
+village: `/state` answers with what the settlement is now — every field of
+every villager except the claims they hold about the world. Those claims are
+the whole of what a villager has learned, they grow with every day the village
+lives, and one villager's claims are served by `/agent/{name}`. A poll of
+`/state` costs 0.073 ms and 75 KB of allocation for a 52 KB answer at turn
+233, measured. The numbers, and the threshold a later change is judged
+against, are in `baseline/PERF_BASELINE.md`. A villager's trust reads `3.2` on
+the wire, not `3.200000047683716`: the payload carries the world's own
+precision, rounded to one decimal for the two numbers observers read.
 
 ## Diagnostics (what happened, and why not)
 
@@ -312,6 +327,7 @@ will test.
 
 ```bash
 cargo test --workspace    # no network, no models
+tools/bench.sh --check    # the latency baseline, against the recorded budget
 ```
 
 They cover the rules that are easy to get wrong and expensive to get wrong:
@@ -329,7 +345,8 @@ wins over it, the shortlist is a subset of the legal actions and breaks a
 groove, and no line outside lie mode makes a claim the world does not support.
 
 Five measurements were held over the rewrite, and they were the acceptance
-bar. All five ran; the results are on record in `baseline/`:
+bar. All five ran; the results are on record in `baseline/`. A sixth was added
+afterwards, to keep the speed claim honest:
 
 1. **A live multi-turn run** on the real stack: the village lives, grows and
    does not stall.
@@ -349,6 +366,14 @@ bar. All five ran; the results are on record in `baseline/`:
 5. **Determinism and cost.** The same seed and the same save produce identical
    turns across seeds, a save and reload continues identically, the turn costs
    nothing, and the process makes no network call at all.
+6. **A latency baseline on this machine** (`baseline/PERF_BASELINE.md`,
+   `baseline/perf_baseline.json`): the three paths that carry the village's
+   time - the committed turn, the durable save that follows it, and the
+   observer's snapshot - each run a thousand times, with p50/p95/p99 and the
+   allocation and resident-memory deltas recorded. `tools/bench.sh --check`
+   compares a later run against that record and fails when a path is outside
+   its budget, so the speed claim is a measurement a pull request has to
+   answer for.
 
 Growth and persistence are tested at the two seams that matter. Births are
 driven through the pure simulation: a fed, trusting, co-located pair has a child
@@ -366,6 +391,9 @@ path and fails, and a save that would not load back never replaces a good one.
   why the judgment layer and the voice model went, and what was rejected.
 - `baseline/` — the frozen replay corpus, the outcome metrics, the parity
   harness results and `PARITY_REPORT.md`, the record of how the bar came out.
+- `baseline/PERF_BASELINE.md` — the latency and allocation baseline for the
+  turn, the save and the observer snapshot, with the harness (`tools/bench`)
+  that measured it and the budget a later change is judged against.
 - `GLOSSARY.md` — the vocabulary of the village, and the words that were
   retired with the old engine.
 - `models/research-small-voice-models.md` (tracked) — the model comparison
