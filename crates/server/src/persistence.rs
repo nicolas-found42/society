@@ -311,7 +311,14 @@ pub fn save(world: &World, path: &Path) -> Result<(), SaveError> {
         version: SAVE_VERSION,
         world,
     };
-    let bytes = serde_json::to_vec(&envelope).map_err(|e| SaveError::Unwritable {
+    // Size the buffer from the save being replaced: a village grows by a few
+    // hundred bytes a turn, so the last file's length is within a doubling
+    // step of the next one and the serialiser does not copy the whole village
+    // through the growth ladder on every turn. The bytes written are the same
+    // either way; only the number of reallocations changes.
+    let hint = fs::metadata(path).map_or(0, |m| m.len());
+    let mut bytes = Vec::with_capacity(usize::try_from(hint).unwrap_or(0).saturating_add(4096));
+    serde_json::to_writer(&mut bytes, &envelope).map_err(|e| SaveError::Unwritable {
         path: path.to_path_buf(),
         reason: e.to_string(),
     })?;
@@ -635,6 +642,41 @@ mod tests {
             !temp_path(&path).exists(),
             "no partial temp file left behind"
         );
+    }
+
+    /// The save buffer is sized from the file it replaces, so a village that
+    /// shrank must not leak the previous save's length into the new bytes.
+    #[test]
+    fn a_shrinking_village_saves_exactly_its_own_bytes() {
+        let dir = TempDir::new();
+        let path = dir.join("village.json");
+        let mut big = lived_in_world(29);
+        for i in 0..40 {
+            big.push_event(Event {
+                turn: 30,
+                actor: format!("Villager {i}"),
+                place: Place::Market,
+                kind: EventKind::Speech,
+                action: "speak".into(),
+                text: "a long line that makes the save longer than the next one".repeat(8),
+                spoken: true,
+                social: Some("gossip".into()),
+                intensity: Some(1.0),
+                grounded: Some(1.0),
+                divine: false,
+            });
+        }
+        save(&big, &path).unwrap();
+        let big_len = fs::metadata(&path).unwrap().len();
+
+        let small = World::founding(29);
+        save(&small, &path).unwrap();
+        assert!(fs::metadata(&path).unwrap().len() < big_len);
+        assert_eq!(json(&load(&path).unwrap().unwrap()), json(&small));
+
+        // Saving over the same file again reuses the hint and must stay exact.
+        save(&small, &path).unwrap();
+        assert_eq!(json(&load(&path).unwrap().unwrap()), json(&small));
     }
 
     #[test]

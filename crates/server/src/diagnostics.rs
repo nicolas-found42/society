@@ -457,85 +457,185 @@ fn scan<T: serde::de::DeserializeOwned>(
     let _guard = FILE_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut result = Evidence {
-        entries: Vec::new(),
-        corrupt_lines: 0,
-        read_errors: 0,
-        head_missing: false,
-        truncated: false,
-        files_read: 0,
-    };
+    let limit = limit.min(MAX_QUERY_ENTRIES);
+    let mut tail = std::collections::VecDeque::new();
+    let mut tail_bytes = 0;
+    let mut truncated = false;
+    let reads = read_segments(head, |bytes| {
+        match serde_json::from_slice::<T>(bytes) {
+            Ok(e) if include(&e) => {
+                tail_bytes += bytes.len();
+                tail.push_back((e, bytes.len()));
+                while tail.len() > limit || tail_bytes > MAX_RESULT_BYTES {
+                    if let Some((_, size)) = tail.pop_front() {
+                        tail_bytes -= size;
+                    }
+                    truncated = true;
+                }
+            },
+            Ok(_) => {},
+            Err(_) => return Line::Corrupt,
+        }
+        Line::Parsed
+    });
+    Evidence {
+        entries: tail.into_iter().map(|(entry, _)| entry).collect(),
+        corrupt_lines: reads.corrupt_lines,
+        read_errors: reads.read_errors,
+        head_missing: reads.head_missing,
+        truncated,
+        files_read: reads.files_read,
+    }
+}
+
+/// What [`read_segments`] saw of the store itself, separate from any rows it
+/// parsed: absence and damage that a caller must not read as an empty answer.
+#[derive(Debug, Default, Clone, Copy)]
+struct ReadStats {
+    corrupt_lines: usize,
+    read_errors: usize,
+    head_missing: bool,
+    files_read: usize,
+}
+
+/// What a caller wants done with one line.
+enum Line {
+    /// A row of the stream, or a line the caller chose to ignore.
+    Parsed,
+    /// Not a row of this stream; counted against the store's quality.
+    Corrupt,
+}
+
+/// Read the retained evidence stream `head` and its rotated segments, oldest
+/// first, handing every non-blank line to `on_line`.
+///
+/// A line over [`MAX_LINE_BYTES`] counts as corrupt and is discarded without
+/// buffering the rest of it. The line buffer is reused across lines: a scan of
+/// a long journal would otherwise allocate once per row.
+fn read_segments(head: &Path, mut on_line: impl FnMut(&[u8]) -> Line) -> ReadStats {
+    let mut stats = ReadStats::default();
     let parent = head
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     if let Err(e) = fs::read_dir(parent) {
         if e.kind() != std::io::ErrorKind::NotFound {
-            result.read_errors += 1;
+            stats.read_errors += 1;
         }
     }
     let mut paths = rotated_segments(head);
     paths.push(head.to_path_buf());
-    let limit = limit.min(MAX_QUERY_ENTRIES);
-    let mut tail = std::collections::VecDeque::new();
-    let mut tail_bytes = 0;
+    let mut line = Vec::new();
     for path in paths {
         let file = match fs::File::open(&path) {
             Ok(f) => f,
             Err(e) => {
                 if path == head && e.kind() == std::io::ErrorKind::NotFound {
-                    result.head_missing = true;
+                    stats.head_missing = true;
                 } else {
-                    result.read_errors += 1;
+                    stats.read_errors += 1;
                 }
                 continue;
             },
         };
-        result.files_read += 1;
+        stats.files_read += 1;
         let mut reader = std::io::BufReader::new(file);
         loop {
-            let mut bytes = Vec::new();
+            line.clear();
             match reader
                 .by_ref()
                 .take(MAX_LINE_BYTES + 1)
-                .read_until(b'\n', &mut bytes)
+                .read_until(b'\n', &mut line)
             {
                 Ok(0) => break,
                 Err(_) => {
-                    result.read_errors += 1;
+                    stats.read_errors += 1;
                     break;
                 },
                 Ok(_) => {},
             }
-            if bytes.len() as u64 > MAX_LINE_BYTES {
-                result.corrupt_lines += 1;
-                if bytes.last() != Some(&b'\n') && discard_line(&mut reader).is_err() {
-                    result.read_errors += 1;
+            if line.len() as u64 > MAX_LINE_BYTES {
+                stats.corrupt_lines += 1;
+                if line.last() != Some(&b'\n') && discard_line(&mut reader).is_err() {
+                    stats.read_errors += 1;
                     break;
                 }
                 continue;
             }
-            if bytes.iter().all(u8::is_ascii_whitespace) {
+            if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
-            match serde_json::from_slice::<T>(&bytes) {
-                Ok(e) if include(&e) => {
-                    tail_bytes += bytes.len();
-                    tail.push_back((e, bytes.len()));
-                    while tail.len() > limit || tail_bytes > MAX_RESULT_BYTES {
-                        if let Some((_, size)) = tail.pop_front() {
-                            tail_bytes -= size;
-                        }
-                        result.truncated = true;
-                    }
-                },
-                Ok(_) => {},
-                Err(_) => result.corrupt_lines += 1,
+            match on_line(&line) {
+                Line::Parsed => {},
+                Line::Corrupt => stats.corrupt_lines += 1,
             }
         }
     }
-    result.entries = tail.into_iter().map(|(entry, _)| entry).collect();
-    result
+    stats
+}
+
+/// What the retained journal looks like without materialising its rows.
+///
+/// `/health` reports growth, not history: it needs the count and the turn
+/// range of the retained window, not the recorded turns themselves. A journal
+/// row costs ~9 KB in this village, five times the whole save, so building the
+/// typed records to read two numbers off them made one health poll the most
+/// expensive read in the shell. Rows are validated as journal rows (the JSON of
+/// the line and its `turn`) and skipped otherwise; [`scan_journal`] remains the
+/// typed reader for callers that need the records.
+#[derive(Debug, Default)]
+pub struct JournalGrowth {
+    /// Rows retained inside the window.
+    pub turns: usize,
+    /// Lowest turn among them.
+    pub oldest_turn: Option<u64>,
+    pub truncated: bool,
+    pub corrupt_lines: usize,
+    pub read_errors: usize,
+    pub head_missing: bool,
+    pub files_read: usize,
+}
+
+/// The one field of a journal row that says where the window starts.
+#[derive(Deserialize)]
+struct JournalRowTurn {
+    turn: u64,
+}
+
+/// Summarise the retained journal window. See [`JournalGrowth`].
+#[must_use]
+pub fn journal_growth(save: &Path, limit: usize) -> JournalGrowth {
+    let _guard = FILE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let limit = limit.min(MAX_QUERY_ENTRIES);
+    let mut window = std::collections::VecDeque::new();
+    let mut window_bytes = 0;
+    let mut truncated = false;
+    let reads = read_segments(&journal_path(save), |bytes| {
+        serde_json::from_slice::<JournalRowTurn>(bytes).map_or(Line::Corrupt, |row| {
+            // The same oldest-out retention [`scan`] applies, so the reported
+            // window is the newest tail either way.
+            window_bytes += bytes.len();
+            window.push_back((row.turn, bytes.len()));
+            while window.len() > limit || window_bytes > MAX_RESULT_BYTES {
+                if let Some((_, size)) = window.pop_front() {
+                    window_bytes -= size;
+                }
+                truncated = true;
+            }
+            Line::Parsed
+        })
+    });
+    JournalGrowth {
+        turns: window.len(),
+        oldest_turn: window.iter().map(|(turn, _)| *turn).min(),
+        truncated,
+        corrupt_lines: reads.corrupt_lines,
+        read_errors: reads.read_errors,
+        head_missing: reads.head_missing,
+        files_read: reads.files_read,
+    }
 }
 
 fn discard_line(reader: &mut impl std::io::BufRead) -> std::io::Result<()> {
@@ -577,7 +677,10 @@ fn append_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         fs::create_dir_all(dir)?;
     }
     let mut options = fs::OpenOptions::new();
-    options.create(true).append(true);
+    // One handle serves the tail check and the append: the previous byte can be
+    // read from the same descriptor, so an append does not open the file twice.
+    // `O_APPEND` still places the write at the end whatever the read cursor is.
+    options.create(true).read(true).append(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
@@ -588,11 +691,10 @@ fn append_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     // one damaged record cannot consume the following successful write.
     let len = f.metadata()?.len();
     if len > 0 {
-        use std::io::{Seek as _, SeekFrom};
-        let mut previous = fs::File::open(path)?;
-        previous.seek(SeekFrom::End(-1))?;
+        use std::io::{Read as _, Seek as _, SeekFrom};
+        f.seek(SeekFrom::End(-1))?;
         let mut last = [0];
-        previous.read_exact(&mut last)?;
+        f.read_exact(&mut last)?;
         if last[0] != b'\n' {
             f.write_all(b"\n")?;
         }
@@ -1199,6 +1301,93 @@ mod tests {
             .collect();
         let divergence = verify_journal(&entries).unwrap();
         assert!(divergence.reason.contains("ascending"), "{divergence:?}");
+    }
+
+    /// `/health` reports the journal window without materialising its rows. The
+    /// window, its oldest turn and the clipping flag must be exactly what the
+    /// typed reader returns, or the two answers describe different stores.
+    #[test]
+    fn journal_growth_reports_the_typed_reader_s_window() {
+        let dir = tmp("journal-growth");
+        let save = dir.join("v.json");
+        for turn in 0..40 {
+            append_turn(&save, 7, &rec(turn), "test", 2).unwrap();
+        }
+        // A torn tail is damage the health report must still count.
+        let path = journal_path(&save);
+        let mut bytes = fs::read(&path).unwrap();
+        bytes.extend_from_slice(b"{\"turn\": 41, ");
+        fs::write(&path, &bytes).unwrap();
+
+        for limit in [1, 5, 39, 100] {
+            let typed = scan_journal(&save, 0, limit);
+            let growth = journal_growth(&save, limit);
+            assert_eq!(growth.turns, typed.entries.len(), "limit {limit}");
+            assert_eq!(
+                growth.oldest_turn,
+                typed.entries.iter().map(|e| e.turn).min(),
+                "limit {limit}"
+            );
+            assert_eq!(growth.truncated, typed.truncated, "limit {limit}");
+            assert_eq!(growth.corrupt_lines, typed.corrupt_lines, "limit {limit}");
+            assert_eq!(growth.files_read, typed.files_read, "limit {limit}");
+            assert_eq!(growth.head_missing, typed.head_missing, "limit {limit}");
+        }
+
+        fs::remove_file(&path).unwrap();
+        let absent = journal_growth(&save, 100);
+        assert_eq!(absent.turns, 0);
+        assert_eq!(absent.oldest_turn, None);
+        assert!(absent.head_missing);
+    }
+
+    /// The window spans rotated segments, so the growth reader has to walk them
+    /// in the same order as the typed one and drop the same oldest rows.
+    #[test]
+    fn journal_growth_matches_the_typed_reader_across_rotated_segments() {
+        let dir = tmp("journal-growth-rotated");
+        let save = dir.join("v.json");
+        let head = journal_path(&save);
+        for (slot, turns) in [(1_u32, 0..3_u64), (2, 3..6)] {
+            let path = slot_path(&head, "journal", &slot.to_string());
+            let mut bytes = Vec::new();
+            for turn in turns {
+                bytes.extend_from_slice(
+                    serde_json::to_string(&JournalEntry {
+                        context: Context::default(),
+                        journal_version: JOURNAL_VERSION,
+                        build: "test".into(),
+                        save_version: crate::persistence::SAVE_VERSION,
+                        seed: 7,
+                        turn,
+                        day: 0,
+                        wall_time: 0,
+                        record: rec(turn),
+                    })
+                    .unwrap()
+                    .as_bytes(),
+                );
+                bytes.push(b'\n');
+            }
+            fs::write(path, bytes).unwrap();
+        }
+        for turn in 6..9 {
+            append_turn(&save, 7, &rec(turn), "test", 2).unwrap();
+        }
+
+        for limit in [1, 2, 4, 8, 100] {
+            let typed = scan_journal(&save, 0, limit);
+            let growth = journal_growth(&save, limit);
+            assert_eq!(growth.turns, typed.entries.len(), "limit {limit}");
+            assert_eq!(
+                growth.oldest_turn,
+                typed.entries.iter().map(|e| e.turn).min(),
+                "limit {limit}"
+            );
+            assert_eq!(growth.truncated, typed.truncated, "limit {limit}");
+            assert_eq!(growth.files_read, typed.files_read, "limit {limit}");
+            assert_eq!(growth.corrupt_lines, typed.corrupt_lines, "limit {limit}");
+        }
     }
 
     #[test]
