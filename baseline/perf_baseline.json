@@ -1,6 +1,6 @@
 {
   "schema": "society.perf-baseline/1",
-  "generated_at": "2026-11-13T01:41:34Z",
+  "generated_at": "2026-11-13T05:05:52Z",
   "iterations": 1000,
   "warmup": 20,
   "tolerance": 1.25,
@@ -14,7 +14,7 @@
     "kernel": "27.0.0",
     "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
     "profile": "release",
-    "git_commit": "064b16e"
+    "git_commit": "324a535"
   },
   "world": {
     "source": "deterministic:seed=7:turns=233",
@@ -33,24 +33,24 @@
       "runs_when": "once per committed turn",
       "iterations": 1000,
       "latency_ms": {
-        "p50": 0.184,
-        "p95": 0.209,
-        "p99": 0.222,
-        "min": 0.167,
-        "max": 0.238,
-        "mean": 0.187
+        "p50": 0.206,
+        "p95": 0.329,
+        "p99": 0.395,
+        "min": 0.18,
+        "max": 0.512,
+        "mean": 0.223
       },
       "memory": {
         "alloc_bytes_per_iter": 227467,
         "alloc_calls_per_iter": 5377,
         "live_growth_bytes": 0,
         "output_bytes": 9691,
-        "rss_before_kb": 11328,
-        "rss_after_kb": 13248,
-        "rss_peak_kb": 13248
+        "rss_before_kb": 11504,
+        "rss_after_kb": 18928,
+        "rss_peak_kb": 18928
       },
       "budget": {
-        "p99_ms": 0.722,
+        "p99_ms": 0.895,
         "alloc_bytes_per_iter": 284333
       }
     },
@@ -60,25 +60,25 @@
       "runs_when": "once per committed turn, right after it",
       "iterations": 1000,
       "latency_ms": {
-        "p50": 8.004,
-        "p95": 9.066,
-        "p99": 9.994,
-        "min": 6.806,
-        "max": 16.81,
-        "mean": 8.067
+        "p50": 8.814,
+        "p95": 10.129,
+        "p99": 11.61,
+        "min": 6.83,
+        "max": 17.427,
+        "mean": 8.597
       },
       "memory": {
-        "alloc_bytes_per_iter": 3456085,
+        "alloc_bytes_per_iter": 2496881,
         "alloc_calls_per_iter": 17668,
         "live_growth_bytes": 0,
         "output_bytes": 1133854,
-        "rss_before_kb": 13280,
-        "rss_after_kb": 16432,
-        "rss_peak_kb": 16432
+        "rss_before_kb": 18960,
+        "rss_after_kb": 19376,
+        "rss_peak_kb": 19376
       },
       "budget": {
-        "p99_ms": 18.132,
-        "alloc_bytes_per_iter": 4320106
+        "p99_ms": 20.257,
+        "alloc_bytes_per_iter": 3121101
       }
     },
     {
@@ -87,25 +87,106 @@
       "runs_when": "per observer request (/state, /social)",
       "iterations": 1000,
       "latency_ms": {
-        "p50": 0.085,
-        "p95": 0.101,
-        "p99": 0.107,
-        "min": 0.079,
-        "max": 0.117,
-        "mean": 0.087
+        "p50": 0.087,
+        "p95": 0.132,
+        "p99": 0.155,
+        "min": 0.084,
+        "max": 0.301,
+        "mean": 0.092
       },
       "memory": {
         "alloc_bytes_per_iter": 80186,
         "alloc_calls_per_iter": 76,
         "live_growth_bytes": 0,
         "output_bytes": 67728,
-        "rss_before_kb": 16448,
-        "rss_after_kb": 16496,
-        "rss_peak_kb": 16496
+        "rss_before_kb": 19392,
+        "rss_after_kb": 19424,
+        "rss_peak_kb": 19424
       },
       "budget": {
-        "p99_ms": 0.607,
+        "p99_ms": 0.655,
         "alloc_bytes_per_iter": 100232
+      }
+    },
+    {
+      "name": "durable_load",
+      "description": "society_server::persistence::load: read the village back into memory",
+      "runs_when": "once per start, and after --reset clears the save",
+      "iterations": 1000,
+      "latency_ms": {
+        "p50": 3.291,
+        "p95": 4.357,
+        "p99": 4.775,
+        "min": 2.795,
+        "max": 4.954,
+        "mean": 3.407
+      },
+      "memory": {
+        "alloc_bytes_per_iter": 2494413,
+        "alloc_calls_per_iter": 17684,
+        "live_growth_bytes": 0,
+        "output_bytes": 1133854,
+        "rss_before_kb": 19424,
+        "rss_after_kb": 19424,
+        "rss_peak_kb": 19424
+      },
+      "budget": {
+        "p99_ms": 8.714,
+        "alloc_bytes_per_iter": 3118016
+      }
+    },
+    {
+      "name": "observer_health",
+      "description": "society_server::diagnostics::journal_growth: the journal window /health reports",
+      "runs_when": "per /health request",
+      "iterations": 1000,
+      "latency_ms": {
+        "p50": 10.384,
+        "p95": 11.391,
+        "p99": 12.037,
+        "min": 9.829,
+        "max": 13.811,
+        "mean": 10.523
+      },
+      "memory": {
+        "alloc_bytes_per_iter": 50221,
+        "alloc_calls_per_iter": 1037,
+        "live_growth_bytes": 0,
+        "output_bytes": 10082700,
+        "rss_before_kb": 26736,
+        "rss_after_kb": 26784,
+        "rss_peak_kb": 26784
+      },
+      "budget": {
+        "p99_ms": 22.783,
+        "alloc_bytes_per_iter": 62776
+      }
+    },
+    {
+      "name": "turn_cycle",
+      "description": "turn::step plus the audit, save, journal and completion audit commit_turn writes",
+      "runs_when": "once per committed turn (window and --headless warmup)",
+      "iterations": 1000,
+      "latency_ms": {
+        "p50": 20.137,
+        "p95": 23.159,
+        "p99": 25.157,
+        "min": 16.366,
+        "max": 29.14,
+        "mean": 20.276
+      },
+      "memory": {
+        "alloc_bytes_per_iter": 2768622,
+        "alloc_calls_per_iter": 23533,
+        "live_growth_bytes": 64,
+        "output_bytes": 1141328,
+        "rss_before_kb": 19440,
+        "rss_after_kb": 26736,
+        "rss_peak_kb": 26736
+      },
+      "budget": {
+        "p99_ms": 46.317,
+        "alloc_bytes_per_iter": 3460777
       }
     }
   ]

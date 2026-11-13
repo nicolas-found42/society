@@ -1,4 +1,4 @@
-# Performance baseline (turn, save, observer)
+# Performance baseline (turn, save, load, observer)
 
 The claim "a turn costs a fraction of a millisecond" was in the README before
 anything measured it on this machine. This is the measurement, and the
@@ -8,22 +8,23 @@ Updated 2026-11-13 on this machine with the release profile
 (`opt-level = "s"`, LTO on). The raw numbers live in
 `baseline/perf_baseline.json`; this file says what they mean.
 
-## The three paths
+## The paths
 
-The village has three hot paths, and they were picked by reading the call
-sites, not by guessing:
+The village's paths were picked by reading the call sites, not by guessing:
 
 | path | code | how often it runs |
 |---|---|---|
 | `engine_turn` | `society_sim::turn::step` | once per committed turn |
 | `durable_save` | `society_server::persistence::save` | once per committed turn, right after it |
 | `observer_snapshot` | `society_server::observer::encode` — the village as the bytes on the wire | per observer request (`/state`, `/social`) |
+| `durable_load` | `society_server::persistence::load` | once per start (and after `--reset`) |
+| `observer_health` | `society_server::diagnostics::journal_growth` | per `/health` request |
+| `turn_cycle` | the engine step plus every sink `commit_turn` writes | once per committed turn |
 
-The first two are the turn cycle: `run_turns` commits a turn and then saves it
-before the next one starts (`crates/server/src/devserver.rs`). The third is
-what every observer of the control API reads; the desktop window polls the
-world four times a second, and an external monitor polls it as often as it
-likes.
+`turn_cycle` exists because the first three paths are stages, and the user pays
+for their sum: the engine step, the `turn_started` audit, the save, the journal
+row and the `turn_completed` audit. A regression in the *number* or *order* of
+those sinks is invisible in the stage numbers and obvious here.
 
 ## The numbers
 
@@ -31,89 +32,125 @@ likes.
 deterministic founding fixture (`--seed 7 --turns 233`, turn 233, 12 living
 villagers / 15 total agents, 2,681 events, a 1.13 MB save):
 
-| path | p50 (ms) | p95 (ms) | p99 (ms) | max (ms) | alloc B/iter | payload B |
-|---|---|---|---|---|---|---|
-| `engine_turn` | 0.184 | 0.209 | 0.222 | 0.238 | 227,467 | 9,691 |
-| `durable_save` | 8.004 | 9.066 | 9.994 | 16.810 | 3,456,085 | 1,133,854 |
-| `observer_snapshot` | 0.085 | 0.101 | 0.107 | 0.117 | 80,186 | 67,728 |
+| path | p50 (ms) | p95 (ms) | p99 (ms) | alloc B/iter | payload B |
+|---|---|---|---|---|---|
+| `engine_turn` | 0.206 | 0.329 | 0.395 | 227,467 | 9,691 |
+| `durable_save` | 8.814 | 10.129 | 11.610 | 2,496,881 | 1,133,854 |
+| `observer_snapshot` | 0.087 | 0.132 | 0.155 | 80,186 | 67,728 |
+| `durable_load` | 3.291 | 4.357 | 4.775 | 2,494,413 | 1,133,854 |
+| `observer_health` | 10.384 | 11.391 | 12.037 | 50,221 | 10,082,700 |
+| `turn_cycle` | 20.137 | 23.159 | 25.157 | 2,768,622 | 1,141,328 |
 
-Resident memory is flat across all three paths: no path retains what it
-allocates (live heap growth is 0 bytes at every path boundary). `prepare()`
+Resident memory is flat across every path: no path retains what it allocates
+(live heap growth is 0 bytes at every path boundary). `prepare()`
 pre-reserves steady-state headroom on cloned `Vec` buffers (`World.events`,
 `Agent.facts`, etc.) outside the timed and counted `body()` so `Clone`
 capacity shrinkage does not charge a full-history `Vec` reallocation on
 every iteration.
 
+`observer_health` is measured against the journal the `turn_cycle` iterations
+before it produced (1,000 rows, 10.1 MB), so the number is a health poll of a
+1,000-turn village. It therefore scales with `--iterations`: at `--iterations
+100` the same path measures a 1.2 MB journal and takes ~1.2 ms. `--check`
+uses the default, which is the number in the table.
+
 **Read the tail with the disk in mind.** Across captures on this machine the
-medians barely move (`durable_save` p50 13.0–14.3 ms, `engine_turn` p50
-0.20–0.22 ms) while the save path's p99 swings between 14.9 ms and 27.9 ms:
-the fsync waits for whatever the disk is doing, and a capture taken while
-APFS was still flushing a build is the slow end. The allocations, by
+medians barely move for the CPU paths, while the two fsync paths swing with
+whatever the disk is doing: `durable_save` measured 7.0–8.8 ms at p50 and 9.0–
+17.4 ms at max across the captures of this session. The allocations, by
 contrast, are exact — the same bytes to the byte every time, because the work
 does not change, only the disk does.
 
-## What the snapshot cost, and what it costs now
-
-The observer snapshot used to be the worst path in the village by an order of
-magnitude: 41.6 MB of allocation churn and 14.1 ms to answer one `/state`
-request, against a 3.4 MB response. Two things were wrong with it, and both
-were measured before either was changed.
-
-**First: the answer was built twice.** The payload was built as a
-`serde_json::Value` tree — every one of the village's 18,279 claims became a
-map with owned keys — and then the tree was walked again to write the bytes.
-A tree of that payload costs about twelve times the payload in allocations,
-and 412,683 of them.
-
-`crates/server/src/observer.rs` builds the payload as `Serialize` types
-instead, so the bytes are written once, straight from the world. A villager's
-record is the villager's own serialization with the observer's two rounded
-fields folded in, so a field added to the world is still carried without
-anyone remembering to carry it. The answer is 8.1% smaller because a `f32` is
-no longer widened to `f64` on its way through a tree: a trust of 3.2 used to
-be published as `3.200000047683716`, and is now published as `3.2`, which is
-what the rounding was for in the first place.
-
-**Second: the answer carried the whole memory of every villager.** The
-claims a villager holds are 98.5% of the answer (3,352,136 B of
-3,402,872 B), and they grow with every day the village lives. The living
-village does not need them; one villager's claims are served by
-`/agent/{name}`, which now carries the whole memory. So `/state` answers
-with what the settlement is now, and `/places/{id}` answers with the living
-view of the villagers there.
-
-| | before | after the tree | after the cutover |
-|---|---|---|---|
-| p50 latency | 14.115 ms | 2.856 ms | **0.073 ms** (193× faster) |
-| p99 latency | 15.753 ms | 2.950 ms | **0.088 ms** (179× faster) |
-| allocation churn | 41,623,858 B | 3,158,394 B | **75,360 B** (553× less) |
-| response bytes | 3,425,479 B | 3,148,762 B | **52,412 B** (65× smaller) |
-| process RSS moved | +29,008 KB | +48 KB | **+16 KB** |
-
-Both changes were checked against the code they replaced: the payload after
-the first change was the old payload, field for field, and the payload after
-the second change is that same payload with the claims taken out. Nothing
-else moved.
-
 ## What the numbers say
 
-**The save is the turn.** The engine turn is 0.184 ms; the save that follows it
-is 8.0 ms on the turn-233 fixture (and 22.3 ms on a 6.37 MB turn-1077 save). A
-committed turn spends ~98% of its time in persistence: serialise the world,
-parse it back to prove it would load, write it to a temporary file, fsync it,
-rename it over the target.
+**A turn is 20 ms, and half of it is durability.** `turn_cycle` is 20.1 ms
+while the engine step inside it is 0.21 ms: the turn is 1% thinking and 99%
+making the thinking survive. The save is 8.8 ms of that, the journal row 3.8 ms
+and the two audit rows 6.0 ms. Each of the three files is fsynced before the
+turn is reported committed, and on this machine `sync_all` is `F_FULLFSYNC`:
+measured 3.7–3.8 ms per call for a 300-byte file, against 0.03 ms for a bare
+`fsync`. The four flushes per turn are therefore ~11–15 ms of latency the code
+does not own, and the remaining ~5–8 ms is serialisation.
 
-**The observer answer is now cheap enough to ignore.** `/state` answers in
-0.085 ms with 80 KB of allocation, for a 68 KB answer: the living village
-without the claims each villager holds. A monitor polling once a second
-spends ~0.01% of a core. The claims themselves grow with every day the village
-lives and remain on `/agent/{name}`, where one observer asks for one villager
-instead of asking for the whole settlement every time.
+**The save is the CPU.** Serialising the village costs 1.2 ms, parsing it back
+to prove it would load costs 1.8 ms, and writing plus fsyncing 1.13 MB costs
+4.0 ms. All three grow with the village: at turn 1200 the same stages are
+7.8 ms, 9.8 ms and 5.4 ms for a 6.19 MB save. This is why fast-forward is
+bounded by disk throughput and save size rather than by the engine — the
+engine stays at 0.2 ms because it no longer walks the whole history (see the
+turn-1000 section below).
 
-**The engine stays flat as history grows.** On turn 233, nine to twelve living
-villagers decide, speak, be checked, act and settle in 0.19 ms, with three
-orders of magnitude of headroom inside the 50 ms soak bound
-(`crates/sim/src/tests.rs`).
+**The observer answers are cheap.** `/state` is 0.087 ms, `/social` and
+`/events` are under a millisecond end to end over HTTP, and `/health` now
+answers a 1,000-turn village in 10.4 ms where it used to parse every retained
+turn record.
+
+## What the load cost, and what it costs now
+
+A restart reads the save back into a `World`. The old implementation built a
+`serde_json::Value` of the whole document and then deserialised the world out
+of that tree, so every string and every map was allocated twice: 11,682,097 B
+per load, 7.0 ms at turn 233.
+
+`persistence::load` now reads the envelope in two passes over the same bytes: a
+header pass that stops at the version (skipping the world's keys rather than
+building them), and a typed pass that builds the world once. The error
+behaviour is unchanged — a missing version, a foreign version, a missing world
+and unreadable JSON still fail as `Corrupt`/`Version` naming the path — and the
+version is still settled before the world is parsed, so a file from another
+build fails on its version and not on whichever field that build renamed.
+
+| | before | after |
+|---|---|---|
+| `load` p50 at turn 233 | 7.025 ms | **2.892 ms** |
+| allocation per load | 11,682,097 B | **2,494,413 B** |
+
+The same change covers a 6.19 MB turn-1200 save at 15.4 ms.
+
+## What `/health` cost, and what it costs now
+
+`/health` reports the retained journal window: how many rows it holds, the
+oldest turn in it, whether it was clipped, and how much of it is damaged. The
+old reader answered that by deserialising every retained `JournalEntry` — the
+full `TurnRecord` of every turn, ~9.4 KB each — into memory and then reading
+two numbers off it. A 600-turn village made one health poll cost 5.65 MB of
+typed parsing, and the number grew with every turn the store retained.
+
+`diagnostics::journal_growth` reads the same window with the same
+oldest-out retention and the same clipping rule, but parses only the row's
+`turn`: the records themselves stay in the file. In-process, over the same
+662 KB journal, the typed reader costs 1.564 ms and the growth reader 0.695 ms,
+with 50× fewer allocated bytes (1,421,745 → 28,395).
+
+End to end, over HTTP, on a 600-turn village (`/turn` to 600, then 25 polls):
+
+| | before | after |
+|---|---|---|
+| `/health` p50 | 15.742 ms | **6.566 – 7.095 ms** (two runs) |
+| `/health` max | 18.931 ms | **7.153 – 7.878 ms** |
+| response bytes | 816 | 816 |
+
+`journal_growth` counts a line as corrupt when it is not a journal row (the
+line's JSON and its `turn`). The typed validation of the record inside the row
+belongs to `/log`, `/diagnostics`, `/verify` and the offline reader, which still
+deserialise `JournalEntry`; `/health` reports growth, and the row's presence is
+what growth means. `tools/verify-observability.py` exercises the typed readers.
+
+## Two smaller costs removed from every turn
+
+The save buffer is now sized from the save it replaces instead of growing from
+128 bytes: a village grows by a few hundred bytes a turn, so the previous file's
+length is within a doubling step of the next one. At turn 1200 the 6.19 MB of
+bytes are written with 26% fewer allocated bytes and ~5% less time
+(7.752 → 7.378 ms); at turn 233 the save's per-iteration allocation falls from
+3,456,085 B to 2,496,881 B.
+
+An evidence append used to open the file twice: once to append, once to read the
+last byte and confirm the previous row ended in a newline. It now opens one
+read-append handle and reads that byte from the descriptor it is about to write
+to. `O_APPEND` still places the write at the end whatever the read cursor is, so
+the torn-tail protection is unchanged; the per-append cost is one open and one
+read fewer, four times a turn.
 
 ## Long-running turn-1000+ scaling
 
@@ -123,7 +160,7 @@ more than a thousand turns (12,809–13,641 append-only events, 21,198 facts):
 
 | fixture | `engine_turn` p50 / p99 | `engine_turn` alloc | `durable_save` p50 / p99 | `durable_save` alloc | `observer_snapshot` p50 |
 |---|---|---|---|---|---|
-| `seed=7, turn=233` (1.13 MB) | 0.184 / 0.222 ms | 227,467 B | 8.004 / 9.994 ms | 3,456,085 B | 0.085 ms |
+| `seed=7, turn=233` (1.13 MB) | 0.206 / 0.395 ms | 227,467 B | 8.814 / 11.610 ms | 2,496,881 B | 0.087 ms |
 | `seed=7, turn=1077` (12,809 events) | 0.215 / 0.369 ms | 206,659 B | 19.778 / 25.009 ms | 15,171,927 B | 0.092 ms |
 | `data/society.json` turn 1077 (13,641 events, 6.37 MB) | 0.138 / 0.191 ms | 163,696 B | 22.296 / 28.874 ms | 15,741,078 B | 0.076 ms |
 
@@ -139,11 +176,32 @@ with total save size (`1.13 MB` -> `6.37 MB`), so `--source data/society.json`
 exceeds the turn-233 `durable_save` budget while passing `engine_turn` and
 `observer_snapshot`.
 
+## What was not changed, and why
+
+- **The verify parse in `save`.** Serialising and parsing back is ~40% of the
+  save's CPU, and it is the price of "a save you cannot load is never written".
+  A cheaper validation would have to be a weaker one: `serde_json` writes a
+  non-finite float as `null`, which only a typed parse of the bytes can catch
+  in every field.
+- **The number of fsyncs per turn.** The save, the journal row and both audit
+  rows are each made durable before the turn is reported. Merging them or
+  dropping one would trade the evidence contract for latency.
+- **`/log` still reads the retained journal.** Its window is the newest 1,000
+  matching rows or 8 MiB, but the match is a filter over append order, which a
+  reset makes non-monotonic, so the reader cannot stop at the window without
+  changing which rows it can see. On a 600-turn village `/log` takes ~16 ms; it
+  is a history query, not a frame-rate path.
+- **`/health` still reads up to its 8 MiB window.** The window is 9.4 KB per
+  turn, so a health poll of a 1,000-turn village reads ~8–10 MB, and the
+  retention cap (160 MiB of journal) bounds the worst case. Shrinking the
+  window would change the reported `journal_turns`.
+
 ## Running it
 
 ```bash
 tools/bench.sh            # measure and rewrite baseline/perf_baseline.json
 tools/bench.sh --check    # measure and compare against the recorded budgets
+tools/bench.sh --breakdown   # per-stage cost inside save, append, load and the reads
 ```
 
 `--check` exits non-zero when a path is outside its budget. The budgets live
@@ -158,14 +216,15 @@ every capture measured the same bytes to the byte.
 The harness is a workspace crate, `tools/bench`, written on `std` alone: the
 counting global allocator, the percentile math, the RSS sampling and the JSON
 fixture are all in it. It adds no dependency to the tree — it borrows
-`society-sim`, `society-server` and `serde_json`, all of which were already
-here. It measures the production functions themselves, not copies of them:
-the observer path is measured through `observer::encode`, the same call the
-`/state` handler makes.
+`society-sim`, `society-server`, `serde` and `serde_json`, all of which were
+already here. It measures the production functions themselves, not copies of
+them: the observer path is measured through `observer::encode`, the health path
+through `diagnostics::journal_growth`, the same calls the handlers make.
 
 Useful flags: `--iterations N`, `--warmup N`, `--seed N` (default `7`),
 `--turns N` (default `233`), `--out PATH`, `--source SAVE` (load an explicit
-save instead of founding and stepping the deterministic seed-7 fixture).
+save instead of founding and stepping the deterministic seed-7 fixture),
+`--breakdown` (print the stages and exit without writing the fixture).
 
 ## Do not recapture casually
 
@@ -181,3 +240,9 @@ started being written straight from the world: 14.115 ms at p50 and
 41,623,858 B of churn per request became 2.856 ms and 3,158,394 B. Then
 `/state` was cut over to the living village, and the claims moved to
 `/agent/{name}`: 0.073 ms and 75,360 B.
+
+The load and health numbers moved on 2026-11-13: `load` from 7.025 ms to
+2.892 ms (11,682,097 B to 2,494,413 B per load), `/health` from 15.742 ms to
+6.566 ms at p50 on a 600-turn village, and the save's buffer from growth to a
+sized allocation. `durable_load`, `observer_health` and `turn_cycle` became
+gated paths in the same commit.

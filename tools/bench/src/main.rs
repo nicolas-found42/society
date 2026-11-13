@@ -1,6 +1,6 @@
 //! Standalone latency and allocation baseline for the society.
 //!
-//! Three paths carry the wall clock of a living village, and they are measured
+//! Six paths carry the wall clock of a living village, and they are measured
 //! here on this machine so no later claim about speed is an estimate:
 //!
 //! 1. `engine_turn` — `society_sim::turn::step`, the committed turn: the
@@ -13,6 +13,14 @@
 //! 3. `observer_snapshot` — `society_server::observer::encode`, the payload
 //!    every observer of the control API reads (`/state`, `/social`). Runs per
 //!    observer request.
+//! 4. `durable_load` — `society_server::persistence::load`, the village read
+//!    back into memory. Runs once per start.
+//! 5. `turn_cycle` — the engine step plus every sink `commit_turn` writes: the
+//!    start audit, the save, the journal row and the completion audit. The
+//!    stage paths above split this cost; a regression in their count or order
+//!    only shows up here.
+//! 6. `observer_health` — `society_server::diagnostics::journal_growth`, the
+//!    journal window `/health` reports.
 //!
 //! The harness adds no dependency: the counting allocator, the percentile
 //! math, the RSS sampling and the JSON fixture are all written here on top of
@@ -23,6 +31,7 @@
 //! ```bash
 //! tools/bench.sh                 # measure and write baseline/perf_baseline.json
 //! tools/bench.sh --check         # measure and compare against the fixture
+//! tools/bench.sh --breakdown     # per-stage cost, no fixture written
 //! ```
 //!
 //! `--check` exits non-zero when a path is slower than the budget recorded in
@@ -581,7 +590,123 @@ fn main() {
         &snapshot_measurement,
     );
 
-    let reports = [turn_report, save_report, snapshot_report];
+    // 4. The load a restart performs: the save that was just written, read back.
+    let load_measurement = measure(
+        || {},
+        || {
+            let world = society_server::persistence::load(&scratch_path)
+                .expect("the save reads back")
+                .expect("the save holds a village");
+            std::hint::black_box(world.turn);
+        },
+        || {},
+        args.iterations,
+        args.warmup,
+    );
+    let load_report = report(
+        "durable_load",
+        "society_server::persistence::load: read the village back into memory",
+        "once per start, and after --reset clears the save",
+        std::fs::metadata(&scratch_path).map_or(0, |m| m.len()),
+        &load_measurement,
+    );
+
+    // 5. The turn as the user pays for it: the engine step plus every durable
+    // sink `commit_turn` writes. The three paths above split this cost; a
+    // regression in their ordering or count only shows up here.
+    let cycle_world = world.clone();
+    let cycle_slot = RefCell::new(None::<World>);
+    let cycle_measurement = measure(
+        || {
+            let mut w = cycle_world.clone();
+            w.events.reserve(64);
+            for a in &mut w.agents {
+                a.facts.reserve(16);
+                a.memories.reserve(8);
+                a.beliefs.reserve(8);
+                a.line_ledger.reserve(8);
+                a.trust.reserve(4);
+                a.relations.reserve(4);
+            }
+            *cycle_slot.borrow_mut() = Some(w);
+        },
+        || {
+            let mut w = cycle_slot.borrow_mut().take().expect("prepared world");
+            let record = society_sim::turn::step(&mut w).expect("the turn runs");
+            let context = society_server::telemetry::Context::default();
+            society_server::diagnostics::append_audit_context(
+                &scratch_path,
+                "turn_started",
+                record.turn,
+                json!({"source": "bench"}),
+                context.clone(),
+            )
+            .expect("the start audit lands");
+            society_server::persistence::save(&w, &scratch_path).expect("the save lands");
+            society_server::diagnostics::append_turn_context(
+                &scratch_path,
+                w.seed,
+                &record,
+                "bench",
+                society_server::persistence::SAVE_VERSION,
+                context.clone(),
+            )
+            .expect("the journal lands");
+            society_server::diagnostics::append_audit_context(
+                &scratch_path,
+                "turn_completed",
+                w.turn,
+                json!({"source": "bench"}),
+                context,
+            )
+            .expect("the completion audit lands");
+            *cycle_slot.borrow_mut() = Some(w);
+        },
+        || {
+            *cycle_slot.borrow_mut() = None;
+        },
+        args.iterations,
+        args.warmup,
+    );
+    let cycle_report = report(
+        "turn_cycle",
+        "turn::step plus the audit, save, journal and completion audit commit_turn writes",
+        "once per committed turn (window and --headless warmup)",
+        std::fs::metadata(&scratch_path).map_or(0, |m| m.len()),
+        &cycle_measurement,
+    );
+
+    // 6. What /health answers: the journal window without its records.
+    let health_measurement = measure(
+        || {},
+        || {
+            let growth = society_server::diagnostics::journal_growth(
+                &scratch_path,
+                society_server::diagnostics::MAX_QUERY_ENTRIES,
+            );
+            std::hint::black_box(growth.turns + growth.corrupt_lines);
+        },
+        || {},
+        args.iterations,
+        args.warmup,
+    );
+    let health_report = report(
+        "observer_health",
+        "society_server::diagnostics::journal_growth: the journal window /health reports",
+        "per /health request",
+        std::fs::metadata(society_server::diagnostics::journal_path(&scratch_path))
+            .map_or(0, |m| m.len()),
+        &health_measurement,
+    );
+
+    let reports = [
+        turn_report,
+        save_report,
+        snapshot_report,
+        load_report,
+        health_report,
+        cycle_report,
+    ];
     for r in &reports {
         println!(
             "  {:<18} p50 {:>8.3} ms  p95 {:>8.3} ms  p99 {:>8.3} ms  {:>9} B/iter",
@@ -797,7 +922,22 @@ fn breakdown(world: &World, iterations: usize, warmup: usize, dir: &std::path::P
         iterations,
         warmup,
     );
-    stage("save.serialize", &m);
+    stage("save.serialize.grow", &m);
+
+    // What `persistence::save` does: the buffer starts at the size of the save
+    // being replaced, so the village is not copied through the growth ladder.
+    let m = measure(
+        || {},
+        || {
+            let mut bytes = Vec::with_capacity(bytes.len() + 4096);
+            serde_json::to_writer(&mut bytes, &envelope).unwrap();
+            std::hint::black_box(bytes.len());
+        },
+        || {},
+        iterations,
+        warmup,
+    );
+    stage("save.serialize.presized", &m);
 
     let m = measure(
         || {},
@@ -887,6 +1027,50 @@ fn breakdown(world: &World, iterations: usize, warmup: usize, dir: &std::path::P
         warmup,
     );
     stage("audit.append", &m);
+
+    // The observer's evidence reads, which is where /health, /log and
+    // /diagnostics spend their time. Both readers see the same journal, so the
+    // comparison does not depend on what else the machine is doing.
+    let journal = society_server::diagnostics::journal_path(&path);
+    println!(
+        "  journal bytes now {}",
+        std::fs::metadata(&journal).map_or(0, |m| m.len())
+    );
+    let m = measure(
+        || {},
+        || {
+            let evidence = society_server::diagnostics::scan_journal(&path, 0, 1000);
+            std::hint::black_box(evidence.entries.len());
+        },
+        || {},
+        iterations,
+        warmup,
+    );
+    stage("journal.scan_typed", &m);
+
+    let m = measure(
+        || {},
+        || {
+            let growth = society_server::diagnostics::journal_growth(&path, 1000);
+            std::hint::black_box(growth.turns);
+        },
+        || {},
+        iterations,
+        warmup,
+    );
+    stage("journal.growth", &m);
+
+    let m = measure(
+        || {},
+        || {
+            let evidence = society_server::diagnostics::scan_audit(&path, 1000);
+            std::hint::black_box(evidence.entries.len());
+        },
+        || {},
+        iterations,
+        warmup,
+    );
+    stage("audit.scan", &m);
 }
 
 fn sorted_nanos(m: &Measurement) -> Vec<u64> {

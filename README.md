@@ -51,10 +51,10 @@ sizes, select villagers directly on the ring; the roster appears in wider window
 
 Turns run locally, without a remote call to rate-limit, retry or queue: the
 engine decides, speaks, checks, acts and settles in ~0.2 ms, measured (even
-after 1,000+ turns). Making that turn durable costs more than running it —
-8 ms on the turn-233 baseline (22 ms at turn 1077) to write and fsync the
-village file and append the journal — so disk throughput can constrain fast
-forwarding; the numbers behind both are in `baseline/PERF_BASELINE.md`. The same
+after 1,000+ turns). Making that turn durable costs more than running it — a
+committed turn is ~20 ms at turn 233, of which the save is ~9 ms and three
+fsyncs are the rest — so disk throughput can constrain fast forwarding; the
+numbers behind both are in `baseline/PERF_BASELINE.md`. The same
 seed and the same save produce the same turns, the same lines and the same
 village, every time.
 

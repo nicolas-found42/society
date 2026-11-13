@@ -309,9 +309,9 @@ async fn health(State(s): State<AppState>) -> impl IntoResponse {
     let turn = world.turn;
     drop(world);
     let depth =
-        crate::diagnostics::scan_journal(&s.save_path, 0, crate::diagnostics::MAX_QUERY_ENTRIES);
-    let journal_oldest = depth.entries.iter().map(|e| e.turn).min();
-    let journal_turns = depth.entries.len();
+        crate::diagnostics::journal_growth(&s.save_path, crate::diagnostics::MAX_QUERY_ENTRIES);
+    let journal_oldest = depth.oldest_turn;
+    let journal_turns = depth.turns;
     let journal_bytes = crate::diagnostics::journal_bytes(&s.save_path);
     Json(json!({
         "ok": halted.is_none(),

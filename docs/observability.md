@@ -116,7 +116,12 @@ command validated against one surface is not automatically valid on the other.
 `--since-turn` selects journal rows only; the audit file has no turn window.
 The `/health` journal fields are capped the same way: when
 `journal_depth_limited` is true, `journal_window_oldest_turn` is the oldest turn
-in the read window, not the oldest retained turn. `/log` reports `rows`,
+in the read window, not the oldest retained turn. `/health` derives that window
+from each row's `turn` (`diagnostics::journal_growth`), without deserialising
+the records the row carries; its `journal_quality.corrupt_lines` therefore
+counts lines that are not journal rows (the line's JSON and its `turn`). The
+typed validation of the record inside a row belongs to `/log`, `/diagnostics`,
+`/verify` and the offline reader. `/log` reports `rows`,
 `envelopes` (one per row, `null` for a turn held only in memory), `from_memory`,
 `from_journal`, `memory_cap` for the in-memory tail, and `order` for the tail
 convention. A turn with no durable row is merged only when no time or identity
@@ -125,8 +130,8 @@ so a clipped scan never resurrects an older in-memory turn.
 Rotation itself leaves no tombstone, and a foreign directory left at a slot path
 is removed before the chain shifts so it cannot be renamed into the retained
 slots. `files`/`files_read` identify what was read;
-missing/unreadable/corrupt evidence is not a clean bill of health. Rust readers
-validate typed records; offline Python validates envelopes but is not a complete
+missing/unreadable/corrupt evidence is not a clean bill of health. The Rust
+readers that return records validate typed records; offline Python validates envelopes but is not a complete
 schema validator. Offline reads while rotation occurs can report a disappeared
 file: copy the evidence or repeat after stopping the writer for a stable view.
 
