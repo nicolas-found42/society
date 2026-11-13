@@ -85,6 +85,10 @@ Four views, each a different question:
 **World** — the ring of seven places, who is where, what each place holds, and
 what is moving. This is the one to watch.
 
+**Council & Economy** — the parish as an institution: the reeve's seat and the
+decrees in force, the market with its scarcity index and prices, households and
+hearths, factions and feuds, the rumour mill and parish oaths.
+
 ![The Feed: every committed turn's lines with motive, register, whether the claim held, and the per-turn digest](docs/media/feed.gif)
 
 **Feed** — every committed turn's lines, oldest to newest, each with the motive the
@@ -193,7 +197,7 @@ action outside the shortlist stays legal and is still accepted.
 
 Lines come from a rule-based grammar over typed slots: a count, a person, a place,
 a resource, an obligation, a quality. The rules are keyed on the **action**, not
-the social act — thirteen of the nineteen actions perform no social act at all —
+the social act — thirteen of the twenty actions perform no social act at all —
 so a `give` line is written for a gift and an `accuse` line for an accusation. A rule
 may carry a second clause; a long first clause only pairs with a short one, so the
 twenty-word budget holds without a check. A per-villager ledger makes an exact
