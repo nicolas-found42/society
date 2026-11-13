@@ -20,7 +20,7 @@ every committed turn is on disk.
 - [Requirements](#requirements) · [Run it](#run-it) · [What you are looking at](#what-you-are-looking-at) · [Things to try](#things-to-try-in-five-minutes)
 - [How a turn works](#how-a-turn-works) · [The world's rules](#the-worlds-rules)
 - [Drive it from code](#drive-it-from-code) · [Evidence and diagnostics](#evidence-and-diagnostics)
-- [Performance](#performance) · [Architecture](#architecture) · [Tests](#tests) · [Repository map](#repository-map) · [License](#license)
+- [Performance](#performance) · [Architecture](#architecture) · [Tests](#tests) · [Repository map](#repository-map) · [License](#license) · [Notes and sources](#notes-and-sources)
 
 ## Requirements
 

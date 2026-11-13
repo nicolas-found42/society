@@ -32,6 +32,7 @@ ROOT="$(cd "$HERE/.." && pwd)"
 cd "$ROOT"
 
 SCENE="${1:-village}"
+MEDIA="$ROOT/docs/media"
 
 # `--check` is the gate for a docs change: it never launches the app, so it can
 # run in a pre-merge pass on a machine with no window server.
@@ -41,7 +42,17 @@ if [ "$SCENE" = "--check" ]; then
     exit 2
   fi
   status=0
-  for asset in "$ROOT"/docs/media/*; do
+  # The assets the README embeds, named rather than globbed: a glob quietly
+  # passes when the file it should have found is gone.
+  expected="village.gif speed.gif feed.gif intervene.gif inspector.png"
+  for name in $expected; do
+    if [ ! -f "$MEDIA/$name" ]; then
+      echo "$name: missing (tools/gif.sh ${name%.gif})"
+      status=1
+    fi
+  done
+  for asset in "$MEDIA"/*; do
+    [ -f "$asset" ] || continue
     name="$(basename "$asset")"
     bytes=$(wc -c <"$asset" | tr -d ' ')
     width=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$asset")
@@ -67,7 +78,6 @@ HEIGHT=640
 FPS=8
 SECONDS=4
 PORT="${PORT:-8199}"
-MEDIA="$ROOT/docs/media"
 WORK="$ROOT/.scratch/gif-$SCENE"
 SAVE="$WORK/society.json"
 APP="$ROOT/target/release/society"
