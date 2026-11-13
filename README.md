@@ -1,335 +1,272 @@
 # society
 
-A living settlement. Nine villagers with memory, hunger, grudges and promises
-live in a ring of seven places, choose what to do and what to say for
-themselves, and are watched doing it. There is no language model in the loop:
-every decision, every spoken line and every check is a rule in the simulation,
-and the whole village replays identically from a seed.
+**A village that lives on its own, in code.**
+
+Nine villagers with memory, hunger, grudges and promises live in a ring of seven
+places, decide for themselves what to do and what to say, and are watched doing
+it. There is no language model in the loop: every decision, every spoken line and
+every check is a rule in the simulation, and the same seed replays the same
+village, every time.
+
+![The village on day 4: villagers moving between seven places, with the day, season, era, stocks and the last turn's cost in the header](docs/media/village.gif)
+
+No API key, no model to download, no network at runtime. The whole thing is three
+Rust crates, and the interesting part is that the society is inspectable: every
+choice has its factors on record, every spoken line has the claims it made, and
+every committed turn is on disk.
+
+## Contents
+
+- [Requirements](#requirements) · [Run it](#run-it) · [What you are looking at](#what-you-are-looking-at) · [Things to try](#things-to-try-in-five-minutes)
+- [How a turn works](#how-a-turn-works) · [The world's rules](#the-worlds-rules)
+- [Drive it from code](#drive-it-from-code) · [Evidence and diagnostics](#evidence-and-diagnostics)
+- [Performance](#performance) · [Architecture](#architecture) · [Tests](#tests) · [Repository map](#repository-map) · [License](#license)
+
+## Requirements
+
+| | |
+|---|---|
+| Rust | stable `cargo`, edition 2021. No pinned toolchain file, no nightly features |
+| Platform | macOS, Linux or Windows for the engine and the server; the observer window uses `eframe`/`egui` |
+| Screen capture tools | macOS only: `tools/shot.sh` and `tools/gif.sh` need `swiftc` (Xcode CLT) and, for clips, `ffmpeg` |
+
+Nothing else: no database, no daemon, no credentials. `cargo test --workspace`
+runs offline.
+
+## Run it
 
 ```bash
 git clone https://github.com/nicolas-found42/society.git
 cd society
-cargo run --release                # window + control API on :8100
-cargo run --release -- --headless  # no window, same engine
-
-# open straight to a panel, advance turns before showing, run a second village
-cargo run --release -- --view feed --warmup 10
-cargo run --release -- --view inspector --port 8101
-cargo run --release -- --focus --paused # open in front for inspection
-
-# several villages side by side; --reset discards one explicitly
-SOCIETY_SAVE_PATH=data/second.json cargo run --release -- --port 8101
-cargo run --release -- --reset      # start the observed village over
+cargo run -p society --release                # window + control API on 127.0.0.1:8100
 ```
 
-No API key, no model to pull, no daemon to keep alive. There is no setup
-beyond the build.
+`-p society` is the package name; its directory is `crates/desktop`, and the
+workspace has two other binaries (`parity`, `society-bench`). Install it once with
+`cargo install --path crates/desktop` and the rest of this page's commands drop
+the `cargo run -p society --release --` prefix for a plain `society`.
 
-The village is written to disk after every committed turn and read back at
-startup. Close the window, come back later, and it is where you left it: same
-turn, same stores, same grudges, same dead. `--seed` only founds a world when
-there is no save; a corrupt or wrong-version save is a startup failure naming
-the file, never a silent reset.
-
-| Variable | Default | Meaning |
-|---|---|---|
-| `SOCIETY_SAVE_PATH` | `data/society.json` | village file; one file per village |
-
-The window starts simulating at **1×: one turn per second**. Use **Pause** and
-**Simulate** to control playback, or drag **Speed** from **1× to 100×** to fast
-forward. The multiplier is a target rate; simulation and saving can limit actual
-throughput. The native observer redraws continuously during playback, targeting
-120 fps on a 120 Hz display; villager movement and atmosphere blend between
-committed states independently of turn speed. The status bar shows observed fps.
-The frame budget is measured by a manual release probe
-(`cargo test -p society --release -- --ignored observer_frame_budget_through_100x`), not by
-the default test run.
-Use `--speed 100` to start directly at the maximum multiplier. Unchanged frames reuse the world
-snapshot, turn history, and ring layout. Pause lets the current small batch finish (at most four turns).
-Manual **1 Turn** and **+5 Turns** pause automatic playback. At narrow window
-sizes, select villagers directly on the ring; the roster appears in wider windows.
-
-Turns run locally, without a remote call to rate-limit, retry or queue: the
-engine decides, speaks, checks, acts and settles in ~0.2 ms, measured (even
-after 1,000+ turns). Making that turn durable costs more than running it — a
-committed turn is ~20 ms at turn 233, of which the save is ~9 ms and three
-fsyncs are the rest — so disk throughput can constrain fast forwarding; the
-numbers behind both are in `baseline/PERF_BASELINE.md`. The same
-seed and the same save produce the same turns, the same lines and the same
-village, every time.
-
-The window never takes focus and never raises itself, so it can sit behind what
-you are working on. Screenshot it at any time, from any app, with:
+The first run compiles with LTO in the release profile and takes a couple of
+minutes; after that it starts in a fraction of a second (the save reads in about
+3 ms). A window opens and the village begins at **1×: one turn per second**.
 
 ```bash
-tools/shot.sh                     # -> /tmp/society.png
-tools/shot.sh /tmp/turn40.png 5   # wait 5s, then capture
+cargo run -p society --release -- --headless             # no window, same engine and API
+cargo run -p society --release -- --view feed            # open on a panel
+cargo run -p society --release -- --warmup 40 --speed 8  # 40 turns of history, then 8×
+cargo run -p society --release -- --paused --speed 1     # open stopped
 ```
 
-`tools/shot.sh` builds `tools/shot.swift` on first use and captures the window's
-own surface through ScreenCaptureKit. Because it reads the window rather than
-the screen, the result is the same whether the window is frontmost or completely
-covered, and nothing is clicked, focused, or moved. It needs Screen Recording
-permission for the terminal that runs it.
+The village is saved to `data/society.json` after every committed turn and read
+back at startup: close the window, come back later, and it is where you left it —
+same turn, same stores, same grudges, same dead. `--seed` only founds a world when
+there is no save; a corrupt or wrong-version save is a startup failure naming the
+file, never a silent reset.
 
-## Why the architecture looks like this
+## What you are looking at
 
-The first version of this village ran on two backends: a cloud judgment layer
-that chose what each villager did, and a local 350M model that wrote what they
-said. Every structural decision was measured on this machine before it was
-written down, and the measurements are in `models/research-*.md` and in the
-notes at the end of this file.
+The header is the village: day, turn, season, the era it is living through, the
+weather and harvest multiplier, morale, prosperity, who holds the reeve's seat and
+which decree is in force. Under the tabs, the ticker runs the last turn's cost and
+the redraw rate — `1 turn · 34 ms · 119 fps` means the committed turn (engine, then
+save, journal and audit) cost 34 ms of wall clock, and the window drew at 119
+frames per second against a 120 fps target.
 
-| Task | Old engine | This engine |
-|---|---|---|
-| Which moves are legal, what they cost, who owns what | code | code |
-| Among 2-5 legal actions, which one now | the judge, 3.88/4 blind-judged | the policy, in code |
-| Why a villager acts | the judge, one word | derived from the action and the state |
-| What kind of social act a line performs | the judge, after the line | derived from the action |
-| Whether a line holds against the world | the judge, 0.0-1.0 | the check, on the line's own claims |
-| One spoken line | a local 350M model | the speaker, from a grammar |
-| Memory salience | code | code |
+| Control | What it does |
+|---|---|
+| **Pause** / **Simulate** | stop or resume automatic playback. Pause lets the turn in flight finish (at most four) |
+| **1 Turn**, **+5 Turns** | step by hand; both pause automatic playback |
+| **Speed** | 1× to 100×, one turn per second at 1×. The multiplier is a *target*: durability caps the real rate |
+| **Providence** menu | intervene — whisper a thought, leave food, turn the weather |
+| clicks | a villager on the ring or in the roster opens the inspector; a place shows its stores |
 
-**Code owns legality, arithmetic, meaning and wording.** The village used to
-be a prompt with a state machine behind it. Now the state machine is the whole
-thing, and the prompt is gone.
+Four views, each a different question:
 
-Four things ended the judgment layer, each of them measured:
+**World** — the ring of seven places, who is where, what each place holds, and
+what is moving. This is the one to watch.
 
-1. **Most of what it was asked had no meaning in it.** The tone question came
-   back "plain and neutral" for 38 of 45 lines while still moving trust; the
-   pressure ordinal never passed 2.21, so the world's rumor (3.2) and
-   threat-morale (3.0) branches could not fire; the addressee was asked before
-   the line existed, so it guessed. All three are derived in code now.
-2. **The motive is the action's reading, named.** Asking for it separately
-   bought a second opinion about a decision the same call had already made.
-3. **A gate can only find a false claim if something can write one.** A
-   350M model invents numbers - 38% of its lines were discredited, 21% for the
-   better 0.6B model - so it needed a gate. A speaker that writes from a
-   grammar cannot invent a number, so what the check has left to do is verify
-   the claims the line actually makes.
-4. **The action choice is a choice among two to five options the code already
-   computed.** The judge read a richer set of contextual features than a naive
-   policy, and it scored 3.88/4 against that policy's 3.12/4, blind-judged by
-   the 12B. That gap became the parity bar, measured with the same judge on
-   the same recorded states.
+![The Feed: every committed turn's lines with motive, register, whether the claim held, and the per-turn digest](docs/media/feed.gif)
 
-What it cost: two cloud calls and up to eighteen local calls per turn, about
-$0.001 and 20,759 input tokens per turn, an API key the app refused to start
-without, and a village that halted when a network call failed.
+**Feed** — every committed turn's lines, oldest to newest, each with the motive the
+policy derived, the register the mood implied, who was addressed, and whether the
+line's claims held against the world (`grounded 1.00`). The per-turn digest counts
+who spoke, who stayed silent, and who was caught lying.
 
-**How the parity bar came out** (`baseline/PARITY_REPORT.md` has the full
-numbers). The old engine's recorded states were replayed through the new
-engine and the judge scored old choice against new choice, blind and paired.
-The grammar reached it: the new lines sit within the noise band of the old
-ones on the first measurement, with no revision spent. The action choice did
-not: three measured revision rounds lifted the new win rate from 25.0% to
-about 35%, still below the bar, and the spec's stop condition ended the work
-with a report rather than a lowered bar. The observer then accepted the lower
-bar, and this tree runs the code-only engine: deterministic, offline, and
-free per turn, with the decision gap on record. The judge family also scored
-its own prior choices in that comparison, so the measured gap likely
-overstates the real one; the number is the number anyway, and it is the
-reason the old engine's corpus and the harness stay in the tree.
+![Fast forward at 100x: turns commit as fast as the disk allows while the window keeps redrawing](docs/media/speed.gif)
 
-Two rules are designed around explicitly:
+**Anyone can turn the dial to 100×**, but the village will not go faster than its
+disk: each committed turn rewrites the save and flushes it. That is the real
+ceiling, and the [Performance](#performance) section has the numbers.
 
-1. **The action id is the meaning.** `give` performs a gift, `accuse` performs
-   an accusation, `console` performs counsel. The line is written for the act
-   the action implies, and nothing downstream re-derives it.
-2. **A rule has somewhere to be wrong.** Every claim a line makes is recorded
-   when the line is written, so the check compares a claim against the world
-   instead of re-reading prose. A generator bug cannot slip past the check
-   unnoticed, because a property test holds every line outside lie mode to
-   making only true claims.
+![The inspector: a villager's persona, goal, vitals, skills, legal actions, and trust, affinity, respect and grudge against every other villager](docs/media/inspector.png)
 
-## The turn
+**Inspector** — one villager: persona, current goal, vitals, carried supplies,
+skills, the actions currently legal for them, the factors behind their last
+decision, and the trust/affinity/respect/grudge table toward everyone else. This
+is where the code stops looking like a black box.
 
-```
-code: enumerate the legal actions per living villager, shortlist them, score every candidate
-  └─ policy: intent + motive + social act for everyone, in code
-      └─ speaker: one line per villager, from a grammar
-          └─ check: the line's claims against the world, in code
-              └─ code: validate, apply, settle, log
-```
+## Things to try (in five minutes)
 
-### The policy
-
-Three layers, in order:
-
-1. **Hard tiers.** Survival first - hunger with no food, thirst with no
-   water, an ailment, winter cold - and then obligation, an unkept promise or
-   a grudge against someone present. Nothing below may talk a villager out of
-   finding food.
-2. **Registered feature terms.** Every remaining candidate is scored by named
-   terms - the work waiting in the villager's profession, their role's duty,
-   what the place needs, someone present who is starving, kinship, trust, a
-   grudge, their mood, an unkept promise, novelty, what the action costs in
-   energy, whose ground they stand on. Each term is a pure function with a
-   documented weight, and a more complicated village later is more terms, not a
-   different policy.
-3. **A distribution.** The scores become a distribution over the candidates.
-   That is where confidence comes from, and where the **dilemma** comes from -
-   the same margin the judge used to report, computed in code.
-
-The shortlist is the legal actions, one per kind of act (need, social, work,
-rest, move) minus whatever the villager has just done for two turns running:
-a menu of eighteen is not a choice, and an unchanging menu invites the same
-choice twice. A legal action outside the shortlist stays legal and is still
-accepted - the shortlist keeps the policy honest, it is not the law.
-
-### The speaker
-
-A rule-based grammar over typed slots - a count, a person, a place, a resource,
-an obligation, a quality. **The rules are keyed on the action, not the social
-act**: thirteen of the twenty actions perform no social act at all, so keying on
-the act would put seven lines in ten into one shared bank and stop the speaker
-saying what the villager actually did. A `speak` action is the exception - its
-act is chosen by the policy, so its rules are keyed on that act. A rule may
-carry a second clause, a consequence or a request, joined by a connective
-matched to the action family. Every line is grammatical by construction, because
-the rules are the grammar, and a long first clause only pairs with a short
-second, so the twenty-word budget holds without a check.
-
-A villager does not repeat themselves: a ledger of recently used lines makes an
-exact repeat impossible inside six turns. Variety comes from the rule set, the
-slot fillers and a per-villager random stream derived from the seed, the turn and
-the name, so two villagers acting at once cannot draw the same line. Each
-`(action, register)` cell holds at least two first-clause rules, and each action
-family at least three second-clause forms.
-
-**A villager knows what is observable and what they remember.** Who is here,
-the weather, the place's stores, their own carry - and their memories, their
-promises, what they know about other people. They do not know another
-villager's inventory unless they remember it. A villager with nobody to
-address speaks no line at all: silence is a signal, and the turn summary counts
-it.
-
-### The check and the lies
-
-The speaker returns the line together with the claims it made. The check
-compares each claim with the world. True claims pass; a false claim marks the
-line **discredited** - still spoken, but it moves no trust, and the listener's
-memory records the claim and the failure of it.
-
-Lying is designed rather than accidental. A villager lies when the world pushes
-them to: hunger with nothing in hand, a grudge against the person they are
-addressing, a promise about to be missed, fear. The claim is a plausible
-overstatement - their count, a debt, a gift they did not make - the same lie
-the world would punish. The rate is a documented constant, and the soak asserts
-it stays inside a stated band.
-
-### Professions
-
-Each role owns a profession, and each profession owns a queue of work orders:
-what a villager of that trade is expected to make or do. A work order yields
-something, and the quality of it comes from the worker's skill and their tools.
-The job is a separate field on the decision, the way the motive is, so the
-action vocabulary stays atomic.
-
-## The world
-
-Seven places in a ring (`granary → market → well → hut → shrine → woods → field`),
-six resources (food, water, wood, herbs, tools, and coin), village standing,
-and trust as an 0..4 number per ordered pair. Seasons, time of day, weather,
-and temperature affect village life. Villagers have roles, skills, health,
-thirst, energy, warmth, moods, goals, and detailed social ties.
-
-The desktop World view shows every stockpile, building condition, hearth,
-fertility, and ownership. Click a villager on the map or in the roster to open
-the inspector: vitals, inventory, skills, available actions, promises, kinship,
-trust, memories, beliefs, facts, and the factors behind their last decision.
-The Feed includes saved history and the new crafting, healing, trading,
-prayer, repair, and consolation events, with a per-turn digest of who spoke,
-who was silent, who was discredited, and which acts and motives the turn
-produced.
-
-- Eating costs one measure per villager per turn; hunger climbs to 3 and death
-  follows after three turns at 3.
-- The field and woods yield into the **granary**, because a field that keeps its
-  grain is a field nobody visits.
-- A starving villager with nothing to hand is not offered `speak`, `rest` or
-  `give`. Without that filter the settlement reliably starved with a full store.
-- Giving your last measure while starving is rejected in code.
-- A promise unkept for ten turns becomes a permanent memory ("scar") and lowers
-  trust. Deaths and betrayals also leave scars; scars never decay and are never
-  evicted.
-- Memory is a ring of eight, weighted by salience written once at formation and
-  decayed in code. Reflections fire on an accumulated-importance budget, not a
-  clock.
-- Villagers grow. At the end of a turn, two villagers who are both fed, in the
-  same place, at least 24 turns old, and who trust each other at 3.5 of 4 may
-  have a child — at most one per turn, and the granary pays 6 measures.
-  Population is capped at 12. A child inherits a mixed persona, both parents'
-  names, and generation one above the elder parent; it starts with one measure
-  of food, neutral trust toward everyone, and no memories. Births appear in
-  the event log and the feed like any other event.
-
-## Observer, not god
-
-You can whisper a thought, leave food, or turn the weather. Every intervention
-is logged as a `divine` event, and agents only remember it if they were there.
-You cannot edit minds or kill directly.
-
-## Control API (127.0.0.1 only)
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/health` | the engine's own status: population cap, birth cost, save path |
-| GET | `/state` | the living village: agents, places, food, trust, memories |
-| GET | `/social` | the social and kinship matrix |
-| GET | `/agent/{name}` | one villager with their whole memory, and the factors behind their last decision |
-| GET | `/places/{id}` | one place: stores, owner, condition, hearth, fertility |
-| GET | `/events?since=N&limit=M` | append-only event log |
-| GET | `/log?since_turn=T` | durable turn records, correlation envelopes and evidence quality |
-| GET | `/diagnostics?limit=N` | observer/shell audit: boots, turns, resets, injects, halts, save errors |
-| GET | `/verify?since_turn=T&limit=N` | re-step the journal through the engine; names the first divergent turn |
-| POST | `/turn` | `{"turns":N}` |
-| POST | `/reset` | `{"seed":N}` — clears world and save |
-| POST | `/inject` | `{"kind":"whisper\|gift\|weather",...}` |
-| POST | `/halt` | `{"reason":"..."}` |
+**Make a villager act on a thought.** The API is local and unauthenticated (it
+binds `127.0.0.1` only):
 
 ```bash
-curl -s -X POST localhost:8100/turn -d '{"turns":3}' -H 'content-type: application/json'
-curl -s localhost:8100/log | jq '.rows[-1].agents[] | {name,action,say,intensity}'
 curl -s -X POST localhost:8100/inject -H 'content-type: application/json' \
   -d '{"kind":"whisper","target":"Ada","text":"the granary door was open last night"}'
 ```
 
-The payload is written straight from the world, and it carries the living
-village: `/state` answers with what the settlement is now — every field of
-every villager except the claims they hold about the world. Those claims are
-the whole of what a villager has learned, they grow with every day the village
-lives, and one villager's claims are served by `/agent/{name}`. A poll of
-`/state` costs ~0.09 ms and 80 KB of allocation for a 68 KB answer at turn
-233, measured. The numbers, and the threshold a later change is judged
-against, are in `baseline/PERF_BASELINE.md`. A villager's trust reads `3.2` on
-the wire, not `3.200000047683716`: the payload carries the world's own
-precision, rounded to one decimal for the two numbers observers read.
+Ada now remembers the whisper as witnessed, with high salience. Watch her trust of
+whoever she next accuses move in the inspector.
 
-## Diagnostics (what happened, and why not)
+![Two divine events arriving in the feed while the village is paused: a whisper to Ada and a gift of three measures beside Odo](docs/media/intervene.gif)
 
-Every completed turn is saved and journaled independently while the shell holds
-its world lock. `<save>.journal.jsonl` keeps turn records across restarts;
-`<save>.diagnostics.jsonl` keeps request and observer actions, before/after vitals,
-save/journal outcomes, timing, recovery and lifecycle errors. Correlation includes
-a persistent village ID, process session, operation ID and source fingerprint.
-HTTP responses include `x-society-operation-id`.
+Both land in the feed as `Divine` rows at the current turn, under `observer` as
+the actor. Villagers only remember an intervention if they were in the place it
+happened: **nobody is told.**
 
-Both logs retain a head plus four rotations (32 MiB journal segments, 8 MiB audit
-segments), with no age guarantee. `/log` returns durable history with one envelope
-per row and, for a query without a time or identity filter, any committed turn
-with no durable row — a trailing turn or an interior gap, bounded by
-`since_turn` and the retained tail (row envelope `null`); the UI keeps its
-240-turn memory tail. `/diagnostics` and `/log` accept
-`since_time`, `until_time` (epoch seconds), `world_id`, `session_id`, and
-`operation_id`; read errors, corrupt lines, missing heads and clipped results are
-explicit. `/health` exposes sink failures and retention limits. `/verify` compares
-against the **current pure founding engine**; it cannot replay observer inputs or
-desktop civic systems, and matching records do not prove historical state identity;
-`journal_current` says whether this read reaches the live turn with no gap; it is
-`null` when the query starts after turn 0 or clips its window, because such a read
-cannot see a hole outside itself.
+**Feed someone the village failed.** `{"kind":"gift","target":"Odo","amount":3}`
+puts three measures beside them and clears their hunger. **Change the harvest.**
+`{"kind":"weather","amount":4}` turns the weather foul and the multiplier down.
+
+**Run two villages at once**, side by side, each with its own file and port:
+
+```bash
+SOCIETY_SAVE_PATH=data/second.json cargo run -p society --release -- --port 8101
+```
+
+**Read one turn the way the code saw it.** Advance three turns, then look at the
+last row: the action that was chosen, the runners-up that were rejected and why,
+the line, and its grounded claims.
+
+```bash
+curl -s -X POST localhost:8100/turn -d '{"turns":3}' -H 'content-type: application/json' >/dev/null
+curl -s localhost:8100/log | jq '.rows[-1].agents[] | {name, action, say, motive, grounded}'
+```
+
+**Start over** — explicitly, because a seed alone must never overwrite a village:
+`cargo run -p society --release -- --reset`.
+
+## How a turn works
+
+One turn is one pass over the living villagers, then one settlement:
+
+```mermaid
+flowchart TD
+    A["enumerate and shortlist the legal actions per villager"] --> B["policy: intent, motive and social act, from registered terms"]
+    B --> C["speaker: one line per villager, from a grammar over typed slots"]
+    C --> D["check: the line's own claims, against the world"]
+    D --> E["apply, settle, log the events"]
+    E --> F["save, journal, audit - durable before the next turn"]
+```
+
+The engine step is ~0.2 ms. Everything after it is durability, and it is why a
+committed turn costs ~20 ms.
+
+### Choosing: the policy
+
+Three layers, in order. **Hard tiers** first: hunger with no food, thirst with no
+water, an ailment, winter cold, an unkept promise, a grudge against someone
+present. Nothing below may talk a villager out of finding food. Then **registered
+feature terms** score every remaining candidate — the work waiting in their
+profession, what the place needs, someone present who is starving, kinship, trust,
+a grudge, mood, an unkept promise, novelty, energy cost, whose ground they stand
+on. Each term is a pure function with a documented weight, so a richer village is
+more terms, never a different policy. The scores then become **a distribution**:
+that is where confidence comes from, and where the *dilemma* — the margin between
+the top two candidates — is computed.
+
+The shortlist is one candidate per kind of act minus whatever the villager has
+just done twice running, because a menu of eighteen is not a choice. A legal
+action outside the shortlist stays legal and is still accepted.
+
+### Speaking
+
+Lines come from a rule-based grammar over typed slots: a count, a person, a place,
+a resource, an obligation, a quality. The rules are keyed on the **action**, not
+the social act — thirteen of the twenty actions perform no social act at all — so a
+`give` line is written for a gift and an `accuse` line for an accusation. A rule
+may carry a second clause; a long first clause only pairs with a short one, so the
+twenty-word budget holds without a check. A per-villager ledger makes an exact
+repeat impossible inside six turns.
+
+**A villager knows what is observable and what they remember**: who is here, the
+weather, the place's stores, their own carry, their memories and promises. They do
+not know another villager's inventory unless they remember it. A villager with
+nobody to address says nothing at all — silence is a signal, and the turn summary
+counts it.
+
+### Checking, and the lies
+
+The speaker returns the line *with the claims it made*, so the check compares
+claims against the world rather than re-reading prose. A false claim marks the line
+**discredited**: still spoken, but it moves no trust, and the listener remembers
+the claim and its failure. Lying is designed rather than accidental — a villager
+lies when the world pushes them to: hunger with nothing in hand, a grudge against
+the person they address, a promise about to be missed, fear. A property test holds
+every line outside lie mode to making only true claims.
+
+## The world's rules
+
+| | |
+|---|---|
+| Places | seven in a ring: granary → market → well → hut → shrine → woods → field |
+| Resources | food, water, wood, herbs, tools, coin, plus village standing and trust (0–4 per ordered pair) |
+| Hunger | one measure eaten per villager per turn; hunger climbs to 3, and death follows after three turns at 3 |
+| Harvest | the field and woods yield into the **granary** — a field that keeps its grain is a field nobody visits |
+| Starvation | a starving villager with nothing to hand is not offered `speak`, `rest` or `give`; giving away your last measure while starving is rejected in code |
+| Promises | unkept for ten turns, a promise becomes a permanent memory ("scar") and lowers trust; scars never decay and are never evicted |
+| Memory | a ring of eight, weighted by salience written once at formation and decayed in code; reflections fire on an importance budget, not a clock |
+| Births | two fed, co-located, mutually trusted (≥3.5 of 4) villagers at least 24 turns old may have a child, at most one per turn, six granary measures; population is capped at 12 |
+| Inheritance | a child mixes both personas, carries both parents' names, starts one generation up, with one measure of food and neutral trust |
+
+Observer interventions are the only way to change a mind: you can whisper, gift or
+change the weather, and each is logged as a `divine` event. You cannot edit memories
+or kill directly.
+
+## Drive it from code
+
+The control API binds `127.0.0.1` only and needs no auth. Same engine the window
+is showing.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health` | engine status, retention, telemetry, journal growth, last save error |
+| GET | `/state` | the living village: agents, places, stores, trust |
+| GET | `/social` | the social and kinship matrix |
+| GET | `/agent/{name}` | one villager with their whole memory and last-decision factors |
+| GET | `/places/{id}` | one place: stores, owner, condition, hearth, fertility |
+| GET | `/events?since=N&limit=M` | the append-only event log |
+| GET | `/log?since_turn=T` | durable turn records with correlation envelopes |
+| GET | `/diagnostics?limit=N` | boots, turns, resets, injects, halts, save errors |
+| GET | `/verify?since_turn=T` | re-step the journal through the engine; names the first divergent turn |
+| POST | `/turn` | `{"turns":N}` |
+| POST | `/reset` | `{"seed":N}` — clears the world and its save |
+| POST | `/inject` | `{"kind":"whisper\|gift\|weather", "target":"Ada", "text":"…", "amount":N}` |
+| POST | `/halt` | `{"reason":"…"}` |
+
+Payloads are written straight from the world rather than through a tree of
+intermediate values: `/state` answers with the settlement as it is now — every
+field of every villager except the claims they hold — in ~0.09 ms and 68 KB at turn
+233. A villager's claims grow with every day the village lives and are served by
+`/agent/{name}`, one villager at a time. Trust reads `3.2` on the wire, not
+`3.200000047683716`.
+
+## Evidence and diagnostics
+
+Every completed turn is saved **and** journaled while the shell holds the world
+lock: `<save>.journal.jsonl` keeps turn records across restarts,
+`<save>.diagnostics.jsonl` keeps requests, observer actions, before/after vitals,
+save and journal outcomes, timing and lifecycle errors. Correlation covers the
+village ID, process session, operation ID and source fingerprint;
+`x-society-operation-id` comes back on every response.
+
+Both logs keep a head plus four rotations (32 MiB journal segments, 8 MiB audit
+segments) with no age guarantee. `/log` and `/diagnostics` accept `since_time`,
+`until_time`, `world_id`, `session_id` and `operation_id`, and they report read
+errors, corrupt lines, missing heads and clipped windows rather than an empty
+answer. `/verify` compares journal against the **current pure founding engine**; it
+cannot replay observer inputs or the window's civic systems, and matching records do
+not prove historical state identity.
 
 ```bash
 python3 tools/evidence.py --save data/society.json --since 2026-11-03T00:00:00Z --limit 100
@@ -338,116 +275,126 @@ python3 tools/evidence.py --save data/society.json --crash
 ```
 
 The offline reader works when the app cannot start. Full saves and turn journals
-can contain observer prose; audit summaries omit it. See
-[the coverage inventory, verified failure exercises, and investigation runbook](docs/observability.md)
-for retrieval, retention, privacy and replay limits. New instrumentation cannot
-recover history that was never collected.
+can contain observer prose; audit summaries omit it. The
+[coverage inventory, verified failure exercises and investigation runbook](docs/observability.md)
+say what is provable, and what is merely retained.
 
-Each `AgentTurn` carries a `decision_id` (`{seed}:{turn}:{name}`) joining it
-to the event feed, up to three `rejected` runners-up (`tier` = filtered
-before scoring, `outscored` = scored below the winner), and the
-`event_range` it caused. Each agent counts `evicted_memories` so belief
-churn is measurable without persisting every evicted line.
+## Performance
 
-## Crates
+Measured on this machine, release profile, deterministic seed-7 fixture at turn 233
+(`tools/bench.sh`, 1,000 iterations per path):
+
+| path | p50 | p99 | what it is |
+|---|---|---|---|
+| `turn_cycle` | 20.1 ms | 25.2 ms | a committed turn: engine step, audit, save, journal, audit |
+| `engine_turn` | 0.21 ms | 0.40 ms | the decision itself: policy, speaker, check, apply, settle |
+| `durable_save` | 8.8 ms | 11.6 ms | serialise, verify it loads back, write, fsync, rename |
+| `durable_load` | 3.3 ms | 4.8 ms | the village read back at startup |
+| `observer_snapshot` | 0.087 ms | 0.155 ms | `/state`'s payload |
+
+**A turn is 1% thinking and 99% making the thinking survive.** The engine is
+0.21 ms; the rest is four durable writes — the save, the journal row and two audit
+rows — each flushed before the turn is reported. On macOS `sync_all` is
+`F_FULLFSYNC`, which measures ~3.7 ms per call on this disk, so the flushes bound
+playback, not the simulation. `engine_turn` and `observer_snapshot` stay flat after
+3,000 turns and 35,885 events; the save grows linearly with recorded history (432
+bytes per event), so fast-forwarding a very old village is slower than a young one.
+
+```bash
+cargo test --workspace                 # offline, no models
+tools/bench.sh --check                 # the gate: fail when a path leaves its budget
+tools/bench.sh --breakdown             # per-stage cost inside save, append, load and the reads
+```
+
+The baseline, the method, the rejected experiments and the remaining bottlenecks
+are in [`baseline/PERF_BASELINE.md`](baseline/PERF_BASELINE.md).
+
+## Architecture
 
 | Crate | Owns | Depends on |
 |---|---|---|
-| `society-sim` | world state, legality, effects, memory, RNG, the policy, the speaker, the check, professions | nothing but serde |
-| `society-server` | the turn loop, persistence, control API | sim, axum, tokio |
-| `society` (bin) | native window, CLI, wiring | server, eframe |
+| `society-sim` | world state, legality, effects, memory, RNG, policy, speaker, check, professions | nothing but `serde` |
+| `society-server` | turn loop, persistence, journal and audit, control API | sim, `axum`, `tokio` |
+| `society` (bin) | observer window, CLI, wiring | server, `eframe` |
 
-`society-sim` is pure: same seed, same founding, same turns; every rule is
-unit-tested without a network call. The decisions live here too, because a
-decision that cannot be tested without a process boundary is a decision nobody
-will test.
+`society-sim` is pure: no IO, no network, no clock. Same seed, same founding, same
+turns, and every rule is unit-tested without a process boundary. Decisions live
+here because a decision that cannot be tested without a process boundary is a
+decision nobody will test.
 
-## Tests and the measurements
+**Why there is no model in the loop.** The first version had two backends: a cloud
+judge that chose each villager's action and a local 350M model that wrote their
+lines. It cost two cloud calls and up to eighteen local calls per turn (~20,759
+input tokens), needed an API key to start, and halted when a network call failed.
+Four measured reasons ended it: most of what the judge was asked had no meaning in
+it (the tone question answered "plain and neutral" for 38 of 45 lines while still
+moving trust); the motive is the action's own reading; a 350M model invented numbers
+in 38% of its lines, so it needed a gate that a grammar cannot need; and the choice
+was among two to five options the code had already computed.
+
+That last gap is on record rather than argued away. The judge scored the old
+engine's choice against the new engine's on the same recorded states, blind and
+paired: the grammar reached parity on the first measurement, the action choice did
+not (25.0% → ~35% win rate over three revision rounds), the stop condition fired,
+and the observer accepted the lower bar. The
+[ADR](docs/adr/0001-replace-the-judgment-layer-and-the-voice-model-with-code.md)
+has the reasoning and [`baseline/PARITY_REPORT.md`](baseline/PARITY_REPORT.md) has
+the numbers; the corpus stays in the tree.
+
+## Tests
 
 ```bash
-cargo test --workspace    # no network, no models
-tools/bench.sh --check    # the latency baseline, against the recorded budget
+cargo test --workspace
 ```
 
-They cover the rules that are easy to get wrong and expensive to get wrong:
-affordances never offer an illegal move, taking never drives a store negative,
-a starving villager cannot give away their last meal, memory caps never evict a
-scar, starvation kills on the third turn and leaves scars in the survivors, a
-broken promise becomes permanent, and the policy's survival tier still wins
-over a villager's motive.
+218 tests, no network, no fixtures, no dev-dependencies. They pin the rules that are
+easy to get wrong and expensive to get wrong: affordances never offer an illegal
+move, taking never drives a store negative, a starving villager cannot give away
+their last meal, memory caps never evict a scar, starvation kills on the third turn,
+a broken promise becomes permanent, the survival tier beats a villager's motive, no
+line outside lie mode claims something the world does not support, and a save that
+would not load back never replaces a good one.
 
-The turn's own rules are covered too: the policy picks a legal action, a line
-that is not a repeat of a recent one, the register follows the mood, the
-addressee is the act's target, the intensity comes from the act and clears the
-rumor threshold, the motive survives the turn while the survival ladder still
-wins over it, the shortlist is a subset of the legal actions and breaks a
-groove, and no line outside lie mode makes a claim the world does not support.
+Two probes are opt-in because they measure hardware rather than behavior:
 
-Five measurements were held over the rewrite, and they were the acceptance
-bar. All five ran; the results are on record in `baseline/`. A sixth was added
-afterwards, to keep the speed claim honest:
+```bash
+cargo test -p society --release -- --ignored observer_frame_budget_through_100x
+tools/bench.sh --check
+```
 
-1. **A live multi-turn run** on the real stack: the village lives, grows and
-   does not stall.
-2. **A metrics diff** against the old engine on the same seed
-   (`baseline/side_by_side.json` beside the old `metrics.json`): the new world
-   is a harder place - every designed lie gets caught, so the discredited rate
-   is 7.6% where the old engine's was 0.0%, and trust runs lower and wider.
-3. **The judge A/B** (`crates/server/src/bin/parity`). The old engine recorded
-   the state, the decision and the line for every villager and turn; the new
-   engine is fed those same recorded states and the judge scores old choice
-   against new choice, blind and paired. The lines reached parity on the first
-   measurement; the decisions did not reach it in three revision rounds, the
-   stop condition fired, and the observer accepted the lower bar.
-4. **A soak**: two hundred turns, with the invariants checked - no starvation
-   spiral, births happen, trust stays bounded, memory caps hold, no line
-   repeats inside its window, the discredited rate inside its band.
-5. **Determinism and cost.** The same seed and the same save produce identical
-   turns across seeds, a save and reload continues identically, the turn costs
-   nothing, and the process makes no network call at all.
-6. **A latency baseline on this machine** (`baseline/PERF_BASELINE.md`,
-   `baseline/perf_baseline.json`): the three paths that carry the village's
-   time - the committed turn, the durable save that follows it, and the
-   observer's snapshot - each run a thousand times, with p50/p95/p99 and the
-   allocation and resident-memory deltas recorded. `tools/bench.sh --check`
-   compares a later run against that record and fails when a path is outside
-   its budget, so the speed claim is a measurement a pull request has to
-   answer for.
+## Repository map
 
-Growth and persistence are tested at the two seams that matter. Births are
-driven through the pure simulation: a fed, trusting, co-located pair has a child
-with the right generation and both parents; hunger, low trust, separation, the
-population cap, a short granary, or too-new parents each block one; at most one
-birth lands per turn; and a birth in the same turn as a death leaves the scar.
-Persistence is driven through save/load against a temporary directory: a
-lived-in world round-trips field for field and continues identically after the
-reload, an absent file founds fresh, a corrupt or wrong-version file names its
-path and fails, and a save that would not load back never replaces a good one.
+| Path | What is there |
+|---|---|
+| `crates/sim`, `crates/server`, `crates/desktop` | the three crates above |
+| `baseline/` | parity corpus and report, performance baseline and its budget |
+| `docs/adr/` | why decisions were made, including the one above |
+| `docs/observability.md` | what the evidence can and cannot prove |
+| `docs/media/` | the clips in this README, regenerated by `tools/gif.sh` |
+| `models/` | tracked research notes behind the design |
+| `tools/` | `bench.sh` (latency gate), `evidence.py` (offline reader), `gif.sh` and `shot.sh` (capture) |
+| `GLOSSARY.md` | the village's vocabulary, and the words retired with the old engine |
+
+## License
+
+This repository has **no license file yet**, so the default rules apply: the code is
+copyrighted and reuse needs the owner's permission. If you want to depend on it,
+vendor it or build on it, open an issue and a license can be chosen.
 
 ## Notes and sources
 
-- `docs/adr/0001-replace-the-judgment-layer-and-the-voice-model-with-code.md` —
-  why the judgment layer and the voice model went, and what was rejected.
-- `baseline/` — the frozen replay corpus, the outcome metrics, the parity
-  harness results and `PARITY_REPORT.md`, the record of how the bar came out.
-- `baseline/PERF_BASELINE.md` — the latency and allocation baseline for the
-  turn, the save and the observer snapshot, with the harness (`tools/bench`)
-  that measured it and the budget a later change is judged against.
-- `GLOSSARY.md` — the vocabulary of the village, and the words that were
-  retired with the old engine.
-- `models/research-small-voice-models.md` (tracked) — the model comparison
-  behind the 38% discredited figure.
-- `models/research-turn-latency.md` (tracked) — where the turn time went, and
-  what the local model was and was not buying.
-- `models/research-simulation-code.md`, `models/research-memory-code.md` and
-  `models/research-small-models.md` — local working files, not tracked: the
-  survey behind the architecture (Generative Agents, Concordia, OASIS,
-  AgentSociety; Letta, MemoryOS, A-MEM, mem0, Graphiti; constrained decoding
-  and small-model agent capability).
-
-Adopted from that reading: reasoning field before the answer in every schema
-(field order is what structured-output studies actually fix), 2–5 candidates for
-the chooser, bi-temporal facts with code-owned invalidation, beliefs with
-`as_of_tick` so divergence and staleness are computed rather than stored, an
-importance budget instead of a reflection schedule, and AIMD concurrency - the
-last one now gone with the concurrency it was there to bound.
+- [`GLOSSARY.md`](GLOSSARY.md) — Villager, Intent, Motive, Register, Claim, Scar.
+- [`docs/adr/0001-replace-the-judgment-layer-and-the-voice-model-with-code.md`](docs/adr/0001-replace-the-judgment-layer-and-the-voice-model-with-code.md)
+- [`baseline/PERF_BASELINE.md`](baseline/PERF_BASELINE.md),
+  [`baseline/PARITY_REPORT.md`](baseline/PARITY_REPORT.md),
+  [`docs/observability.md`](docs/observability.md)
+- `models/research-small-voice-models.md` and `models/research-turn-latency.md` —
+  the measurements behind the 38% discredited figure and the turn's cost.
+- [`models/readme-survey.md`](models/readme-survey.md) — the README structure
+  survey behind this page: fourteen comparable projects, GitHub's image limits,
+  and what a README with two audiences should keep versus link.
+- Adopted from the survey behind the design (Generative Agents, Concordia, OASIS,
+  AgentSociety; Letta, MemoryOS, A-MEM, mem0, Graphiti): reasoning before the answer
+  in every schema, 2–5 candidates for a chooser, bi-temporal facts with code-owned
+  invalidation, beliefs stamped with `as_of_tick`, and an importance budget instead
+  of a reflection schedule.
