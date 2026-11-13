@@ -105,7 +105,15 @@ build fails on its version and not on whichever field that build renamed.
 | `load` p50 at turn 233 | 7.025 ms | **2.892 ms** |
 | allocation per load | 11,682,097 B | **2,494,413 B** |
 
-The same change covers a 6.19 MB turn-1200 save at 15.4 ms.
+The same change covers a 6.19 MB turn-1200 save at 15.4 ms, and a 15.5 MB
+turn-3000 save at 39.0 ms.
+
+The load is two passes over the same bytes, and the split is worth knowing
+before changing it: at turn 3000 the typed pass that builds the village is
+25.2 ms and the header pass that settles the version is ~13.8 ms. The header
+pass buys one thing — a file from another build fails on its *version* rather
+than on whichever field that build renamed first — and it is the price of
+keeping that error precedence without buffering the world twice.
 
 ## What `/health` cost, and what it costs now
 
@@ -163,6 +171,13 @@ more than a thousand turns (12,809–13,641 append-only events, 21,198 facts):
 | `seed=7, turn=233` (1.13 MB) | 0.206 / 0.395 ms | 227,467 B | 8.814 / 11.610 ms | 2,496,881 B | 0.087 ms |
 | `seed=7, turn=1077` (12,809 events) | 0.215 / 0.369 ms | 206,659 B | 19.778 / 25.009 ms | 15,171,927 B | 0.092 ms |
 | `data/society.json` turn 1077 (13,641 events, 6.37 MB) | 0.138 / 0.191 ms | 163,696 B | 22.296 / 28.874 ms | 15,741,078 B | 0.076 ms |
+| `seed=7, turn=3000` (35,885 events, 15.49 MB) | 0.221 / 0.418 ms | 166,656 B | 73.876 ms p50 | 35,838,092 B | 0.154 ms |
+
+The turn-3000 save is 15.49 MB for 35,885 events — 432 bytes per event across
+all four fixtures (421, 432, 432) — so the save grows linearly in recorded
+history, and so does the per-turn cost of rewriting it: 73.9 ms at turn 3000
+against 8.8 ms at turn 233. The engine does not grow with it: `engine_turn` is
+0.221 ms and `observer_snapshot` 0.154 ms at turn 3000.
 
 Before tail-bounded event scans (`action::recent_actions`,
 `policy::term_novelty`, `policy::threatened_this_turn`, `turn::step` births,
@@ -178,6 +193,11 @@ exceeds the turn-233 `durable_save` budget while passing `engine_turn` and
 
 ## What was not changed, and why
 
+- **Incremental persistence.** The save rewrites the whole village every turn,
+  so a committed turn's cost grows with recorded history. Making it incremental
+  (append-only state plus checkpoints) would change the save format and with it
+  `SAVE_VERSION`, which rejects older saves; a village on disk would be lost on
+  upgrade. That is a product decision, not a tuning one.
 - **The verify parse in `save`.** Serialising and parsing back is ~40% of the
   save's CPU, and it is the price of "a save you cannot load is never written".
   A cheaper validation would have to be a weaker one: `serde_json` writes a
