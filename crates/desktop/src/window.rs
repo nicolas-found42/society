@@ -2,7 +2,7 @@
 //! driven through the dev server, so the UI is an observer, not the owner of
 //! state.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,6 +15,9 @@ use society_sim::{Agent, Event, EventKind, Place, PlaceState, World};
 const MAP_W: f32 = 420.0;
 const MAP_H: f32 = 360.0;
 
+/// Presentation is independent of the simulation multiplier.
+const FRAME_INTERVAL: Duration = Duration::from_nanos(1_000_000_000 / 120);
+
 /// Everything the command line decides about how the window opens.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Launch<'a> {
@@ -25,6 +28,7 @@ pub(crate) struct Launch<'a> {
     pub select_none: bool,
     pub size: Option<(f32, f32)>,
     pub autostart: bool,
+    pub speed: u16,
     pub focus: bool,
 }
 
@@ -36,12 +40,10 @@ pub(crate) fn run(
     let Launch {
         port, size, focus, ..
     } = launch;
-    // winit activates the whole app on launch by default, which would pull the
-    // user out of whatever they are doing. Stay passive unless --focus was
-    // explicitly requested.
+    // winit activates the whole app on launch by default, which takes focus
+    // from whatever the user is doing. Stay passive unless --focus was
+    // requested.
     let options = eframe::NativeOptions {
-        // On macOS winit activates the app on launch, which pulls the user out
-        // of whatever they are doing. Only activate when --focus is requested.
         #[cfg(target_os = "macos")]
         event_loop_builder: Some(Box::new(move |builder| {
             use winit::platform::macos::EventLoopBuilderExtMacOS as _;
@@ -50,9 +52,8 @@ pub(crate) fn run(
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(size.unwrap_or((1120.0, 760.0)))
             .with_min_inner_size([900.0, 600.0])
-            // Remain unfocused by default; --focus explicitly opens in front.
             .with_active(focus)
-            .with_title(format!("society — :{port}")),
+            .with_title(format!("society · :{port}")),
         ..Default::default()
     };
     eframe::run_native(
@@ -65,8 +66,11 @@ pub(crate) fn run(
 struct App {
     rt: tokio::runtime::Handle,
     state: AppState,
-    port: u16,
     snapshot: Option<Snapshot>,
+    observed_revision: Option<u64>,
+    ring_layout: Option<RingLayout>,
+    motion: BTreeMap<String, Motion>,
+    frame_pacing: FramePacing,
     turns: Vec<TurnRecord>,
     selected: Option<String>,
     selected_place: Option<String>,
@@ -76,6 +80,8 @@ struct App {
     roster_search: String,
     feed_filter: FeedFilter,
     feed_search: String,
+    feed_layout_key: Option<(f32, f32, FeedFilter, String)>,
+    feed_heights: BTreeMap<u64, (f32, usize)>,
     custom_event_text: String,
     theme_applied: bool,
     /// Open the decision-factors disclosure on first draw. Screenshot aid only.
@@ -83,6 +89,8 @@ struct App {
     auto: bool,
     speed: f32,
     last_turn: Instant,
+    /// Wake the observer as soon as a worker has committed its results.
+    repaint: Option<egui::Context>,
     status: String,
     busy: bool,
     pending: Option<PendingTurn>,
@@ -919,7 +927,7 @@ impl VillageReport {
                 rumors.push(RumorView {
                     speaker: a.name.clone(),
                     subject: p.to.clone(),
-                    text: format!("“{}”", p.text),
+                    text: format!("\"{}\"", p.text),
                     turn: p.made_turn,
                     kind: status,
                 });
@@ -1038,15 +1046,18 @@ impl Snapshot {
                     } else {
                         Vec::new()
                     },
-                    death: w
-                        .events
-                        .iter()
-                        .rev()
-                        .find(|e| e.kind == EventKind::Death && e.actor == a.name)
-                        .map(|e| DeathView {
-                            turn: e.turn,
-                            cause: death_cause(&e.text),
-                        }),
+                    death: (!a.alive)
+                        .then(|| {
+                            w.events
+                                .iter()
+                                .rev()
+                                .find(|e| e.kind == EventKind::Death && e.actor == a.name)
+                                .map(|e| DeathView {
+                                    turn: e.turn,
+                                    cause: death_cause(&e.text),
+                                })
+                        })
+                        .flatten(),
                 })
                 .collect(),
             places: w
@@ -1114,15 +1125,153 @@ const EDGES: [(&str, &str); 7] = [
     ("woods", "field"),
 ];
 
+fn feed_event_groups(events: &[Event]) -> BTreeMap<u64, Vec<&Event>> {
+    let mut groups: BTreeMap<u64, Vec<&Event>> = BTreeMap::new();
+    for event in events {
+        groups.entry(event.turn).or_default().push(event);
+    }
+    groups
+}
+
+fn same_feed_event(a: &Event, b: &Event) -> bool {
+    a.actor == b.actor
+        && a.action == b.action
+        && a.text == b.text
+        && a.place == b.place
+        && a.kind == b.kind
+        && a.social == b.social
+        && a.intensity.map(f32::to_bits) == b.intensity.map(f32::to_bits)
+}
+
+/// A bounded window of observed frame intervals, excluding idle wakeups.
+#[derive(Default)]
+struct FramePacing {
+    last: Option<f64>,
+    intervals: VecDeque<f64>,
+}
+
+impl FramePacing {
+    fn sample(&mut self, now: f64) {
+        if let Some(last) = self.last {
+            let dt = now - last;
+            if dt > 0.0 {
+                if dt < 0.2 {
+                    self.intervals.push_back(dt);
+                    if self.intervals.len() > 120 {
+                        self.intervals.pop_front();
+                    }
+                } else {
+                    self.intervals.clear();
+                }
+            }
+        }
+        self.last = Some(now);
+    }
+
+    fn fps(&self) -> Option<f64> {
+        (self.intervals.len() >= 10)
+            .then(|| self.intervals.len() as f64 / self.intervals.iter().sum::<f64>())
+    }
+}
+
+/// Cached collision-free destinations; animated hit targets follow the markers.
+struct RingLayout {
+    rect: egui::Rect,
+    slots: BTreeMap<String, egui::Rect>,
+}
+
+struct Motion {
+    position: egui::Pos2,
+    target: egui::Pos2,
+    updated_at: f64,
+}
+
+impl Motion {
+    const fn new(position: egui::Pos2, now: f64) -> Self {
+        Self {
+            position,
+            target: position,
+            updated_at: now,
+        }
+    }
+
+    fn retarget(&mut self, target: egui::Pos2, now: f64) {
+        if self.target != target {
+            self.target = target;
+            // Idle time belongs to the old destination, never the new one.
+            self.updated_at = now;
+        }
+    }
+
+    fn advance(&mut self, now: f64, response: f32) {
+        let dt = (now - self.updated_at).max(0.0) as f32;
+        self.updated_at = now;
+        // Exponential damping is frame-rate independent and retargets from
+        // the displayed position, even when turns arrive faster than frames.
+        self.position += (self.target - self.position) * (1.0 - (-dt / response).exp());
+        if !self.is_moving() {
+            self.position = self.target;
+        }
+    }
+
+    fn is_moving(&self) -> bool {
+        self.position.distance_sq(self.target) > 0.01
+    }
+}
+
+fn animated_color(ctx: &egui::Context, id: &str, target: Color32) -> Color32 {
+    let mut channels = target.to_array();
+    for (index, channel) in channels.iter_mut().enumerate() {
+        *channel =
+            ctx.animate_value_with_time(egui::Id::unique((id, index)), f32::from(*channel), 0.25)
+                as u8;
+    }
+    Color32::from_rgba_unmultiplied(channels[0], channels[1], channels[2], channels[3])
+}
+
+/// The playback multiplier is turns per second, independent of frame cadence.
+fn playback_interval(speed: f32) -> Duration {
+    Duration::from_secs_f32(1.0 / speed.clamp(1.0, 100.0)).max(FRAME_INTERVAL)
+}
+
+impl App {
+    fn advance_playback(&mut self, now: Instant) {
+        if !self.auto || self.busy {
+            return;
+        }
+        let turns = playback_due(&mut self.last_turn, now, self.speed);
+        if turns > 0 {
+            self.request_turn(turns);
+        }
+    }
+}
+
+fn playback_due(last_turn: &mut Instant, now: Instant, speed: f32) -> usize {
+    let interval = playback_interval(speed);
+    let due = (now.duration_since(*last_turn).as_secs_f64() / interval.as_secs_f64()) as u32;
+    if due == 0 {
+        return 0;
+    }
+    // At most four turns can already be in flight when Pause is pressed.
+    // Drop excess debt after a stall rather than trying to catch up forever.
+    let turns = due.min(4);
+    *last_turn = if due > 4 {
+        now
+    } else {
+        *last_turn + interval * turns
+    };
+    turns as usize
+}
+
 impl App {
     fn new(rt: tokio::runtime::Handle, state: AppState, launch: Launch<'_>) -> Self {
         let Launch {
-            port,
             view,
             select,
             expand_factors,
             select_none,
             autostart,
+            speed,
             ..
         } = launch;
         // Default selection is the first villager, because the inspector must
@@ -1136,8 +1285,11 @@ impl App {
         let mut app = Self {
             rt,
             state,
-            port,
             snapshot: None,
+            observed_revision: None,
+            ring_layout: None,
+            motion: BTreeMap::new(),
+            frame_pacing: FramePacing::default(),
             turns: Vec::new(),
             selected: if select_none {
                 None
@@ -1159,13 +1311,16 @@ impl App {
             roster_search: String::new(),
             feed_filter: FeedFilter::All,
             feed_search: String::new(),
+            feed_layout_key: None,
+            feed_heights: BTreeMap::new(),
             custom_event_text: String::new(),
             theme_applied: false,
             // The settlement keeps living on its own; a window that starts
             // paused would need a click just to grow.
             auto: autostart,
-            speed: 1.0,
+            speed: f32::from(speed),
             last_turn: Instant::now(),
+            repaint: None,
             status: "ready".into(),
             busy: false,
             pending: None,
@@ -1196,32 +1351,70 @@ impl App {
     }
 
     fn refresh(&mut self) {
+        self.observed_revision = None;
         self.poll();
     }
 
     fn poll(&mut self) {
-        // The window is a consumer: read the world without blocking the engine.
+        // Revisions cover same-turn interventions, failed saves, and resets too.
+        // Do not clone hundreds of records or recompute the report at 120 Hz.
         let state = self.state.clone();
-        if let Ok(w) = state.world.try_lock() {
-            self.snapshot = Some(Snapshot::from_world(&w));
-            self.inspector = self
-                .selected
-                .as_deref()
-                .and_then(|name| w.agent(name))
-                .map(|a| Inspector {
-                    name: a.name.clone(),
-                    persona: a.persona.clone(),
-                    factors: self
-                        .turns
-                        .iter()
-                        .rev()
-                        .find_map(|r| r.agents.iter().find(|at| at.name == a.name))
-                        .map_or(Vec::new(), |at| at.factors.clone()),
-                });
+        let revision = state
+            .observer_revision
+            .load(std::sync::atomic::Ordering::Acquire);
+        if self.observed_revision != Some(revision) {
+            if let Ok(w) = state.world.try_lock() {
+                if let Ok(run) = state.run.try_lock() {
+                    let next = Snapshot::from_world(&w);
+                    if let Some(old) = &self.snapshot {
+                        if next.turn <= old.turn {
+                            self.feed_heights.clear();
+                        } else {
+                            // Only groups whose event tail changed need layout.
+                            // Rebuilding all 400 saved events on every turn wastes
+                            // most of a frame, even when they are offscreen.
+                            let old_groups = feed_event_groups(&old.events);
+                            let new_groups = feed_event_groups(&next.events);
+                            for turn in old_groups.keys().chain(new_groups.keys()) {
+                                let before = old_groups.get(turn).map_or(&[][..], Vec::as_slice);
+                                let after = new_groups.get(turn).map_or(&[][..], Vec::as_slice);
+                                if before.len() != after.len()
+                                    || !before.iter().zip(after).all(|(a, b)| same_feed_event(a, b))
+                                {
+                                    self.feed_heights.remove(turn);
+                                }
+                            }
+                            self.feed_heights.remove(&old.turn);
+                            if let Some(record) = self.turns.last() {
+                                self.feed_heights.remove(&record.turn);
+                            }
+                        }
+                    }
+                    self.snapshot = Some(next);
+                    self.turns.clone_from(&run);
+                    self.observed_revision = Some(revision);
+                    self.ring_layout = None;
+                }
+            }
         }
-        if let Ok(run) = self.state.run.try_lock() {
-            self.turns.clone_from(&run);
-        }
+        self.inspector = self.selected.as_deref().and_then(|name| {
+            let a = self
+                .snapshot
+                .as_ref()?
+                .agents
+                .iter()
+                .find(|a| a.name == name)?;
+            Some(Inspector {
+                name: a.name.clone(),
+                persona: a.persona.clone(),
+                factors: self
+                    .turns
+                    .iter()
+                    .rev()
+                    .find_map(|r| r.agents.iter().find(|at| at.name == name))
+                    .map_or(Vec::new(), |at| at.factors.clone()),
+            })
+        });
     }
 
     fn trigger_intervention(&mut self, kind: VillageIntervention) {
@@ -1247,7 +1440,7 @@ impl App {
                         grounded: Some(1.0),
                         divine: true,
                     });
-                    self.status = "rang parish bell — villagers gathered at Market".into();
+                    self.status = "rang parish bell; villagers gathered at Market".into();
                 },
                 VillageIntervention::HarvestFeast => {
                     let granary = find_place(&w, "granary");
@@ -1344,12 +1537,18 @@ impl App {
                     self.status = "cured village ailments".into();
                 },
             }
-            let turn = w.turn;
             let label: &'static str = kind.label();
-            drop(w);
-            // Best-effort: the runtime borrows the lock so `save_and_track`
-            // would deadlock; the mutation is already committed in memory.
-            state.audit("intervention", turn, serde_json::json!({"kind": label}));
+            let saved = state.save_observer(&w, "intervention", label);
+            if !saved {
+                self.status = "intervention applied in memory; save failed".into();
+            }
+        } else {
+            self.status = "Village is busy; try the intervention again".into();
+            state.audit(
+                "intervention_skipped",
+                0,
+                serde_json::json!({"cause": "world_busy"}),
+            );
         }
         self.poll();
     }
@@ -1377,14 +1576,24 @@ impl App {
             });
             self.custom_event_text.clear();
             self.status = "inscribed custom event into village chronicle".into();
-            drop(w);
-            // Chronicle text is observer prose: audit the act, never the words.
-            self.state
-                .audit("chronicle", turn, serde_json::json!({"kind": "decree"}));
+            if !self.state.save_observer(&w, "chronicle", "decree") {
+                self.status = "chronicle applied in memory; save failed".into();
+            }
+        } else {
+            self.status = "Village is busy; try adding the chronicle event again".into();
+            self.state.audit(
+                "chronicle_skipped",
+                0,
+                serde_json::json!({"cause": "world_busy"}),
+            );
         }
         self.poll();
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "world lock spans history publication so reset cannot interleave"
+    )]
     fn request_turn(&mut self, n: usize) {
         if self.busy
             || self
@@ -1396,54 +1605,60 @@ impl App {
             return;
         }
         self.busy = true;
-        self.status = format!("running {n} turn(s)…");
+        self.status = format!("Simulating {n} {}…", if n == 1 { "turn" } else { "turns" });
         let st = self.state.clone();
         let started = Instant::now();
         let (tx, rx) = std::sync::mpsc::channel();
-        self.rt.spawn(async move {
+        let (auto, speed) = (self.auto, self.speed);
+        let repaint = self.repaint.clone();
+        self.rt.spawn(society_server::telemetry::OPERATION.scope(society_server::telemetry::operation_id(), async move {
             let result = {
+                let waiting = Instant::now();
                 let mut w = st.world.lock().await;
+                st.audit("worker_started", w.turn, serde_json::json!({"turns": n, "auto": auto, "speed": speed}));
+                st.audit("world_lock_acquired", w.turn, serde_json::json!({"source": "desktop", "wait_us": waiting.elapsed().as_micros()}));
                 let mut recs = Vec::new();
                 let mut err = None;
                 for _ in 0..n {
+                    let step_started = st.start_step(&w, "desktop");
                     match society_sim::turn::step(&mut w) {
                         Ok(r) => {
                             apply_village_systems(&mut w);
                             let committed = r.turn;
+                            let saved = st.commit_turn(&w, &r, "desktop", step_started).await;
                             recs.push(r);
-                            // The seam is pure, so the shell owns the save.
-                            if let Err(e) = st.save_and_track(&w).await {
+                            if let Err(e) = saved {
                                 err =
                                     Some(format!("turn {committed} committed but not saved: {e}"));
                                 break;
                             }
                         },
                         Err(e) => {
+                            st.audit("turn_failed", w.turn, serde_json::json!({"source": "desktop", "halted": w.halted.is_some()}));
                             err = Some(e);
                             break;
                         },
                     }
                 }
-                let seed = w.seed;
                 let world_turn = w.turn;
-                drop(w);
-                let journal_error = if recs.is_empty() {
-                    None
-                } else {
-                    st.journal(seed, &recs).err()
-                };
                 if !recs.is_empty() {
                     st.record(recs.iter().cloned()).await;
                 }
                 st.audit(
                     "turns",
                     world_turn,
-                    serde_json::json!({"committed": recs.len(), "journal_error": journal_error}),
+                    serde_json::json!({"committed": recs.len(), "failed": err.is_some()}),
                 );
                 (recs, err)
             };
+            // The window polls this channel; if it closed first the turn is
+            // still durable in the save, journal and audit log, so the dropped
+            // result leaves no unreconstructable gap.
             let _ = tx.send(result);
-        });
+            if let Some(ctx) = repaint {
+                ctx.request_repaint();
+            }
+        }));
         // Poll on the next frames rather than blocking here.
         self.pending = Some((rx, started));
     }
@@ -1460,9 +1675,19 @@ impl App {
             Ok((recs, err)) => {
                 self.busy = false;
                 let secs = started.elapsed().as_secs_f32();
+                if err.is_some() {
+                    self.auto = false;
+                }
                 self.status = err.map_or_else(
-                    || format!("{} turn(s) in {:.1}s", recs.len(), secs),
-                    |e| format!("halted: {e}"),
+                    || {
+                        format!(
+                            "{} {} · {:.0} ms",
+                            recs.len(),
+                            if recs.len() == 1 { "turn" } else { "turns" },
+                            secs * 1000.0
+                        )
+                    },
+                    |e| format!("Playback paused: {e}"),
                 );
             },
             Err(std::sync::mpsc::TryRecvError::Empty) => {
@@ -1470,7 +1695,13 @@ impl App {
             },
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.busy = false;
-                self.status = "turn worker vanished".into();
+                self.auto = false;
+                self.status = "turn worker vanished; playback paused".into();
+                self.state.audit(
+                    "worker_disconnected",
+                    0,
+                    serde_json::json!({"elapsed_us": started.elapsed().as_micros()}),
+                );
             },
         }
     }
@@ -1478,22 +1709,24 @@ impl App {
 
 impl eframe::App for App {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.draw_ui(root);
+    }
+}
+
+impl App {
+    fn draw_ui(&mut self, root: &mut egui::Ui) {
         let ctx = root.ctx().clone();
         self.ensure_theme(&ctx);
+        self.frame_pacing.sample(ctx.input(|i| i.time));
         self.drain_pending();
         self.poll();
 
-        if self.auto && !self.busy {
-            let interval = Duration::from_secs_f32(3.0 / self.speed.max(0.25));
-            if self.last_turn.elapsed() >= interval {
-                self.last_turn = Instant::now();
-                self.request_turn(1);
-            }
-        }
+        self.repaint = Some(ctx.clone());
+        self.advance_playback(Instant::now());
         let halted = self.snapshot.as_ref().and_then(|s| s.halted.clone());
         egui::Panel::top("bar").show(root, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading(RichText::new("☖ society").color(Color32::from_rgb(235, 200, 130)));
+            ui.horizontal_wrapped(|ui| {
+                ui.heading(RichText::new("society").color(Color32::from_rgb(235, 200, 130)));
                 ui.separator();
                 if let Some(s) = &self.snapshot {
                     ui.label(RichText::new(format!("Day {} · Turn {}", s.day, s.turn)).strong());
@@ -1510,43 +1743,53 @@ impl eframe::App for App {
                     );
                     ui.separator();
                 }
-                ui.separator();
-                ui.label(format!(":{0}", self.port));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+
+                });
+            ui.horizontal_wrapped(|ui| {
                     let halted_flag = halted.is_some();
                     if halted_flag && self.auto {
                         self.auto = false;
+                        self.state.audit("observer_controls", 0, serde_json::json!({"auto": false, "cause": "halted"}));
                     }
                     if ui
                         .add_enabled(
-                            !halted_flag && !self.busy,
-                            egui::Button::new(if self.auto { "Pause" } else { "Run" }),
+                            !halted_flag && (self.auto || !self.busy),
+                            egui::Button::new(if self.auto { "Pause" } else { "Simulate" }),
                         )
                         .clicked()
                     {
                         self.auto = !self.auto;
-                        self.last_turn = Instant::now();
+                        // Starting playback shows a turn immediately.
+                        self.last_turn = Instant::now().checked_sub(playback_interval(self.speed)).expect("invariant: playback interval fits monotonic clock");
+                        self.state.audit("observer_controls", 0, serde_json::json!({"auto": self.auto, "speed": self.speed, "cause": "observer"}));
                     }
                     if ui
                         .add_enabled(!halted_flag && !self.busy, egui::Button::new("+5 Turns"))
                         .clicked()
                     {
+                        self.auto = false;
                         self.request_turn(5);
                     }
                     if ui
-                        .add_enabled(!halted_flag && !self.busy, egui::Button::new("Step"))
+                        .add_enabled(!halted_flag && !self.busy, egui::Button::new("1 Turn"))
                         .clicked()
                     {
+                        self.auto = false;
                         self.request_turn(1);
                     }
                     ui.add_enabled_ui(!halted_flag, |ui| {
-                        ui.add(
-                            egui::Slider::new(&mut self.speed, 0.25..=5.0)
-                                .text("speed")
+                        let response = ui.add(
+                            egui::Slider::new(&mut self.speed, 1.0..=100.0)
+                                .text("Speed")
+                                .suffix("×")
+                                .integer()
                                 .logarithmic(true),
-                        );
+                        ).on_hover_text("1× = one turn per second. Up to 100×, limited by save and simulation time.");
+                        if response.changed() {
+                            self.last_turn = Instant::now();
+                        }
+                        ui.label(RichText::new("1× = 1 turn / second").weak().small());
                     });
-                });
             });
             if let Some(s) = &self.snapshot {
                 ui.horizontal_wrapped(|ui| {
@@ -1582,41 +1825,41 @@ impl eframe::App for App {
                     }
                 });
             }
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.selectable_value(&mut self.tab, Tab::World, "World");
                 ui.selectable_value(&mut self.tab, Tab::Council, "Council & Economy");
                 ui.selectable_value(&mut self.tab, Tab::Feed, "Feed");
                 ui.selectable_value(&mut self.tab, Tab::Inspector, "Inspector");
                 ui.separator();
-                ui.menu_button("🔔 Parish Bell & Providence", |ui| {
+                ui.menu_button("Providence", |ui| {
                     ui.label(RichText::new("Village-wide interventions").weak().small());
                     if ui
-                        .button("🔔 Ring Parish Bell (Gather at Market)")
+                        .button("Ring Parish Bell (Gather at Market)")
                         .clicked()
                     {
                         self.trigger_intervention(VillageIntervention::RingBell);
                         ui.close();
                     }
-                    if ui.button("🍞 Hold Grand Harvest Feast").clicked() {
+                    if ui.button("Hold Grand Harvest Feast").clicked() {
                         self.trigger_intervention(VillageIntervention::HarvestFeast);
                         ui.close();
                     }
                     if ui
-                        .button("🐎 Send Merchant Caravan (+Supplies & Coin)")
+                        .button("Send Merchant Caravan (+Supplies & Coin)")
                         .clicked()
                     {
                         self.trigger_intervention(VillageIntervention::MerchantCaravan);
                         ui.close();
                     }
                     if ui
-                        .button("✨ Bless Shrine Stones (+Hope & Warmth)")
+                        .button("Bless Shrine Stones (+Hope & Warmth)")
                         .clicked()
                     {
                         self.trigger_intervention(VillageIntervention::ShrineBlessing);
                         ui.close();
                     }
                     if ui
-                        .button("🌿 Steep Parish Remedy (Heal Ailments)")
+                        .button("Steep Parish Remedy (Heal Ailments)")
                         .clicked()
                     {
                         self.trigger_intervention(VillageIntervention::HerbalRemedy);
@@ -1629,6 +1872,10 @@ impl eframe::App for App {
                     None => (self.status.clone(), ui.visuals().weak_text_color()),
                 };
                 ui.add(egui::Label::new(RichText::new(status).color(status_color)).truncate());
+                if let Some(fps) = self.frame_pacing.fps() {
+                    ui.label(RichText::new(format!("{fps:.0} fps")).weak().small())
+                        .on_hover_text("Observed UI frame cadence. Target: 120 fps; display refresh and GPU load can limit presentation.");
+                }
             });
         });
 
@@ -1636,124 +1883,144 @@ impl eframe::App for App {
             .snapshot
             .as_ref()
             .map_or(0, |s| s.agents.iter().filter(|a| a.alive).count());
-        egui::Panel::right("roster")
-            .resizable(true)
-            .default_size(285.0)
-            .show(root, |ui| {
-                ui.heading(format!(
-                    "Villagers {}/{}",
-                    alive_count,
-                    society_sim::POPULATION_CAP
-                ));
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.roster_filter, RosterFilter::All, "All");
-                    ui.selectable_value(&mut self.roster_filter, RosterFilter::Living, "Living");
-                    ui.selectable_value(
-                        &mut self.roster_filter,
-                        RosterFilter::Distressed,
-                        "At Risk",
+        if root.available_width() >= 1100.0 {
+            egui::Panel::right("roster")
+                .resizable(true)
+                .default_size(285.0)
+                .min_size(240.0)
+                .max_size((root.available_width() - 816.0).max(240.0))
+                .show(root, |ui| {
+                    ui.heading(format!(
+                        "Villagers {}/{}",
+                        alive_count,
+                        society_sim::POPULATION_CAP
+                    ));
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.roster_filter, RosterFilter::All, "All");
+                        ui.selectable_value(
+                            &mut self.roster_filter,
+                            RosterFilter::Living,
+                            "Living",
+                        );
+                        ui.selectable_value(
+                            &mut self.roster_filter,
+                            RosterFilter::Distressed,
+                            "At Risk",
+                        );
+                    });
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.roster_search)
+                            .hint_text("Filter villager, role, or place…"),
                     );
-                });
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.roster_search)
-                        .hint_text("Filter villager, role, or place…"),
-                );
-                ui.add_space(4.0);
-                egui::ScrollArea::vertical()
-                    .id_salt("roster_scroll")
-                    .show(ui, |ui| {
-                        if let Some(s) = &self.snapshot {
-                            let needle = self.roster_search.trim().to_lowercase();
-                            for a in &s.agents {
-                                match self.roster_filter {
-                                    RosterFilter::Living if !a.alive => continue,
-                                    RosterFilter::Distressed
-                                        if !a.alive
-                                            || (a.hunger < 2
-                                                && a.thirst < 2
-                                                && a.ailment.is_none()
-                                                && a.health >= 6) =>
+                    ui.add_space(4.0);
+                    egui::ScrollArea::vertical()
+                        .id_salt("roster_scroll")
+                        .show(ui, |ui| {
+                            if let Some(s) = &self.snapshot {
+                                let needle = self.roster_search.trim().to_lowercase();
+                                let mut visible = 0;
+                                for a in &s.agents {
+                                    match self.roster_filter {
+                                        RosterFilter::Living if !a.alive => continue,
+                                        RosterFilter::Distressed
+                                            if !a.alive
+                                                || (a.hunger < 2
+                                                    && a.thirst < 2
+                                                    && a.ailment.is_none()
+                                                    && a.health >= 6) =>
+                                        {
+                                            continue;
+                                        },
+                                        _ => {},
+                                    }
+                                    if !needle.is_empty()
+                                        && !a.name.to_lowercase().contains(&needle)
+                                        && !a.role.id().to_lowercase().contains(&needle)
+                                        && !a.place.title().to_lowercase().contains(&needle)
                                     {
                                         continue;
-                                    },
-                                    _ => {},
-                                }
-                                if !needle.is_empty()
-                                    && !a.name.to_lowercase().contains(&needle)
-                                    && !a.role.id().to_lowercase().contains(&needle)
-                                    && !a.place.title().to_lowercase().contains(&needle)
-                                {
-                                    continue;
-                                }
-                                let selected = self.selected.as_deref() == Some(a.name.as_str());
-                                ui.group(|ui| {
-                                    ui.set_min_width(ui.available_width());
-                                    let label = format!(
-                                        "{}{} · {}",
-                                        a.name,
-                                        gen_marker(a.generation),
-                                        humanize(a.role.id())
-                                    );
-                                    let text = if a.alive {
-                                        RichText::new(label).strong().color(role_color(a.role.id()))
-                                    } else {
-                                        RichText::new(format!("{label} · dead"))
-                                            .strikethrough()
-                                            .weak()
-                                    };
-                                    if ui.selectable_label(selected, text).clicked() {
-                                        self.selected = Some(a.name.clone());
-                                        self.tab = Tab::Inspector;
                                     }
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "📍 {} · {} · {} coin",
-                                            a.place.title(),
-                                            humanize(a.mood.id()),
-                                            a.coin
-                                        ))
-                                        .small(),
-                                    );
-                                    if a.alive && !a.current_goal.is_empty() {
-                                        ui.label(
-                                            RichText::new(format!("Goal: {}", a.current_goal))
-                                                .italics()
-                                                .small()
-                                                .weak(),
+                                    visible += 1;
+                                    let selected =
+                                        self.selected.as_deref() == Some(a.name.as_str());
+                                    ui.group(|ui| {
+                                        ui.set_min_width(ui.available_width());
+                                        let label = format!(
+                                            "{}{} · {}",
+                                            a.name,
+                                            gen_marker(a.generation),
+                                            humanize(a.role.id())
                                         );
-                                    }
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "Food {} · Water {} · Health {}/10",
-                                            a.food, a.water, a.health
-                                        ))
-                                        .small(),
-                                    );
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "Hunger {}/3 · Thirst {}/3",
-                                            a.hunger, a.thirst
-                                        ))
-                                        .small()
-                                        .color(
-                                            if a.alive && (a.hunger >= 2 || a.thirst >= 2) {
-                                                Color32::from_rgb(230, 140, 95)
-                                            } else {
-                                                ui.visuals().weak_text_color()
-                                            },
-                                        ),
-                                    );
-                                    if let Some(ailment) = a.ailment {
+                                        let text = if a.alive {
+                                            RichText::new(label)
+                                                .strong()
+                                                .color(role_color(a.role.id()))
+                                        } else {
+                                            RichText::new(format!("{label} · dead"))
+                                                .strikethrough()
+                                                .weak()
+                                        };
+                                        if ui.selectable_label(selected, text).clicked() {
+                                            self.selected = Some(a.name.clone());
+                                            self.tab = Tab::Inspector;
+                                        }
                                         ui.label(
-                                            RichText::new(humanize(ailment.id()))
-                                                .color(Color32::from_rgb(230, 140, 95)),
+                                            RichText::new(format!(
+                                                "{} · {} · {} coin",
+                                                a.place.title(),
+                                                humanize(a.mood.id()),
+                                                a.coin
+                                            ))
+                                            .small(),
                                         );
+                                        if a.alive && !a.current_goal.is_empty() {
+                                            ui.label(
+                                                RichText::new(format!("Goal: {}", a.current_goal))
+                                                    .italics()
+                                                    .small()
+                                                    .weak(),
+                                            );
+                                        }
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "Food {} · Water {} · Health {}/10",
+                                                a.food, a.water, a.health
+                                            ))
+                                            .small(),
+                                        );
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "Hunger {}/3 · Thirst {}/3",
+                                                a.hunger, a.thirst
+                                            ))
+                                            .small()
+                                            .color(
+                                                if a.alive && (a.hunger >= 2 || a.thirst >= 2) {
+                                                    Color32::from_rgb(230, 140, 95)
+                                                } else {
+                                                    ui.visuals().weak_text_color()
+                                                },
+                                            ),
+                                        );
+                                        if let Some(ailment) = a.ailment {
+                                            ui.label(
+                                                RichText::new(humanize(ailment.id()))
+                                                    .color(Color32::from_rgb(230, 140, 95)),
+                                            );
+                                        }
+                                    });
+                                }
+                                if visible == 0 {
+                                    ui.label("No villagers match these filters.");
+                                    if ui.button("Clear villager filters").clicked() {
+                                        self.roster_search.clear();
+                                        self.roster_filter = RosterFilter::All;
                                     }
-                                });
+                                }
                             }
-                        }
-                    });
-            });
+                        });
+                });
+        }
 
         egui::CentralPanel::default().show(root, |ui| match self.tab {
             Tab::World => self.draw_map(ui),
@@ -1762,12 +2029,21 @@ impl eframe::App for App {
             Tab::Inspector => self.draw_inspector(ui),
         });
 
-        ctx.request_repaint_after(Duration::from_millis(250));
+        let animating = self.tab == Tab::World && self.motion.values().any(Motion::is_moving);
+        let repaint_after = if self.auto || self.busy || animating {
+            // Continuous redraw lets vsync pace the native renderer. Sleeping
+            // for 8.33ms *after* rendering can miss every other 120Hz refresh.
+            Duration::ZERO
+        } else {
+            Duration::from_millis(250)
+        };
+        ctx.request_repaint_after(repaint_after);
     }
 }
 
 impl App {
     fn draw_map(&mut self, ui: &mut egui::Ui) {
+        let ring_height = (ui.available_height() - 100.0).clamp(340.0, 540.0);
         egui::ScrollArea::vertical()
             .id_salt("world_scroll")
             .show(ui, |ui| {
@@ -1778,14 +2054,19 @@ impl App {
                                 .strong()
                                 .color(Color32::from_rgb(230, 200, 135)),
                         );
-                        ui.label(RichText::new("—").weak());
+                        ui.label(RichText::new("·").weak());
                         ui.label(RichText::new(&s.report.daily_detail).weak().small());
                     });
                 }
-                let height = (ui.available_height() * 0.58).clamp(290.0, 430.0);
-                ui.allocate_ui(egui::vec2(ui.available_width(), height), |ui| {
-                    self.draw_ring(ui);
-                });
+                ui.label(
+                    RichText::new(
+                        "Click a villager to inspect. Scroll down for village stockpiles.",
+                    )
+                    .weak()
+                    .small(),
+                );
+                ui.add_space(8.0);
+                self.draw_ring(ui, ring_height);
                 self.draw_stockpiles(ui);
                 self.draw_world_cards(ui);
             });
@@ -1798,7 +2079,7 @@ impl App {
         ui.heading("Village stockpiles");
         ui.label(
             RichText::new(
-                "Stores at each place; carried supplies are listed in each villager’s inspector.",
+                "Stores at each place; carried supplies are listed in each villager's inspector.",
             )
             .weak()
             .small(),
@@ -1848,12 +2129,11 @@ impl App {
             });
     }
 
-    fn draw_ring(&mut self, ui: &mut egui::Ui) {
-        // Fill the panel: the ring looks wrong marooned in a corner of a large
-        // window, and a hand-placed layout should still breathe with the frame.
-        let avail = ui.available_size();
-        let h = (avail.y - 55.0).max(240.0);
-        let w = avail.x.max(320.0);
+    fn draw_ring(&mut self, ui: &mut egui::Ui, height: f32) {
+        // Fill the panel: the ring looks wrong in a corner of a large window,
+        // and a hand-placed layout should still fit the frame.
+        let w = ui.available_width();
+        let h = height;
         let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
         let painter = ui.painter_at(rect);
         let sx = rect.width() / MAP_W;
@@ -1870,6 +2150,8 @@ impl App {
             || (Color32::from_rgb(20, 24, 30), Color32::from_gray(70)),
             |s| canvas_atmosphere(&s.season, &s.time_of_day),
         );
+        let sky_bg = animated_color(ui.ctx(), "sky", sky_bg);
+        let border_tint = animated_color(ui.ctx(), "sky_border", border_tint);
         painter.rect_filled(rect, 10.0, sky_bg);
         painter.rect_stroke(
             rect,
@@ -1922,7 +2204,7 @@ impl App {
 
         if let Some(s) = &self.snapshot {
             // Weather particle overlay (rain streaks, snow crystals, or sun motes).
-            draw_weather_overlay(&painter, rect, &s.weather_kind, s.turn);
+            draw_weather_overlay(&painter, rect, &s.weather_kind, ui.input(|i| i.time));
 
             for p in &s.places {
                 let center = to_screen(fixed_place_pos(p.place.id()));
@@ -1955,10 +2237,9 @@ impl App {
                     center,
                     egui::Align2::CENTER_CENTER,
                     format!(
-                        "{} {}{}\n{} food · {} water · {}/5",
-                        place_glyph(p.place.id()),
+                        "{}{}\n{} food · {} water · {}/5",
                         humanize(p.place.id()),
-                        if p.state.hearth_lit { " 🔥" } else { "" },
+                        if p.state.hearth_lit { " · lit" } else { "" },
                         p.state.food,
                         p.state.water,
                         p.state.condition
@@ -1994,23 +2275,83 @@ impl App {
                     self.selected_place = Some(p.place.id().to_owned());
                 }
             }
+            let now = ui.input(|i| i.time);
+            if self
+                .ring_layout
+                .as_ref()
+                .is_none_or(|layout| layout.rect != rect)
+            {
+                let mut occupied: Vec<_> = s
+                    .places
+                    .iter()
+                    .map(|p| {
+                        egui::Rect::from_center_size(
+                            to_screen(fixed_place_pos(p.place.id())),
+                            egui::vec2(158.0, 70.0),
+                        )
+                    })
+                    .collect();
+                let mut slots = BTreeMap::new();
+                for p in &s.places {
+                    let center = to_screen(fixed_place_pos(p.place.id()));
+                    let n = p.present.len().max(1) as f32;
+                    for (i, name) in p.present.iter().enumerate() {
+                        let angle = (i as f32 / n)
+                            .mul_add(std::f32::consts::TAU, -std::f32::consts::FRAC_PI_2);
+                        let preferred = center + egui::vec2(angle.cos(), angle.sin()) * 72.0;
+                        let galley = painter.layout_no_wrap(
+                            name.clone(),
+                            egui::FontId::proportional(11.5),
+                            Color32::from_gray(235),
+                        );
+                        if let Some(slot) = villager_slot(
+                            rect.shrink(7.0_f32.mul_add(sx.min(1.5), 22.0)),
+                            preferred,
+                            egui::vec2(galley.size().x + 38.0, 30.0),
+                            &occupied,
+                        ) {
+                            occupied.push(slot.expand(4.0));
+                            slots.insert(name.clone(), slot);
+                        }
+                    }
+                }
+                self.motion.retain(|name, _| slots.contains_key(name));
+                for (name, slot) in &slots {
+                    self.motion
+                        .entry(name.clone())
+                        .or_insert_with(|| Motion::new(slot.min, now))
+                        .retarget(slot.min, now);
+                }
+                self.ring_layout = Some(RingLayout { rect, slots });
+            }
             // Draw every villager after the buildings so a neighbouring place
             // cannot paint over their marker or name.
             for p in &s.places {
-                let center = to_screen(fixed_place_pos(p.place.id()));
-                let n = p.present.len().max(1) as f32;
-                let orbit = 72.0;
                 let dot = 7.0 * sx.min(1.5);
-                let margin = dot + 22.0;
-                for (i, name) in p.present.iter().enumerate() {
-                    // Start at the top and go clockwise.
-                    let angle =
-                        (i as f32 / n).mul_add(std::f32::consts::TAU, -std::f32::consts::FRAC_PI_2);
-                    let mut pos = center + egui::vec2(angle.cos(), angle.sin()) * orbit;
-                    // Keep the marker inside the map: a villager at the top of
-                    // the ring must not be clipped by the panel edge.
-                    pos.x = pos.x.clamp(rect.left() + margin, rect.right() - margin);
-                    pos.y = pos.y.clamp(rect.top() + margin, rect.bottom() - margin);
+                for name in &p.present {
+                    let galley = painter.layout_no_wrap(
+                        name.clone(),
+                        egui::FontId::proportional(11.5),
+                        Color32::from_gray(235),
+                    );
+                    let Some(target_slot) = self
+                        .ring_layout
+                        .as_ref()
+                        .and_then(|l| l.slots.get(name))
+                        .copied()
+                    else {
+                        continue;
+                    };
+                    let motion = self
+                        .motion
+                        .get_mut(name)
+                        .expect("invariant: each ring slot has motion");
+                    let response = playback_interval(self.speed)
+                        .as_secs_f32()
+                        .clamp(0.08, 0.22);
+                    motion.advance(now, response);
+                    let slot = target_slot.translate(motion.position - target_slot.min);
+                    let pos = egui::pos2(slot.left() + 14.0, slot.center().y);
                     let agent_view = s.agents.iter().find(|a| a.name == *name);
                     let hover_summary = agent_view.map_or_else(
                         || format!("Inspect {name}"),
@@ -2022,7 +2363,7 @@ impl App {
                                 humanize(av.mood.id()),
                                 av.health,
                                 if av.current_goal.is_empty() {
-                                    "—"
+                                    "none"
                                 } else {
                                     &av.current_goal
                                 }
@@ -2031,7 +2372,7 @@ impl App {
                     );
                     if ui
                         .interact(
-                            egui::Rect::from_center_size(pos, egui::vec2(24.0, 24.0)),
+                            slot,
                             ui.scope_id().with(("villager", name)),
                             egui::Sense::click(),
                         )
@@ -2067,31 +2408,11 @@ impl App {
                             );
                         }
                     }
-                    // Label outward from the place marker, then clamped, so two
-                    // neighbours cannot collide and nothing leaves the panel.
-                    let dir = (pos - center).normalized();
-                    let lp = pos + dir * (dot + 9.0);
-                    let lp = egui::pos2(
-                        lp.x.clamp(rect.left() + 18.0, rect.right() - 18.0),
-                        lp.y.clamp(rect.top() + 10.0, rect.bottom() - 10.0),
+                    let lp = egui::pos2(pos.x + 17.0, galley.size().y.mul_add(-0.5, pos.y));
+                    let bg = egui::Rect::from_min_size(
+                        lp - egui::vec2(4.0, 1.0),
+                        galley.size() + egui::vec2(8.0, 2.0),
                     );
-                    // A backing pill keeps the name legible where it crosses
-                    // a path line; without it the stroke runs through the text.
-                    let galley = painter.layout_no_wrap(
-                        name.clone(),
-                        if selected {
-                            egui::FontId::proportional(12.0)
-                        } else {
-                            egui::FontId::proportional(11.5)
-                        },
-                        if selected {
-                            ui.visuals().selection.stroke.color
-                        } else {
-                            Color32::from_gray(215)
-                        },
-                    );
-                    let pad = egui::vec2(4.0, 1.0);
-                    let bg = egui::Rect::from_center_size(lp, galley.size() + pad * 2.0);
                     let bg_fill = if selected {
                         ui.visuals().selection.bg_fill
                     } else {
@@ -2099,7 +2420,7 @@ impl App {
                     };
                     painter.rect_filled(bg, 4.0, bg_fill);
                     painter.galley(
-                        lp - galley.size() * 0.5,
+                        lp,
                         galley,
                         if selected {
                             ui.visuals().selection.stroke.color
@@ -2125,57 +2446,61 @@ impl App {
         };
         ui.add_space(10.0);
         ui.separator();
-        ui.columns(2, |cols| {
-            cols[0].heading("Active Parish Decrees");
-            for d in &s.report.decrees {
-                cols[0].group(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.strong(&d.title);
-                        ui.label(RichText::new(format!("[{}]", d.domain)).small().color(
-                            if d.urgent {
-                                Color32::from_rgb(235, 145, 105)
-                            } else {
-                                Color32::from_rgb(150, 195, 230)
-                            },
-                        ));
+        responsive_columns(
+            ui,
+            |ui| {
+                ui.heading("Active Parish Decrees");
+                for d in &s.report.decrees {
+                    ui.group(|ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.strong(&d.title);
+                            ui.label(RichText::new(format!("[{}]", d.domain)).small().color(
+                                if d.urgent {
+                                    Color32::from_rgb(235, 145, 105)
+                                } else {
+                                    Color32::from_rgb(150, 195, 230)
+                                },
+                            ));
+                        });
+                        ui.label(RichText::new(&d.summary).small());
                     });
-                    ui.label(RichText::new(&d.summary).small());
-                });
-            }
-
-            cols[1].heading("Live Voices Around the Commons");
-            let recent_speeches: Vec<&Event> = s
-                .events
-                .iter()
-                .rev()
-                .filter(|e| !e.text.is_empty())
-                .take(4)
-                .collect();
-            if recent_speeches.is_empty() {
-                cols[1].label(RichText::new("Quiet across the village green.").weak());
-            }
-            for ev in recent_speeches {
-                cols[1].group(|ui| {
-                    let (_, col) = event_style(ev.kind);
-                    ui.horizontal(|ui| {
-                        if ui
-                            .selectable_label(false, RichText::new(&ev.actor).strong())
-                            .clicked()
-                            && s.agents.iter().any(|a| a.name == ev.actor)
-                        {
-                            self.selected = Some(ev.actor.clone());
-                            self.tab = Tab::Inspector;
-                        }
-                        ui.label(
-                            RichText::new(format!("@ {} · turn {}", ev.place.title(), ev.turn))
-                                .small()
-                                .color(col),
-                        );
+                }
+            },
+            |ui| {
+                ui.heading("Live Voices Around the Commons");
+                let recent_speeches: Vec<&Event> = s
+                    .events
+                    .iter()
+                    .rev()
+                    .filter(|e| !e.text.is_empty())
+                    .take(4)
+                    .collect();
+                if recent_speeches.is_empty() {
+                    ui.label(RichText::new("Quiet across the village green.").weak());
+                }
+                for ev in recent_speeches {
+                    ui.group(|ui| {
+                        let (_, col) = event_style(ev.kind);
+                        ui.horizontal_wrapped(|ui| {
+                            if ui
+                                .selectable_label(false, RichText::new(&ev.actor).strong())
+                                .clicked()
+                                && s.agents.iter().any(|a| a.name == ev.actor)
+                            {
+                                self.selected = Some(ev.actor.clone());
+                                self.tab = Tab::Inspector;
+                            }
+                            ui.label(
+                                RichText::new(format!("@ {} · turn {}", ev.place.title(), ev.turn))
+                                    .small()
+                                    .color(col),
+                            );
+                        });
+                        ui.label(RichText::new(&ev.text).small());
                     });
-                    ui.label(RichText::new(&ev.text).small());
-                });
-            }
-        });
+                }
+            },
+        );
     }
 
     fn draw_council(&mut self, ui: &mut egui::Ui) {
@@ -2189,187 +2514,214 @@ impl App {
                 ui.heading(format!("Parish Council & Economy · {}", s.report.era_name));
                 ui.label(
                     RichText::new(format!(
-                        "{} — {}",
+                        "{} · {}",
                         s.report.daily_phase, s.report.daily_detail
                     ))
                     .weak(),
                 );
                 ui.add_space(6.0);
 
-                ui.columns(2, |cols| {
-                    cols[0].group(|ui| {
-                        ui.heading("Civic Leadership & Decrees");
-                        if let Some(l) = &s.report.leader {
-                            ui.horizontal(|ui| {
-                                ui.strong(format!("{}:", l.title));
-                                if ui.selectable_label(false, &l.name).clicked() {
-                                    self.selected = Some(l.name.clone());
-                                    self.tab = Tab::Inspector;
-                                }
-                                ui.label(
-                                    RichText::new(format!(
-                                        "({}) · Mandate {:.1}/4.0",
-                                        l.role, l.support
-                                    ))
-                                    .weak(),
-                                );
-                            });
-                        }
-                        ui.add_space(4.0);
-                        for d in &s.report.decrees {
-                            ui.label(
-                                RichText::new(format!("• {} ({})", d.title, d.domain)).strong(),
-                            );
-                            ui.label(RichText::new(&d.summary).small().weak());
-                        }
-                    });
-
-                    cols[1].group(|ui| {
-                        ui.heading("Market Exchange & Scarcity Index");
-                        ui.label(
-                            RichText::new(format!(
-                                "Prosperity {:.1}/100 · Coin Gini {:.2}",
-                                s.report.prosperity_score, s.report.gini_coin
-                            ))
-                            .small()
-                            .weak(),
-                        );
-                        egui::Grid::new("market_quotes_grid")
-                            .striped(true)
-                            .show(ui, |ui| {
-                                for h in ["Good", "Stores", "Carried", "Total", "Price", "Market"] {
-                                    ui.strong(h);
-                                }
-                                ui.end_row();
-                                for q in &s.report.commodities {
-                                    ui.label(q.name);
-                                    ui.label(q.stockpile.to_string());
-                                    ui.label(q.carried.to_string());
-                                    ui.label(q.total.to_string());
-                                    ui.label(format!("{:.1} c", q.price_coin));
-                                    let col = match q.status {
-                                        "Scarcity" => Color32::from_rgb(230, 125, 100),
-                                        "Surplus" => Color32::from_rgb(145, 210, 160),
-                                        _ => Color32::from_gray(200),
-                                    };
-                                    ui.colored_label(col, q.status);
-                                    ui.end_row();
-                                }
-                            });
-                    });
-                });
-
-                ui.add_space(8.0);
-                ui.columns(2, |cols| {
-                    cols[0].group(|ui| {
-                        ui.heading("Households & Hearths");
-                        for hh in &s.report.households {
-                            ui.group(|ui| {
+                responsive_columns(
+                    ui,
+                    |ui| {
+                        ui.group(|ui| {
+                            ui.heading("Civic Leadership & Decrees");
+                            if let Some(l) = &s.report.leader {
                                 ui.horizontal_wrapped(|ui| {
-                                    ui.strong(&hh.title);
+                                    ui.strong(format!("{}:", l.title));
+                                    if ui.selectable_label(false, &l.name).clicked() {
+                                        self.selected = Some(l.name.clone());
+                                        self.tab = Tab::Inspector;
+                                    }
                                     ui.label(
                                         RichText::new(format!(
-                                            "· {} · Worth {} · Rations {}",
-                                            hh.hearth_place, hh.wealth, hh.food
+                                            "({}) · Mandate {:.1}/4.0",
+                                            l.role, l.support
                                         ))
-                                        .small()
                                         .weak(),
                                     );
                                 });
-                                ui.label(
-                                    RichText::new(format!("Members: {}", hh.members.join(", ")))
-                                        .small(),
-                                );
-                                ui.label(RichText::new(&hh.tradition).small().italics().weak());
-                            });
-                        }
-                    });
-
-                    cols[1].group(|ui| {
-                        ui.heading("Village Factions & Feuds");
-                        for f in &s.report.factions {
-                            ui.group(|ui| {
-                                ui.horizontal(|ui| {
-                                    ui.strong(&f.name);
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "cohesion {:.0}%",
-                                            f.cohesion * 100.0
-                                        ))
-                                        .small()
-                                        .weak(),
-                                    );
-                                });
-                                ui.label(RichText::new(&f.ethos).small().weak());
-                                ui.label(
-                                    RichText::new(f.members.join(", "))
-                                        .small()
-                                        .color(Color32::from_rgb(215, 195, 145)),
-                                );
-                            });
-                        }
-                        if !s.report.feuds.is_empty() {
+                            }
                             ui.add_space(4.0);
-                            ui.strong("Active Grudges & Tensions");
-                            for feud in &s.report.feuds {
-                                ui.colored_label(
-                                    Color32::from_rgb(230, 140, 120),
-                                    format!(
-                                        "⚔ {} ↔ {} (Grudge {:.1}/4 · {})",
-                                        feud.a, feud.b, feud.grudge, feud.reason
-                                    ),
+                            for d in &s.report.decrees {
+                                ui.label(
+                                    RichText::new(format!("• {} ({})", d.title, d.domain)).strong(),
                                 );
-                            }
-                        }
-                    });
-                });
-
-                ui.add_space(8.0);
-                ui.columns(2, |cols| {
-                    cols[0].group(|ui| {
-                        ui.heading("Rumor Mill & Parish Oaths");
-                        if s.report.rumors.is_empty() {
-                            ui.label(RichText::new("No active rumors or oaths recorded.").weak());
-                        }
-                        for r in &s.report.rumors {
-                            ui.label(format!(
-                                "[{}] {} → {}: {} (turn {})",
-                                r.kind, r.speaker, r.subject, r.text, r.turn
-                            ));
-                        }
-                    });
-                    cols[1].group(|ui| {
-                        ui.heading("Memorial Roll & Chronicle Inscription");
-                        if s.report.memorials.is_empty() {
-                            ui.label(
-                                RichText::new("No villagers have perished since the founding.")
-                                    .weak(),
-                            );
-                        } else {
-                            for m in &s.report.memorials {
-                                ui.label(format!(
-                                    "✝ {}{} ({}) — {} at turn {}",
-                                    m.name,
-                                    gen_marker(m.generation),
-                                    m.role,
-                                    m.cause,
-                                    m.turn
-                                ));
-                            }
-                        }
-                        ui.separator();
-                        ui.label(RichText::new("Inscribe a parish chronicle event:").small());
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.custom_event_text)
-                                    .hint_text("e.g. A shooting star crossed the Shrine…"),
-                            );
-                            if ui.button("Inscribe").clicked() {
-                                inscribe = true;
+                                ui.label(RichText::new(&d.summary).small().weak());
                             }
                         });
-                    });
-                });
+                    },
+                    |ui| {
+                        ui.group(|ui| {
+                            ui.heading("Market Exchange & Scarcity Index");
+                            ui.label(
+                                RichText::new(format!(
+                                    "Prosperity {:.1}/100 · Coin Gini {:.2}",
+                                    s.report.prosperity_score, s.report.gini_coin
+                                ))
+                                .small()
+                                .weak(),
+                            );
+                            egui::ScrollArea::horizontal()
+                                .id_salt("market_quotes_scroll")
+                                .show(ui, |ui| {
+                                    egui::Grid::new("market_quotes_grid").striped(true).show(
+                                        ui,
+                                        |ui| {
+                                            for h in [
+                                                "Good", "Stores", "Carried", "Total", "Price",
+                                                "Market",
+                                            ] {
+                                                ui.strong(h);
+                                            }
+                                            ui.end_row();
+                                            for q in &s.report.commodities {
+                                                ui.label(q.name);
+                                                ui.label(q.stockpile.to_string());
+                                                ui.label(q.carried.to_string());
+                                                ui.label(q.total.to_string());
+                                                ui.label(format!("{:.1} c", q.price_coin));
+                                                let col = match q.status {
+                                                    "Scarcity" => Color32::from_rgb(230, 125, 100),
+                                                    "Surplus" => Color32::from_rgb(145, 210, 160),
+                                                    _ => Color32::from_gray(200),
+                                                };
+                                                ui.colored_label(col, q.status);
+                                                ui.end_row();
+                                            }
+                                        },
+                                    );
+                                });
+                        });
+                    },
+                );
+
+                ui.add_space(8.0);
+                responsive_columns(
+                    ui,
+                    |ui| {
+                        ui.group(|ui| {
+                            ui.heading("Households & Hearths");
+                            for hh in &s.report.households {
+                                ui.group(|ui| {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.strong(&hh.title);
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "· {} · Worth {} · Rations {}",
+                                                hh.hearth_place, hh.wealth, hh.food
+                                            ))
+                                            .small()
+                                            .weak(),
+                                        );
+                                    });
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Members: {}",
+                                            hh.members.join(", ")
+                                        ))
+                                        .small(),
+                                    );
+                                    ui.label(RichText::new(&hh.tradition).small().italics().weak());
+                                });
+                            }
+                        });
+                    },
+                    |ui| {
+                        ui.group(|ui| {
+                            ui.heading("Village Factions & Feuds");
+                            for f in &s.report.factions {
+                                ui.group(|ui| {
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.strong(&f.name);
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "cohesion {:.0}%",
+                                                f.cohesion * 100.0
+                                            ))
+                                            .small()
+                                            .weak(),
+                                        );
+                                    });
+                                    ui.label(RichText::new(&f.ethos).small().weak());
+                                    ui.label(
+                                        RichText::new(f.members.join(", "))
+                                            .small()
+                                            .color(Color32::from_rgb(215, 195, 145)),
+                                    );
+                                });
+                            }
+                            if !s.report.feuds.is_empty() {
+                                ui.add_space(4.0);
+                                ui.strong("Active Grudges & Tensions");
+                                for feud in &s.report.feuds {
+                                    ui.colored_label(
+                                        Color32::from_rgb(230, 140, 120),
+                                        format!(
+                                            "⚔ {} ↔ {} (Grudge {:.1}/4 · {})",
+                                            feud.a, feud.b, feud.grudge, feud.reason
+                                        ),
+                                    );
+                                }
+                            }
+                        });
+                    },
+                );
+
+                ui.add_space(8.0);
+                responsive_columns(
+                    ui,
+                    |ui| {
+                        ui.group(|ui| {
+                            ui.heading("Rumor Mill & Parish Oaths");
+                            if s.report.rumors.is_empty() {
+                                ui.label(
+                                    RichText::new("No active rumors or oaths recorded.").weak(),
+                                );
+                            }
+                            for r in &s.report.rumors {
+                                ui.label(format!(
+                                    "[{}] {} → {}: {} (turn {})",
+                                    r.kind, r.speaker, r.subject, r.text, r.turn
+                                ));
+                            }
+                        });
+                    },
+                    |ui| {
+                        ui.group(|ui| {
+                            ui.heading("Memorial Roll & Chronicle Inscription");
+                            if s.report.memorials.is_empty() {
+                                ui.label(
+                                    RichText::new("No villagers have perished since the founding.")
+                                        .weak(),
+                                );
+                            } else {
+                                for m in &s.report.memorials {
+                                    ui.label(format!(
+                                        "✝ {}{} ({}), {} at turn {}",
+                                        m.name,
+                                        gen_marker(m.generation),
+                                        m.role,
+                                        m.cause,
+                                        m.turn
+                                    ));
+                                }
+                            }
+                            ui.separator();
+                            ui.label(RichText::new("Inscribe a parish chronicle event:").small());
+                            ui.horizontal_wrapped(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.custom_event_text)
+                                        .desired_width((ui.available_width() - 85.0).max(80.0))
+                                        .hint_text("e.g. A shooting star crossed the Shrine…"),
+                                );
+                                if ui.button("Inscribe").clicked() {
+                                    inscribe = true;
+                                }
+                            });
+                        });
+                    },
+                );
             });
         if inscribe {
             self.inject_custom_chronicle();
@@ -2415,80 +2767,133 @@ impl App {
             .chain(self.turns.iter().map(|r| r.turn))
             .collect();
         let needle = self.feed_search.trim().to_lowercase();
+        let key = (
+            ui.available_width(),
+            ui.ctx().pixels_per_point(),
+            self.feed_filter,
+            needle.clone(),
+        );
+        if self.feed_layout_key.as_ref() != Some(&key) {
+            self.feed_heights.clear();
+            self.feed_layout_key = Some(key);
+        }
+        self.feed_heights.retain(|turn, _| turns.contains(turn));
+        let mut visible = 0;
         egui::ScrollArea::vertical()
             .id_salt("feed_scroll")
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 for turn in turns {
-                    day_divider(ui, &format!("turn {turn}"));
+                    let top = ui.next_widget_position();
+                    if let Some(&(height, count)) = self.feed_heights.get(&turn) {
+                        let bounds = egui::Rect::from_min_size(
+                            top,
+                            egui::vec2(ui.available_width(), height),
+                        );
+                        if !ui.is_rect_visible(bounds.expand(100.0)) {
+                            ui.add_space(height);
+                            visible += count;
+                            continue;
+                        }
+                    }
                     let rec = self.turns.iter().find(|r| r.turn == turn);
-                    if let Some(rec) = rec {
-                        ui.label(RichText::new(format!("day {}", rec.day)).weak().small());
+                    let events: Vec<_> = s
+                        .events
+                        .iter()
+                        .filter(|e| {
+                            e.turn == turn
+                                && matches_feed_filter(e.kind, self.feed_filter)
+                                && (needle.is_empty()
+                                    || e.actor.to_lowercase().contains(&needle)
+                                    || e.text.to_lowercase().contains(&needle)
+                                    || e.action.to_lowercase().contains(&needle))
+                        })
+                        .collect();
+                    let actions: Vec<_> = rec
+                        .into_iter()
+                        .flat_map(|r| &r.agents)
+                        .filter(|a| {
+                            self.feed_filter == FeedFilter::All
+                                && (needle.is_empty()
+                                    || format!(
+                                        "{} {} {} {} {}",
+                                        a.name,
+                                        humanize(&a.action),
+                                        a.say,
+                                        a.note.as_deref().unwrap_or(""),
+                                        if a.accepted { "Accepted" } else { "Rejected" }
+                                    )
+                                    .to_lowercase()
+                                    .contains(&needle))
+                                && !s.events.iter().any(|e| {
+                                    e.turn == turn && e.actor == a.name && e.action == a.action
+                                })
+                        })
+                        .collect();
+                    if events.is_empty() && actions.is_empty() {
+                        self.feed_heights.insert(turn, (0.0, 0));
+                        continue;
                     }
-                    for e in s.events.iter().filter(|e| e.turn == turn) {
-                        if !matches_feed_filter(e.kind, self.feed_filter) {
-                            continue;
-                        }
-                        if !needle.is_empty()
-                            && !e.actor.to_lowercase().contains(&needle)
-                            && !e.text.to_lowercase().contains(&needle)
-                            && !e.action.to_lowercase().contains(&needle)
-                        {
-                            continue;
-                        }
-                        let (label, color) = event_style(e.kind);
-                        ui.horizontal_wrapped(|ui| {
-                            if ui
-                                .selectable_label(false, RichText::new(&e.actor).strong())
-                                .clicked()
-                                && s.agents.iter().any(|a| a.name == e.actor)
-                            {
-                                self.selected = Some(e.actor.clone());
-                                self.tab = Tab::Inspector;
+                    let previous_visible = visible;
+                    ui.push_id(turn, |ui| {
+                        let mut turn_visible = false;
+                        for e in events {
+                            if !turn_visible {
+                                day_divider(ui, &format!("turn {turn}"));
+                                turn_visible = true;
                             }
-                            ui.label(
-                                RichText::new(format!(
-                                    "{label} · {} · {}",
-                                    humanize(&e.action),
-                                    e.place.title()
-                                ))
-                                .color(color),
-                            );
-                        });
-                        if !e.text.is_empty() {
-                            ui.label(&e.text);
-                        }
-                        if let Some(a) = rec.and_then(|r| {
-                            r.agents
-                                .iter()
-                                .find(|a| (&a.name, &a.action) == (&e.actor, &e.action))
-                        }) {
-                            ui.label(RichText::new(turn_meta(a)).weak().small());
-                            if let Some(note) = &a.note {
-                                ui.label(RichText::new(note).small().color(color));
+                            visible += 1;
+                            let (label, color) = event_style(e.kind);
+                            ui.horizontal_wrapped(|ui| {
+                                if ui
+                                    .selectable_label(false, RichText::new(&e.actor).strong())
+                                    .clicked()
+                                    && s.agents.iter().any(|a| a.name == e.actor)
+                                {
+                                    self.selected = Some(e.actor.clone());
+                                    self.tab = Tab::Inspector;
+                                }
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{label} · {} · {}",
+                                        humanize(&e.action),
+                                        e.place.title()
+                                    ))
+                                    .color(color),
+                                );
+                            });
+                            if !e.text.is_empty() {
+                                ui.label(&e.text);
                             }
-                        } else if let Some(social) = &e.social {
-                            ui.label(
-                                RichText::new(format!(
-                                    "Social {} · intensity {}",
-                                    humanize(social),
-                                    fmt(e.intensity)
-                                ))
-                                .weak()
-                                .small(),
-                            );
-                        }
-                        ui.add_space(6.0);
-                    }
-                    // Rejected actions do not always emit events. Keep those
-                    // visible with the actual reason supplied by the simulator.
-                    if let Some(rec) = rec {
-                        for a in &rec.agents {
-                            if s.events.iter().any(|e| {
-                                e.turn == turn && e.actor == a.name && e.action == a.action
+                            if let Some(a) = rec.and_then(|r| {
+                                r.agents
+                                    .iter()
+                                    .find(|a| (&a.name, &a.action) == (&e.actor, &e.action))
                             }) {
-                                continue;
+                                ui.label(RichText::new(turn_meta(a)).weak().small());
+                                if let Some(note) = &a.note {
+                                    ui.label(RichText::new(note).small().color(color));
+                                }
+                            } else if let Some(social) = &e.social {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Social {} · intensity {}",
+                                        humanize(social),
+                                        fmt(e.intensity)
+                                    ))
+                                    .weak()
+                                    .small(),
+                                );
                             }
+                            ui.add_space(6.0);
+                        }
+                        // Rejected actions do not always emit events.
+                        for a in actions {
+                            if !turn_visible {
+                                day_divider(ui, &format!("turn {turn}"));
+                                turn_visible = true;
+                            }
+                            visible += 1;
                             ui.label(format!(
                                 "{} · {} · {}",
                                 a.name,
@@ -2513,6 +2918,20 @@ impl App {
                                 TurnWords::Nothing => {},
                             }
                         }
+                    });
+                    self.feed_heights.insert(
+                        turn,
+                        (
+                            ui.next_widget_position().y - top.y,
+                            visible - previous_visible,
+                        ),
+                    );
+                }
+                if visible == 0 {
+                    ui.label("No events match these filters.");
+                    if ui.button("Clear feed filters").clicked() {
+                        self.feed_search.clear();
+                        self.feed_filter = FeedFilter::All;
                     }
                 }
             });
@@ -2666,7 +3085,7 @@ impl App {
                     ui.add_space(8.0);
                     ui.strong("Promise");
                     ui.label(format!(
-                        "To {}: “{}” · turn {} · {}",
+                        "To {}: \"{}\" · turn {} · {}",
                         promise.to,
                         promise.text,
                         promise.made_turn,
@@ -2724,7 +3143,10 @@ impl App {
                                         relation.map(|r| r.grudge),
                                     ] {
                                         ui.label(
-                                            value.map_or_else(|| "—".into(), |v| format!("{v:.1}")),
+                                            value.map_or_else(
+                                                || "none".into(),
+                                                |v| format!("{v:.1}"),
+                                            ),
                                         );
                                     }
                                     ui.end_row();
@@ -2821,9 +3243,9 @@ impl App {
                                         "historical"
                                     },
                                     fact.invalid_at
-                                        .map_or_else(|| "—".into(), |t| t.to_string()),
+                                        .map_or_else(|| "none".into(), |t| t.to_string()),
                                     fact.expired_at
-                                        .map_or_else(|| "—".into(), |t| t.to_string())
+                                        .map_or_else(|| "none".into(), |t| t.to_string())
                                 ))
                                 .weak()
                                 .small(),
@@ -2851,6 +3273,51 @@ impl App {
 }
 
 /// Horizontal day-boundary divider with centered label.
+/// Keep dashboard sections readable beside the roster at the minimum window size.
+fn responsive_columns(
+    ui: &mut egui::Ui,
+    left: impl FnOnce(&mut egui::Ui),
+    right: impl FnOnce(&mut egui::Ui),
+) {
+    if ui.available_width() < 1000.0 {
+        left(ui);
+        ui.add_space(8.0);
+        right(ui);
+    } else {
+        ui.columns(2, |cols| {
+            left(&mut cols[0]);
+            right(&mut cols[1]);
+        });
+    }
+}
+
+/// Choose the nearest free complete marker/name rectangle, reserving place cards
+/// and earlier villagers. Fixed scan order keeps screenshots stable between frames.
+fn villager_slot(
+    bounds: egui::Rect,
+    preferred: egui::Pos2,
+    size: egui::Vec2,
+    occupied: &[egui::Rect],
+) -> Option<egui::Rect> {
+    let mut best = None;
+    let mut distance = f32::INFINITY;
+    let rows = ((bounds.height() - size.y) / 16.0).floor() as i32;
+    let columns = ((bounds.width() - size.x) / 16.0).floor() as i32;
+    for row in 0..=rows {
+        let y = (row as f32).mul_add(16.0, bounds.top());
+        for column in 0..=columns {
+            let x = (column as f32).mul_add(16.0, bounds.left());
+            let candidate = egui::Rect::from_min_size(egui::pos2(x, y), size);
+            let d = candidate.center().distance_sq(preferred);
+            if d < distance && occupied.iter().all(|r| !r.intersects(candidate)) {
+                best = Some(candidate);
+                distance = d;
+            }
+        }
+    }
+    best
+}
+
 fn day_divider(ui: &mut egui::Ui, text: &str) {
     let height = 20.0;
     let (rect, _) = ui.allocate_exact_size(
@@ -2895,7 +3362,7 @@ fn death_cause(text: &str) -> String {
 }
 
 fn fmt(v: Option<f32>) -> String {
-    v.map_or_else(|| "—".into(), |x| format!("{x:.2}"))
+    v.map_or_else(|| "none".into(), |x| format!("{x:.2}"))
 }
 
 /// The per-turn metadata line: verdict and scores, then the turn's own
@@ -2918,10 +3385,9 @@ fn turn_meta(a: &AgentTurn) -> String {
 
 /// The turn's labels: motive, register, addressee.
 ///
-/// `why` is the policy's motive label, so it is worth showing; `register`
-/// and `addressee` are derived in code. Absent fields are omitted rather
-/// than rendered blank, which keeps a turn saved before they existed
-/// readable.
+/// `why` is the policy's motive label, so the feed prints it. `register` and
+/// `addressee` are derived in code. Absent fields are omitted rather than
+/// rendered blank, which keeps a turn saved before they existed readable.
 #[must_use]
 fn turn_labels(a: &AgentTurn) -> Option<String> {
     let mut labels = Vec::new();
@@ -2943,11 +3409,10 @@ fn turn_labels(a: &AgentTurn) -> Option<String> {
 
 /// What the feed prints for one turn's words.
 ///
-/// A villager can be committed silent: she had nobody to address, so
-/// `say` is empty while `note` explains why. An empty `say` must not become
-/// an empty
-/// label; the note takes the line's place (and keeps the muted style the note
-/// already has), never both.
+/// A villager can be committed silent: she had nobody to address, so `say` is
+/// empty while `note` explains why. An empty `say` must not become an empty
+/// label. The note takes the line's place and keeps the muted style the note
+/// already has, and the feed never prints both.
 #[derive(Debug, PartialEq, Eq)]
 enum TurnWords<'a> {
     /// The spoken line, with the note beneath it when the turn carried one.
@@ -3045,19 +3510,6 @@ fn canvas_atmosphere(season: &str, time_of_day: &str) -> (Color32, Color32) {
     (base, season_accent(season))
 }
 
-fn place_glyph(id: &str) -> &'static str {
-    match id {
-        "granary" => "🏛",
-        "market" => "⚖",
-        "well" => "💧",
-        "hut" => "🏠",
-        "shrine" => "⛩",
-        "woods" => "🌲",
-        "field" => "🌾",
-        _ => "◈",
-    }
-}
-
 fn place_card_fill(id: &str, selected: bool) -> Color32 {
     if selected {
         return Color32::from_rgb(62, 54, 38);
@@ -3074,9 +3526,10 @@ fn place_card_fill(id: &str, selected: bool) -> Color32 {
     }
 }
 
-fn draw_weather_overlay(painter: &egui::Painter, rect: egui::Rect, weather_kind: &str, turn: u64) {
+fn draw_weather_overlay(painter: &egui::Painter, rect: egui::Rect, weather_kind: &str, time: f64) {
     let wk = weather_kind.to_lowercase();
-    let phase = (turn % 17) as f32;
+    // Bound the clock before conversion so long sessions retain subframe precision.
+    let phase = (time % 3600.0) as f32;
     if wk.contains("rain") || wk.contains("storm") {
         for i in 0..18 {
             let fx = (phase.mul_add(19.0, i as f32 * 53.0) % rect.width()).max(8.0);
@@ -3154,12 +3607,15 @@ mod tests {
     use super::*;
 
     fn observer(world: World, rt: &tokio::runtime::Runtime) -> App {
-        let save_path = std::path::PathBuf::from("/unused-ui-test-save.json");
+        let save_path =
+            std::env::temp_dir().join(format!("society-ui-observer-{}.json", std::process::id()));
         App::new(
             rt.handle().clone(),
             AppState {
+                observer_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 world: Arc::new(tokio::sync::Mutex::new(world)),
                 run: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+                telemetry: Arc::new(society_server::telemetry::Telemetry::open(&save_path, true)),
                 save_path,
                 save_error: Arc::new(tokio::sync::Mutex::new(None)),
             },
@@ -3171,6 +3627,7 @@ mod tests {
                 select_none: false,
                 size: None,
                 autostart: false,
+                speed: 1,
                 focus: false,
             },
         )
@@ -3219,6 +3676,582 @@ mod tests {
     }
 
     #[test]
+    fn cached_feed_preserves_scroll_height_and_invalidates_filters() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = observer(World::founding(7), &rt);
+        app.turns = (1..=240)
+            .map(|turn| TurnRecord {
+                turn,
+                day: 0,
+                agents: vec![silent_turn(Some("A remembered quiet turn"))],
+                births: Vec::new(),
+                summary: society_sim::turn::TurnSummary::default(),
+            })
+            .collect();
+        let initial = render(&mut app, Tab::Feed, [1120.0, 760.0]);
+        assert_eq!(app.feed_heights.len(), 241);
+        let height: f32 = app.feed_heights.values().map(|(height, _)| height).sum();
+        let cached = render(&mut app, Tab::Feed, [1120.0, 760.0]);
+        let cached_height: f32 = app.feed_heights.values().map(|(height, _)| height).sum();
+        assert!((height - cached_height).abs() < 1.0);
+        assert!(
+            cached.len() < initial.len(),
+            "offscreen rows must skip widgets"
+        );
+        assert!(!cached.contains("No events match"));
+        app.feed_search = "unfindable text".into();
+        let filtered = render(&mut app, Tab::Feed, [1120.0, 760.0]);
+        assert!(filtered.contains("No events match"));
+        assert!(app.feed_heights.values().all(|(_, count)| *count == 0));
+        app.feed_search.clear();
+        render(&mut app, Tab::Feed, [900.0, 600.0]);
+        assert!(app.feed_heights.values().any(|(_, count)| *count > 0));
+    }
+
+    #[test]
+    fn frame_pacing_counts_frames_once_and_discards_idle_time() {
+        let mut pacing = FramePacing::default();
+        for frame in 0..240 {
+            let now = f64::from(frame) / 120.0;
+            pacing.sample(now);
+            pacing.sample(now); // Multiple egui passes are not extra frames.
+        }
+        assert!((pacing.fps().unwrap() - 120.0).abs() < 0.01);
+        assert_eq!(pacing.intervals.len(), 120);
+        pacing.sample(10.0);
+        assert!(pacing.fps().is_none());
+    }
+
+    #[test]
+    fn movement_is_continuous_when_retargeted_and_independent_of_frame_rate() {
+        let origin = egui::Pos2::ZERO;
+        for fps in [30, 60, 120, 240] {
+            let mut motion = Motion::new(origin, 0.0);
+            motion.retarget(egui::pos2(100.0, 0.0), 10.0);
+            motion.advance(10.0, 0.1);
+            assert_eq!(
+                motion.position, origin,
+                "idle time must not teleport a new target"
+            );
+            for frame in 1..=fps {
+                motion.advance(10.0 + f64::from(frame) / f64::from(fps), 0.1);
+            }
+            assert!(motion.position.distance(motion.target) < 0.1);
+            let before = motion.position;
+            motion.retarget(egui::pos2(0.0, 100.0), 11.0);
+            motion.advance(11.0, 0.1);
+            assert_eq!(motion.position, before, "a new turn cannot jump the marker");
+            motion.advance(11.05, 0.1);
+            assert!(motion.position.x < before.x && motion.position.x > 0.0);
+            assert!(motion.position.y > 0.0 && motion.position.y < 100.0);
+        }
+    }
+
+    #[test]
+    fn unchanged_frames_reuse_snapshots_and_same_turn_changes_invalidate_them() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = observer(World::founding(7), &rt);
+        let agents = app.snapshot.as_ref().unwrap().agents.as_ptr();
+        for _ in 0..120 {
+            app.poll();
+            assert_eq!(app.snapshot.as_ref().unwrap().agents.as_ptr(), agents);
+        }
+        {
+            let mut world = app.state.world.blocking_lock();
+            world.agent_mut("Ada").unwrap().water = 19;
+            drop(world);
+            app.state
+                .observer_revision
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
+        app.poll();
+        assert_eq!(
+            app.snapshot
+                .as_ref()
+                .unwrap()
+                .agents
+                .iter()
+                .find(|a| a.name == "Ada")
+                .unwrap()
+                .water,
+            19
+        );
+        assert_eq!(app.snapshot.as_ref().unwrap().turn, 0);
+        // The revision is essential: a reset can reuse both the seed and turn.
+        {
+            *app.state.world.blocking_lock() = World::founding(7);
+            app.state
+                .observer_revision
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
+        app.poll();
+        assert_ne!(
+            app.snapshot
+                .as_ref()
+                .unwrap()
+                .agents
+                .iter()
+                .find(|a| a.name == "Ada")
+                .unwrap()
+                .water,
+            19
+        );
+    }
+
+    /// CPU frame work including tessellation. Native vsync/GPU timing must be
+    /// measured separately on a 120Hz display. Run explicitly in release mode.
+    #[test]
+    #[ignore = "release performance probe; run with --release --ignored --nocapture"]
+    fn observer_frame_budget_through_100x() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = observer(World::founding(7), &rt);
+        let ctx = egui::Context::default();
+        // A full retained log is more representative than an empty fresh UI.
+        let mut world = World::founding(7);
+        let mut records = Vec::new();
+        for _ in 0..society_server::TURN_LOG_CAP {
+            match society_sim::turn::step(&mut world) {
+                Ok(record) => records.push(record),
+                Err(_) => break,
+            }
+        }
+        let records_for_events = world;
+        let last = records.last().unwrap().clone();
+        records.resize(society_server::TURN_LOG_CAP, last);
+        *app.state.run.blocking_lock() = records;
+        {
+            let mut world = app.state.world.blocking_lock();
+            world.events = records_for_events
+                .events
+                .iter()
+                .cloned()
+                .cycle()
+                .take(100_000)
+                .collect();
+        }
+        // Exercise the population bound and a full log, not only nine founders.
+        {
+            let mut world = app.state.world.blocking_lock();
+            while world.agents.len() < society_sim::POPULATION_CAP {
+                let mut villager = world.agents[0].clone();
+                villager.name = format!("Villager {}", world.agents.len());
+                world.agents.push(villager);
+            }
+            drop(world);
+        }
+        let mut time = 0.0;
+        for speed in [1, 10, 25, 50, 75, 100] {
+            app.speed = speed as f32;
+            for tab in [Tab::World, Tab::Council, Tab::Feed, Tab::Inspector] {
+                app.tab = tab;
+                let mut samples = Vec::new();
+                for frame in 0..240 {
+                    time += 1.0 / 120.0;
+                    // Exercise changed snapshots and layout at the requested rate.
+                    if frame * speed / 120 != (frame + 1) * speed / 120 {
+                        let mut world = app.state.world.blocking_lock();
+                        world.turn += 1;
+                        let place = world.places[world.turn as usize % world.places.len()].0;
+                        world.agent_mut("Ada").unwrap().place = place;
+                        drop(world);
+                        app.state
+                            .observer_revision
+                            .fetch_add(1, std::sync::atomic::Ordering::Release);
+                    }
+                    let started = Instant::now();
+                    let output = ctx.run_ui(
+                        egui::RawInput {
+                            time: Some(time),
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(1440.0, 900.0),
+                            )),
+                            ..Default::default()
+                        },
+                        |root| app.draw_ui(root),
+                    );
+                    let _primitives = ctx.tessellate(output.shapes, output.pixels_per_point);
+                    if frame >= 10 {
+                        samples.push(started.elapsed());
+                    }
+                }
+                samples.sort_unstable();
+                let p95 = samples[samples.len() * 95 / 100];
+                let p99 = samples[samples.len() * 99 / 100];
+                println!(
+                    "{speed}x tab {}: p95={:.3}ms p99={:.3}ms max={:.3}ms",
+                    tab as u8,
+                    p95.as_secs_f64() * 1000.0,
+                    p99.as_secs_f64() * 1000.0,
+                    samples.last().unwrap().as_secs_f64() * 1000.0
+                );
+                assert!(
+                    p99 < FRAME_INTERVAL,
+                    "{speed}x tab {} exceeded 120fps CPU budget: {p99:?}",
+                    tab as u8
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn playback_preserves_rate_across_frame_cadences_and_bounds_stalls() {
+        let start = Instant::now();
+        for multiplier in 1..=100 {
+            let speed = multiplier as f32;
+            let mut last = start;
+            let mut turns = 0;
+            for frame in 1..=600 {
+                turns += playback_due(&mut last, start + Duration::from_millis(frame * 16), speed);
+            }
+            let expected = (9.6 * speed) as usize;
+            assert!(
+                turns.abs_diff(expected) <= 1,
+                "speed {speed}: {turns} vs {expected}"
+            );
+        }
+        let mut last = start;
+        assert_eq!(
+            playback_due(&mut last, start + Duration::from_millis(999), 1.0),
+            0
+        );
+        assert_eq!(
+            playback_due(&mut last, start + Duration::from_secs(1), 1.0),
+            1
+        );
+        assert_eq!(
+            playback_due(&mut last, start + Duration::from_secs(60), 100.0),
+            4
+        );
+        assert_eq!(
+            playback_due(&mut last, start + Duration::from_secs(60), 100.0),
+            0
+        );
+    }
+
+    #[test]
+    fn paused_busy_and_failed_playback_do_not_schedule_more_turns() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = observer(World::founding(7), &rt);
+        app.last_turn = Instant::now().checked_sub(Duration::from_secs(2)).unwrap();
+        app.advance_playback(Instant::now());
+        assert!(!app.busy);
+        app.auto = true;
+        app.busy = true;
+        app.advance_playback(Instant::now());
+        assert!(app.pending.is_none());
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.pending = Some((rx, Instant::now()));
+        tx.send((Vec::new(), Some("save failed".into()))).unwrap();
+        app.drain_pending();
+        assert!(!app.auto && !app.busy);
+        assert!(app.status.contains("save failed"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.pending = Some((rx, Instant::now()));
+        app.auto = true;
+        app.busy = true;
+        drop(tx);
+        app.drain_pending();
+        assert!(!app.auto && !app.busy);
+    }
+
+    #[test]
+    fn home_ring_fits_supported_widths_without_horizontal_scroll() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = observer(World::founding(7), &rt);
+        for width in [800.0, 870.0, 1100.0] {
+            let ctx = egui::Context::default();
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 760.0),
+                    )),
+                    ..Default::default()
+                },
+                |root| {
+                    egui::CentralPanel::default().show(root, |ui| {
+                        let available = ui.available_width();
+                        app.draw_ring(ui, 340.0);
+                        assert!(ui.min_rect().width() <= available + 1.0);
+                    });
+                },
+            );
+            output.textures_delta.clear();
+            let text_shapes: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t),
+                    _ => None,
+                })
+                .collect();
+            for name in [
+                "Ada", "Bo", "Cor", "Mira", "Tam", "Nell", "Odo", "Sable", "Wren",
+            ] {
+                assert!(
+                    text_shapes.iter().any(|t| t.galley.job.text == name),
+                    "missing {name} at {width}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn complete_home_renders_controls_and_ring_at_supported_sizes() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = observer(World::founding(7), &rt);
+        for size in [[900.0, 600.0], [1120.0, 760.0]] {
+            let ctx = egui::Context::default();
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size.into())),
+                    ..Default::default()
+                },
+                |root| app.draw_ui(root),
+            );
+            output.textures_delta.clear();
+            let text: String = output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.job.text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            for label in ["Simulate", "Speed", "Granary", "Woods", "Shrine", "Ada"] {
+                assert!(text.contains(label), "missing {label}: {text}");
+            }
+            for clipped in &output.shapes {
+                if let egui::Shape::Text(t) = &clipped.shape {
+                    if [
+                        "Granary", "Woods", "Shrine", "Hut", "Well", "Field", "Market",
+                    ]
+                    .iter()
+                    .any(|p| t.galley.job.text.starts_with(p))
+                    {
+                        let bounds = t.galley.rect.translate(t.pos.to_vec2());
+                        assert!(
+                            clipped.clip_rect.contains_rect(bounds),
+                            "place clipped: {} {bounds:?}",
+                            t.galley.job.text
+                        );
+                    }
+                }
+            }
+            let simulate = output
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.job.text == "Simulate" => {
+                        Some(t.pos + t.galley.size() * 0.5)
+                    },
+                    _ => None,
+                })
+                .unwrap();
+            for pressed in [true, false] {
+                let mut click = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size.into())),
+                        events: vec![
+                            egui::Event::PointerMoved(simulate),
+                            egui::Event::PointerButton {
+                                pos: simulate,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                        ..Default::default()
+                    },
+                    |root| app.draw_ui(root),
+                );
+                click.textures_delta.clear();
+            }
+            assert!(app.auto, "Simulate did not start playback");
+            // Keep a worker marked in flight while clicking Pause: it must remain usable.
+            app.busy = true;
+            for pressed in [true, false] {
+                let mut click = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size.into())),
+                        events: vec![
+                            egui::Event::PointerMoved(simulate),
+                            egui::Event::PointerButton {
+                                pos: simulate,
+                                button: egui::PointerButton::Primary,
+                                pressed,
+                                modifiers: egui::Modifiers::NONE,
+                            },
+                        ],
+                        ..Default::default()
+                    },
+                    |root| app.draw_ui(root),
+                );
+                click.textures_delta.clear();
+            }
+            assert!(!app.auto, "Pause did not stop playback");
+            app.busy = false;
+            if size[0] > 1100.0 {
+                let edge = output
+                    .shapes
+                    .iter()
+                    .find_map(|s| match &s.shape {
+                        egui::Shape::Text(t) if t.galley.job.text.starts_with("Villagers ") => {
+                            Some(t.pos.x - 8.0)
+                        },
+                        _ => None,
+                    })
+                    .unwrap();
+                for (x, pressed) in [(edge, true), (400.0, true), (400.0, false)] {
+                    let pos = egui::pos2(x, 400.0);
+                    let mut drag = ctx.run_ui(
+                        egui::RawInput {
+                            screen_rect: Some(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                size.into(),
+                            )),
+                            events: vec![
+                                egui::Event::PointerMoved(pos),
+                                egui::Event::PointerButton {
+                                    pos,
+                                    button: egui::PointerButton::Primary,
+                                    pressed,
+                                    modifiers: egui::Modifiers::NONE,
+                                },
+                            ],
+                            ..Default::default()
+                        },
+                        |root| app.draw_ui(root),
+                    );
+                    drag.textures_delta.clear();
+                    let ring_width = drag
+                        .shapes
+                        .iter()
+                        .find_map(|s| match &s.shape {
+                            egui::Shape::Rect(r)
+                                if r.rect.height() > 300.0 && r.corner_radius.nw == 10 =>
+                            {
+                                Some(r.rect.width())
+                            },
+                            _ => None,
+                        })
+                        .unwrap();
+                    assert!(ring_width >= 800.0, "roster squeezed ring to {ring_width}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn playback_worker_commits_fast_forward_and_pause_with_real_saves() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let dir = std::env::temp_dir().join(format!("society-playback-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let save = dir.join("village.json");
+        let state = society_server::boot(7, &save, true).unwrap();
+        let mut app = observer(World::founding(7), &rt);
+        app.state = state;
+        app.refresh();
+        app.auto = true;
+        app.speed = 100.0;
+        let ctx = egui::Context::default();
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(2) {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1120.0, 760.0),
+                    )),
+                    ..Default::default()
+                },
+                |root| app.draw_ui(root),
+            );
+            output.textures_delta.clear();
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        app.auto = false;
+        let paused_at = app.state.world.blocking_lock().turn;
+        while app.busy && started.elapsed() < Duration::from_secs(5) {
+            app.drain_pending();
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!app.busy, "worker did not finish");
+        let committed = app.state.world.blocking_lock().turn;
+        println!(
+            "100x playback: {committed} turns in {:.2}s including per-turn saves",
+            started.elapsed().as_secs_f64()
+        );
+        // The floor only has to separate catch-up from the 1x rate (about two
+        // turns in this window); a turn costs an fsync'd save, journal and
+        // audits, so the exact count measures the disk, not the code.
+        assert!(
+            committed >= 12,
+            "playback did not fast-forward: {committed} turns"
+        );
+        assert!(committed <= paused_at + 4);
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&save).unwrap()).unwrap();
+        assert!(saved.to_string().contains(&format!("\"turn\":{committed}")));
+        app.advance_playback(Instant::now() + Duration::from_secs(1));
+        assert!(!app.busy);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn crowded_ring_keeps_complete_villager_targets_clear_of_places() {
+        let bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 500.0));
+        for crowded_place in [
+            "granary", "market", "well", "hut", "shrine", "woods", "field",
+        ] {
+            let to_screen = |id: &str| {
+                let p = fixed_place_pos(id);
+                egui::pos2(
+                    (p.x / MAP_W).mul_add(660.0, 70.0),
+                    (p.y / MAP_H).mul_add(370.0, 65.0),
+                )
+            };
+            let mut occupied: Vec<_> = [
+                "granary", "market", "well", "hut", "shrine", "woods", "field",
+            ]
+            .iter()
+            .map(|id| egui::Rect::from_center_size(to_screen(id), egui::vec2(158.0, 70.0)))
+            .collect();
+            for i in 0..society_sim::POPULATION_CAP {
+                let slot = villager_slot(
+                    bounds.shrink(29.0),
+                    to_screen(crowded_place),
+                    egui::vec2(((i % 3) as f32).mul_add(12.0, 100.0), 30.0),
+                    &occupied,
+                )
+                .expect("invariant: all villagers fit");
+                assert!(bounds.contains_rect(slot));
+                assert!(occupied.iter().all(|r| !r.intersects(slot)));
+                occupied.push(slot.expand(4.0));
+            }
+        }
+    }
+
+    #[test]
+    fn busy_world_reports_skipped_observer_actions() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = observer(World::founding(7), &rt);
+        let state = app.state.clone();
+        let _guard = state.world.try_lock().unwrap();
+
+        app.trigger_intervention(VillageIntervention::RingBell);
+        assert!(app.status.contains("busy"));
+        assert!(app.status.contains("try"));
+
+        app.custom_event_text = "A visitor arrived".into();
+        app.inject_custom_chronicle();
+        assert!(app.status.contains("busy"));
+        assert!(app.status.contains("try"));
+        assert_eq!(app.custom_event_text, "A visitor arrived");
+    }
+
+    #[test]
     fn world_and_inspector_render_extended_simulation_state() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let mut w = World::founding(7);
@@ -3229,12 +4262,16 @@ mod tests {
         let mut app = observer(w, &rt);
         for size in [[900.0, 600.0], [1120.0, 760.0]] {
             let world = render(&mut app, Tab::World, size);
-            assert!(world.contains("Village stockpiles"), "{world}");
             assert!(
-                world.contains("Water") && world.contains("Herbs"),
+                world.contains("Granary") && world.contains("Well"),
                 "{world}"
             );
         }
+        let world = render(&mut app, Tab::World, [900.0, 2400.0]);
+        assert!(
+            world.contains("Water") && world.contains("Herbs"),
+            "{world}"
+        );
         let inspector = render(&mut app, Tab::Inspector, [900.0, 2400.0]);
         for expected in [
             "Steward",
@@ -3321,6 +4358,32 @@ mod tests {
                 "missing {expected} in {council}"
             );
         }
+    }
+
+    #[test]
+    fn feed_filters_hide_unmatched_eventless_turns() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let mut app = observer(World::founding(7), &rt);
+        app.turns.push(TurnRecord {
+            turn: 999,
+            day: 1,
+            agents: vec![silent_turn(Some("Unique rejection reason"))],
+            births: Vec::new(),
+            summary: society_sim::turn::TurnSummary::default(),
+        });
+        app.feed_search = "no such villager".into();
+        let text = render(&mut app, Tab::Feed, [900.0, 600.0]);
+        assert!(text.contains("No events match these filters."));
+        assert!(!text.contains("Unique rejection reason"));
+        assert!(!text.contains("turn 999"));
+        app.feed_search = "unique rejection".into();
+        let text = render(&mut app, Tab::Feed, [900.0, 600.0]);
+        assert!(text.contains("Unique rejection reason"));
+        app.feed_search.clear();
+        app.feed_filter = FeedFilter::Economy;
+        let text = render(&mut app, Tab::Feed, [900.0, 600.0]);
+        assert!(!text.contains("Unique rejection reason"));
+        assert!(!text.contains("turn 999"));
     }
 
     /// A committed turn with no matching event, so the feed takes the

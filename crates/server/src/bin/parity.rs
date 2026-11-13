@@ -1,22 +1,24 @@
-//! The parity harness (tickets #16 and #17): replays the frozen baseline
+//! The parity check (tickets #16 and #17): replays the frozen baseline
 //! corpus through the new engine and asks the judge to score the old and new
 //! choices blind, paired in one call. Development-only; it is not
 //! `cargo test`, and the judge is never in the product.
 //!
-//! The harness owns its own minimal HTTP client so it keeps working after the
+//! It owns its own minimal HTTP client so it keeps working after the
 //! cutover deletes the inference module: one POST per chunk to the judged
 //! endpoint, the same wire shape the old judgment layer used.
 //!
 //! Usage:
+//! ```text
 //!   cargo run -p society-server --bin parity -- decisions <round>
 //!   cargo run -p society-server --bin parity -- lines <round>
 //!   cargo run -p society-server --bin parity -- side-by-side
 //!   cargo run -p society-server --bin parity -- report <round>
+//! ```
 //!
 //! Environment: the endpoint and model come from `JEV_API_URL` and
 //! `JEV_MODEL` (development configuration), the key from `JEV_API_KEY`.
 
-// The harness does bounded small-count arithmetic (win rates, spreads); every
+// The check does bounded small-count arithmetic (win rates, spreads); every
 // cast below is value-checked by the surrounding clamps and the pair counts.
 #![allow(
     clippy::cast_precision_loss,
@@ -32,7 +34,7 @@ use serde_json::{json, Map, Value};
 
 const CORPUS: &str = "baseline/corpus.jsonl";
 const JUDGE_CHUNK: usize = 24;
-/// Parity is relative: the new engine must not lose by more than noise. The
+/// Parity is relative, so the new engine must not lose by more than noise. The
 /// band is the 95% binomial noise on the pair count (spec: "Parity is
 /// relative, not absolute").
 
@@ -78,11 +80,12 @@ struct Pair {
 
 struct Answered {
     pair: Pair,
-    /// "a" | "b" — the judge's pick; empty when it refused to answer.
+    /// The judge's pick, "a" or "b"; empty when it refused to answer.
     pick: String,
 }
 
 fn main() {
+    society_server::telemetry::install_panic_hook(std::path::PathBuf::from("data/parity"));
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mode = args.first().map_or("help", String::as_str);
     let round: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
@@ -97,10 +100,53 @@ fn main() {
         .enable_all()
         .build()
         .expect("tokio runtime");
-    let outcome = rt.block_on(run(mode, round));
+    let outcome = rt.block_on(society_server::telemetry::OPERATION.scope(
+        society_server::telemetry::operation_id(),
+        async {
+            parity_audit(
+                "parity_started",
+                json!({"mode": safe_mode(mode), "round": round}),
+            );
+            let result = run(mode, round).await;
+            parity_audit(
+                "parity_finished",
+                json!({"mode": safe_mode(mode), "round": round, "ok": result.is_ok()}),
+            );
+            result
+        },
+    ));
     if let Err(e) = outcome {
         eprintln!("parity: {e}");
         std::process::exit(1);
+    }
+}
+
+fn safe_mode(mode: &str) -> &str {
+    match mode {
+        "decisions" | "lines" | "side-by-side" | "diff" | "report" => mode,
+        _ => "help",
+    }
+}
+
+fn parity_audit(action: &str, detail: Value) {
+    let context = society_server::telemetry::Context {
+        session_id: society_server::telemetry::session_id(),
+        operation_id: society_server::telemetry::OPERATION
+            .try_with(Clone::clone)
+            .ok(),
+        source_id: env!("SOCIETY_SOURCE_ID").into(),
+        ..Default::default()
+    };
+    if society_server::diagnostics::append_audit_context(
+        std::path::Path::new("data/parity"),
+        action,
+        0,
+        detail,
+        context,
+    )
+    .is_err()
+    {
+        eprintln!("parity telemetry write failed");
     }
 }
 
@@ -158,23 +204,44 @@ async fn judge(
         .timeout(std::time::Duration::from_secs(180))
         .send()
         .await
-        .map_err(|e| format!("judge transport: {e}"))?;
+        .map_err(|e| {
+            if e.is_timeout() {
+                "judge timeout".to_owned()
+            } else {
+                "judge transport failed".to_owned()
+            }
+        })?;
     let code = resp.status();
-    let text = resp.text().await.map_err(|e| format!("judge read: {e}"))?;
-    if !code.is_success() {
-        return Err(format!("judge status {}: {}", code, short(&text, 300)));
+    let mut resp = resp;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|_private_error| "judge response read failed".to_owned())?
+    {
+        if bytes.len() + chunk.len() > 1024 * 1024 {
+            return Err("judge response exceeds 1 MiB".into());
+        }
+        bytes.extend_from_slice(&chunk);
     }
-    let v: Value = serde_json::from_str(&text).map_err(|e| format!("judge body: {e}"))?;
+    let text = String::from_utf8(bytes)
+        .map_err(|_private_error| "judge response is not UTF-8".to_owned())?;
+    if !code.is_success() {
+        return Err(format!("judge status {}", code.as_u16()));
+    }
+    let v: Value =
+        serde_json::from_str(&text).map_err(|_private_error| "judge invalid JSON".to_owned())?;
     let answers = v
         .get("answers")
         .and_then(Value::as_object)
-        .ok_or_else(|| format!("judge sent no answers: {}", short(&text, 300)))?;
+        .ok_or_else(|| "judge sent no answers".to_owned())?;
     let mut out = BTreeMap::new();
     for (id, a) in answers {
         let pick = a
             .get("choice")
             .or_else(|| a.get("choice_id"))
             .and_then(Value::as_str)
+            .filter(|pick| matches!(*pick, "a" | "b"))
             .unwrap_or_default();
         out.insert(id.clone(), pick.to_owned());
     }
@@ -184,14 +251,11 @@ async fn judge(
             questions.len(),
             usage
                 .get("cost")
-                .map_or_else(|| "none".to_owned(), ToString::to_string)
+                .and_then(Value::as_f64)
+                .map_or_else(|| "none".to_owned(), |cost| cost.to_string())
         );
     }
     Ok(out)
-}
-
-fn short(s: &str, n: usize) -> String {
-    s.chars().take(n).collect()
 }
 
 /// A compact, judge-readable digest of one villager's recorded situation.
@@ -335,7 +399,7 @@ async fn lines(round: usize) -> Result<(), String> {
                 question: format!(
                     "{} at turn {}, situation: {}. The villager just chose to: {}. \
                      Line A: {:?}. Line B: {:?}. \
-                     Which line is the better thing for this villager to say here - \
+                     Which line is the better thing for this villager to say here; \
                      which one fits the person, the moment and the choice?",
                     old.name,
                     rec.turn,
@@ -378,7 +442,18 @@ async fn ask_pairs(pairs: &[Pair], kind: &str) -> Result<Vec<Answered>, String> 
             );
             states.insert(id.clone(), json!({}));
         }
-        let answers = judge(questions, states).await.map_err(|e| {
+        let started = std::time::Instant::now();
+        parity_audit(
+            "judge_started",
+            json!({"kind": kind, "offset": answered.len(), "questions": chunk.len(), "timeout_seconds": 180}),
+        );
+        let result = judge(questions, states).await;
+        parity_audit(
+            "judge_finished",
+            json!({"kind": kind, "offset": answered.len(), "questions": chunk.len(),
+            "ok": result.is_ok(), "elapsed_us": started.elapsed().as_micros(), "error": result.as_ref().err()}),
+        );
+        let answers = result.map_err(|e| {
             format!(
                 "chunk failed ({} pairs answered so far): {e}",
                 answered.len()
@@ -401,6 +476,11 @@ async fn ask_pairs(pairs: &[Pair], kind: &str) -> Result<Vec<Answered>, String> 
                 pick,
             });
         }
+        parity_audit(
+            "judge_progress",
+            json!({"kind": kind, "answered": answered.len(),
+            "picks": answered.iter().rev().take(chunk.len()).map(|a| json!({"turn": a.pair.turn, "name": a.pair.name, "pick": a.pick, "a_is_new": a.pair.a_is_new})).collect::<Vec<_>>()}),
+        );
         let _ = std::io::stderr().flush();
     }
     Ok(answered)
@@ -547,8 +627,8 @@ fn side_by_side() -> Result<(), String> {
 }
 
 /// The offline disagreement matrix: where the new policy chose differently
-/// from the old judge, counted by (old, new) action pair. Free - no judge -
-/// and the evidence a weight revision is justified by.
+/// from the old judge, counted by (old, new) action pair. It calls no judge,
+/// and it gives the evidence that justifies a weight revision.
 fn diff() {
     let Ok(corpus) = load_corpus() else { return };
     let mut matrix: BTreeMap<String, usize> = BTreeMap::new();
@@ -565,14 +645,14 @@ fn diff() {
                 agree += 1;
             } else {
                 *matrix
-                    .entry(format!("{} -> {}", old.action, decision.action))
+                    .entry(format!("{} to {}", old.action, decision.action))
                     .or_default() += 1;
             }
         }
     }
     let mut rows: Vec<(String, usize)> = matrix.into_iter().collect();
     rows.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
-    println!("agreements: {agree}; disagreements by (old -> new):");
+    println!("agreements: {agree}; disagreements by (old action, new action):");
     for (k, v) in rows.iter().take(30) {
         println!("  {v:3}  {k}");
     }

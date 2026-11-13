@@ -673,7 +673,7 @@ pub struct Agent {
     pub current_goal: String,
     /// An observer-set resolve that survives ordinary settlement until a
     /// documented transition (completion, cancellation, override). The goal
-    /// ladder below only borrows it when no survival pressure fires and the
+    /// ladder below only borrows it when no survival pressure applies and the
     /// promise step is quiet, so survival never silently deletes it; an
     /// explicit transition clears or replaces it in one place.
     #[serde(default)]
@@ -963,7 +963,7 @@ impl Agent {
         // Explicit goal lifecycle (ticket #2): an observer-set resolve wins
         // over motive and role, and survives every ordinary refresh. Only
         // survival pressure, the unkept promise, or an explicit transition
-        // may set it aside for a turn — and none of them clears it, so the
+        // may set it aside for a turn, and none of them clears it, so the
         // resolve is still there when the emergency passes. Ordinary speech
         // never writes here: `synthesize_goal` is gone, and `motive` (a
         // one-word policy label) only refines the goal when no explicit
@@ -1021,7 +1021,8 @@ impl Agent {
     /// Adopt an observer-set resolve: the only way `explicit_goal` is born.
     /// Ordinary speech never calls this; the observer intervention and the
     /// oath path are the callers. The ladder picks it up on the next
-    /// refresh unless survival or an unkept promise is louder that turn.
+    /// refresh unless survival or an unkept promise takes precedence that
+    /// turn.
     pub fn adopt_explicit_goal(&mut self, goal: impl Into<String>) {
         let goal = goal.into();
         self.explicit_goal = Some(goal.clone());
@@ -1447,7 +1448,7 @@ impl World {
         let turn = self.turn;
         let season = self.season();
         // Harvest before anyone eats, so a starving village can still find food.
-        // The yield is carried to the granary: a field that keeps its grain is a
+        // The yield goes to the granary: a field that keeps its grain is a
         // field nobody visits.
         let weather = self.weather;
         let mut harvested = 0_u32;
@@ -1474,11 +1475,11 @@ impl World {
             well.water = (well.water + rain_bonus).min(20);
         };
         // Winter cold cracks the buildings (ticket #25): every third winter
-        // turn one place wears down one step to a floor of 1 (never ruin -
-        // the village can always repair back). Confined to winter so the
-        // other three seasons run the proven food equilibrium undisturbed;
-        // repair (+1, to 5) catches up the rest of the year. Decay and
-        // repair move condition in both directions across the year.
+        // turn one place wears down one step to a floor of 1, so a place never
+        // falls to ruin and the village can always repair it back. Decay stays
+        // in winter so the other three seasons run the proven food equilibrium
+        // undisturbed; repair (+1, to 5) catches up the rest of the year.
+        // Condition therefore moves both directions across the year.
         if season == Season::Winter && turn.is_multiple_of(3) {
             let cracked = Place::ALL[(turn as usize + 3) % Place::ALL.len()];
             let st = self.place_state_mut(cracked);
@@ -1544,8 +1545,8 @@ impl World {
             }
             a.energy = (a.energy + 1).min(10);
             // Devotion fades a little every turn and only prayer restores it
-            // (ticket #24: a standing faith need pulls villagers shrine-ward
-            // in ordinary states, not just grief). The rate is 0.05 a turn
+            // (ticket #24: a standing faith need raises the shrine in
+            // ordinary states, not only in grief). The rate is 0.05 a turn
             // from a 2.0 founding, so the shrine calls after ~10 turns
             // without prayer, and one prayer (+0.3) covers six turns.
             a.devotion = (a.devotion - 0.05).max(0.0);
@@ -1584,12 +1585,12 @@ impl World {
             }
         }
         // Broken promise: overdue by ten turns. No "broke your word" scar
-        // without a reachable keeping action (ticket #22): reachability is
-        // a shared place with the promisee at any point in the ten turns,
-        // read from the event record (actions imply presence) - not just
-        // the expiry turn. Without that the promise lapses unkept: cleared
-        // and remembered, but no scar and no trust lost, because the keeper
-        // was never given the choice.
+        // without a reachable keeping action (ticket #22): reachable means a
+        // shared place with the promisee at any point in the ten turns, read
+        // from the event record, since an action implies presence. The
+        // expiry turn alone does not count. Without that the promise lapses
+        // unkept: cleared and remembered, but no scar and no trust lost,
+        // because the keeper was never given the choice.
         let overdue: Vec<(String, String, bool)> = self
             .agents
             .iter()
@@ -1713,7 +1714,7 @@ impl World {
         let persona = mix_personas(&self.agents[i].persona, &self.agents[j].persona);
 
         // Names come from a fixed pool, deterministically. Every lookup is by
-        // name, so a name is never reused — not even after its bearer dies.
+        // name, so a name is never reused, not even after its bearer dies.
         // When the pool is spent the same ordered walk continues with
         // suffixed variants, so growth never stops for want of a noun.
         let start = self.rng.below(CHILD_NAMES.len());
@@ -1994,9 +1995,9 @@ mod tests {
     #[test]
     fn an_overdue_promise_breaks_only_with_a_reachable_keeping_action() {
         // Ticket #22: no "broke your word" scar without a reachable keeping
-        // action - a shared place with the promisee at any point in the ten
-        // turns, read from the event record - when the promise expires.
-        // Together in the window: a broken word.
+        // action, meaning a shared place with the promisee at any point in
+        // the ten turns, read from the event record, when the promise
+        // expires. Together in the window: a broken word.
         let mut w = promise_world();
         for t in 5..8_u64 {
             for actor in ["Ada", "Bo"] {

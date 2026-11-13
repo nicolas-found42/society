@@ -118,8 +118,8 @@ impl Intent {
 ///
 /// Lines and memories carry the phrase, never the id: a raw id like
 /// `draw_water` in past speech would be read back as a word the villager
-/// once said. A place id becomes a direction (`go:market` -> "leave for
-/// market"); an unknown id falls back to its own spelling with underscores
+/// once said. A place id becomes a direction, so `go:market` reads "leave for
+/// market". An unknown id falls back to its own spelling with underscores
 /// turned into spaces.
 #[must_use]
 pub fn action_phrase(action: &str) -> String {
@@ -192,8 +192,8 @@ pub fn affordances(w: &World, a: &Agent) -> Vec<String> {
                 .collect();
         }
         v.extend(moves);
-        // Nothing edible anywhere in reach: they may still try to talk someone
-        // into sharing, which is the last honest option.
+        // Nothing edible anywhere in reach: they may still talk someone into
+        // sharing, which is the only option left.
         if v.is_empty() {
             v.push("speak".into());
         }
@@ -254,7 +254,7 @@ pub fn affordances(w: &World, a: &Agent) -> Vec<String> {
 }
 
 /// How many turns back the novelty term looks (spec constants: "Novelty
-/// window 3 turns - existing groove-breaker").
+/// window 3 turns", the existing groove-breaker).
 pub const NOVELTY_WINDOW: u64 = 3;
 
 /// The kinds of act the shortlist covers. The category decides what the menu
@@ -308,11 +308,11 @@ fn recent_actions<'w>(w: &'w World, name: &str) -> (HashSet<&'w str>, HashSet<&'
 /// same answer twice.
 ///
 /// The result is always a subset of [`affordances`] and never empty: when
-/// every option is filtered out, the full legal list comes back. It is a pure
-/// function of `w` and `a` — no RNG, no mutation — and for the same state it
-/// always returns the same list: one representative per available category in
-/// the category order, then at most one action the villager has not just
-/// taken, minus every action they took in the last two turns.
+/// every option is filtered out, the full legal list comes back. It reads `w`
+/// and `a` only, with no RNG and no mutation, so the same state always returns
+/// the same list: one representative per available category in the category
+/// order, then at most one action the villager has NOT taken recently
+/// (novelty), and never one they took in the last two turns.
 #[must_use]
 pub fn shortlist(w: &World, a: &Agent) -> Vec<String> {
     let legal = affordances(w, a);
@@ -388,9 +388,9 @@ fn representative(
     // show that one rather than the first work verb in list order. Deep
     // lapse names prayer when no order waits (ticket #24): below 0.5
     // devotion `pray` joins the menu, so a full verb gets exercised without
-    // displacing early-game labor - the turn-21 seed-99 prayer that tipped
-    // a woods cascade came from a 1.0 threshold firing too early. Orders
-    // come first so prayer fills idle time without displacing stocked work.
+    // displacing early-game labor. The turn-21 seed-99 prayer that tipped a
+    // woods cascade came from a 1.0 threshold firing too early. Orders come
+    // first so prayer fills idle time without displacing stocked work.
     if category == Category::Work {
         if let Some(order) = crate::profession::available_orders(w, a).iter().find(|o| {
             options
@@ -488,7 +488,7 @@ impl SocialAct {
         }
     }
 
-    /// Trust delta applied to every listener when the act lands.
+    /// Trust delta applied to every listener when the act commits.
     #[must_use]
     pub const fn trust_delta(self) -> f32 {
         match self {
@@ -535,8 +535,8 @@ pub struct Outcome {
 /// (keeper memory, promisee trust lift, promisee memory) in one place so the
 /// give/heal/console paths cannot drift apart. Call only after the keeping
 /// act itself committed: `accepted` is the gate, the caller passes the real
-/// recipient, and the promise's `to` must match — a rejected act, a gift to
-/// a bystander, or a second call after `kept` is set keeps nothing.
+/// recipient, and the promise's `to` must match. A rejected act, a gift to a
+/// bystander, or a second call after `kept` is set keeps nothing.
 fn keep_promise(w: &mut World, turn: u64, actor: &str, recipient: &str) -> bool {
     let owed = w.agent(actor).is_some_and(|a| {
         a.promise
@@ -847,7 +847,7 @@ fn plan(w: &World, actor: &str, intent: &Intent, target: Option<&str>, yield_mul
 /// in because rendering already happened; this only moves state.
 ///
 /// The unresolved path: no addressee override, no job quality, and a line the
-/// check has not seen. The turn seam uses [`apply_decision`]; this form is
+/// check has not seen. The turn function uses [`apply_decision`]; this form is
 /// for tests that commit intents directly.
 ///
 /// # Panics
@@ -878,7 +878,7 @@ pub fn apply(
     )
 }
 
-/// The turn seam's apply: the decision's addressee is the target when the
+/// The turn function's apply: the decision's addressee is the target when the
 /// verb works on a person, the job's quality scales the yield, and the
 /// check's verdict gates the act's trust.
 #[allow(
@@ -1209,8 +1209,8 @@ fn apply_resolved(
         }
 
         // Social acts colour trust for everyone in the room, whatever the
-        // verb - but a discredited line moves no trust (glossary:
-        // discredited), and its failing claim is remembered instead.
+        // verb. A discredited line moves no trust (glossary: discredited),
+        // and its failing claim is remembered instead.
         let credible = grounded >= check::GROUNDED;
         if social != SocialAct::None {
             let listeners = w.present(place, actor);
@@ -1239,7 +1239,7 @@ fn apply_resolved(
                         x.remember(
                             Memory::new(
                                 turn,
-                                format!("{actor} said: \"{speech}\" - {why}."),
+                                format!("{actor} said: \"{speech}\"; {why}."),
                                 salience.max(0.5),
                                 MemoryKind::Witnessed,
                             )
@@ -1515,8 +1515,8 @@ mod tests {
     #[test]
     fn a_gift_to_the_promisee_keeps_the_promise() {
         // Ticket #22: a kept promise exists. Giving food to the promisee
-        // marks the unkept promise kept, with trust and memory at keeping
-        // time - not ten turns later as a scar.
+        // marks the unkept promise kept, with trust and memory recorded at
+        // keeping time, not ten turns later as a scar.
         let mut w = World::founding(308);
         let names: Vec<String> = w.living().map(|a| a.name.clone()).collect();
         let (keeper, owed) = (names[0].clone(), names[1].clone());

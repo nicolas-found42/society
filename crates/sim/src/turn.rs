@@ -1,4 +1,4 @@
-//! The pure turn seam (spec #5, ticket #8).
+//! The pure turn function (spec #5, ticket #8).
 //!
 //! One function over the world whose seeded RNG is part of it: it enumerates
 //! affordances, shortlists, decides, speaks, checks, applies and settles,
@@ -33,7 +33,7 @@ pub const REGISTERS: [&str; 5] = [
 ];
 
 /// The full register label for a mood. Kept in step with
-/// [`crate::grammar::register_for_mood`], which owns the mapping.
+/// `grammar::register_for_mood`, which owns the mapping.
 #[must_use]
 pub fn register_label_for_mood(mood: Mood) -> &'static str {
     crate::grammar::register_label(crate::grammar::register_for_mood(mood))
@@ -74,7 +74,8 @@ pub fn derived_intensity(social: SocialAct, register: &str) -> f32 {
 
 /// The rumor threshold: an accusation at or above this intensity echoes.
 pub const RUMOR_THRESHOLD: f32 = 3.2;
-/// The threat-morale threshold: a threat at or above this intensity bites.
+/// The threat-morale threshold: a threat at or above this intensity lowers
+/// village morale.
 pub const THREAT_MORALE_THRESHOLD: f32 = 3.0;
 
 /// One villager's committed turn, shrunk to the contract (ticket #18): no
@@ -163,7 +164,7 @@ pub struct TurnRecord {
     pub summary: TurnSummary,
 }
 
-/// One turn through the seam. A halted world or an empty village halts
+/// One turn through the engine. A halted world or an empty village halts
 /// instead of acting.
 ///
 /// # Errors
@@ -171,7 +172,7 @@ pub struct TurnRecord {
 /// A halted world reports its reason; the caller says so rather than acting.
 #[allow(
     clippy::too_many_lines,
-    reason = "one sequential seam: decide, speak, check, apply, settle"
+    reason = "one sequential pass: decide, speak, check, apply, settle"
 )]
 pub fn step(w: &mut World) -> Result<TurnRecord, String> {
     if let Some(reason) = w.halted.clone() {
@@ -192,7 +193,7 @@ pub fn step(w: &mut World) -> Result<TurnRecord, String> {
         })
         .collect();
 
-    // Decide, speak, check - all against the turn-start state, in roster
+    // Decide, speak and check all read the turn-start state, in roster
     // order, so the same seed and save replay identically.
     let mut turns: Vec<(String, Decision, Option<Line>)> = Vec::with_capacity(names.len());
     for name in &names {
@@ -368,7 +369,7 @@ mod tests {
     fn the_intensity_reaches_the_drama_thresholds() {
         assert!(derived_intensity(SocialAct::Accusation, "plain") >= RUMOR_THRESHOLD);
         assert!(derived_intensity(SocialAct::Threat, "plain") >= THREAT_MORALE_THRESHOLD);
-        // The cold register pulls the accusation to 3.0: at the morale
+        // The cold register raises the accusation to 3.0: at the morale
         // threshold, below the rumor one.
         assert!((derived_intensity(SocialAct::Accusation, "cold") - 3.0).abs() < 1e-6);
     }

@@ -1,6 +1,6 @@
 // Capture the society window by window id, with no focus or z-order change.
 //
-// macOS ScreenCaptureKit captures a single window's surface directly, so the
+// macOS ScreenCaptureKit captures one window's contents directly, so the
 // result is identical whether the window is frontmost or completely covered.
 // This is the observer's screenshot path: the app never has to be clicked,
 // raised, or activated.
@@ -47,7 +47,7 @@ Task {
         }
         guard let win = candidates.max(by: {
             ($0.frame.width * $0.frame.height) < ($1.frame.width * $1.frame.height)
-        }) else { fail("society window not found — is the app running?") }
+        }) else { fail("society window not found; is the app running?") }
 
         // A desktop-independent filter isolates this window: no backdrop, no
         // other app's pixels, and no need for the window to be visible.

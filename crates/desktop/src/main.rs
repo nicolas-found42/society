@@ -1,15 +1,15 @@
-//! `society` — a persistent society that runs on code.
+//! `society`: a persistent society that runs on code.
 //!
 //! Two run modes share one engine:
-//!   `society`            — native window, dev server on :8100
-//!   `society --headless` — dev server only, for scripted runs
+//!   `society`             native window, dev server on :8100
+//!   `society --headless`  dev server only, for scripted runs
 //!
-//! The dev server is the harness: it lets an agent inspect and drive the same
-//! process the window is showing.
+//! The dev server lets an agent inspect and drive the same process the window
+//! is showing.
 
-// A drawing/UI crate: pixel and layout math is f32 on small counts, `App` and
-// the CLI are bags of independent toggles, and `egui` frame functions read as
-// one top-to-bottom layout, so splitting them hides the screen's structure.
+// A drawing and UI crate. Pixel and layout math is f32 on small counts, `App`
+// and the CLI are bags of independent toggles, and `egui` frame functions read
+// as one top-to-bottom layout, so splitting them hides the screen's structure.
 #![allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
@@ -29,7 +29,7 @@ struct Args {
     /// Run without opening a window.
     #[arg(long)]
     headless: bool,
-    /// Control-surface port on 127.0.0.1.
+    /// Control API port on 127.0.0.1.
     #[arg(long, default_value_t = DEFAULT_PORT)]
     port: u16,
     /// World seed; the same seed replays the same founding. Ignored when a
@@ -68,6 +68,9 @@ struct Args {
     /// Open paused instead of advancing turns on its own.
     #[arg(long)]
     paused: bool,
+    /// Initial playback multiplier (one turn per second at 1x).
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..=100))]
+    speed: u16,
     /// Print a village civic and economic digest on startup.
     #[arg(long)]
     digest: bool,
@@ -90,9 +93,21 @@ fn main() {
         .expect("tokio runtime");
 
     let save_path = society_server::persistence::save_path();
+    society_server::telemetry::install_panic_hook(save_path.clone());
     let state = match boot(args.seed, &save_path, args.reset) {
         Ok(s) => s,
         Err(e) => {
+            // This row is the only retained record of a boot that never
+            // started; if the store itself is unwritable, say so on stderr
+            // instead of leaving the absence unexplained.
+            if let Err(audit) = society_server::diagnostics::append_audit(
+                &save_path,
+                "boot_failed",
+                0,
+                serde_json::json!({"stage": "load_or_save"}),
+            ) {
+                eprintln!("cannot record boot failure: {audit}");
+            }
             eprintln!("cannot start: {e}");
             std::process::exit(2);
         },
@@ -127,11 +142,22 @@ fn main() {
         }
     }
 
+    state.audit(
+        "launch",
+        turn,
+        serde_json::json!({"headless": args.headless, "port": args.port,
+        "paused": args.paused, "warmup": args.warmup}),
+    );
     let handle = rt.handle().clone();
     let server_state = state.clone();
     let port = args.port;
     rt.spawn(async move {
-        if let Err(e) = devserver::serve(server_state, port).await {
+        if let Err(e) = devserver::serve(server_state.clone(), port).await {
+            server_state.audit(
+                "server_failed",
+                0,
+                serde_json::json!({"port": port, "io_kind": format!("{:?}", e.kind())}),
+            );
             eprintln!("dev server failed: {e}");
         }
     });
@@ -143,22 +169,24 @@ fn main() {
             clippy::significant_drop_tightening,
             reason = "the world lock spans the whole warmup"
         )]
-        rt.block_on(async move {
+        rt.block_on(society_server::telemetry::OPERATION.scope(society_server::telemetry::operation_id(), async move {
             let mut w = st.world.lock().await;
             let mut warmup_recs = Vec::new();
             for i in 0..n {
+                let started = st.start_step(&w, "warmup");
                 match society_sim::turn::step(&mut w) {
                     Ok(rec) => {
                         let civic_notes = window::apply_village_systems(&mut w);
                         let (committed, agents) = (rec.turn, rec.agents.len());
                         warmup_recs.push(rec.clone());
+                        let saved = st.commit_turn(&w, &rec, "warmup", started).await;
                         st.record(std::iter::once(rec)).await;
-                        if let Err(e) = st.save_and_track(&w).await {
+                        if let Err(e) = saved {
                             eprintln!("turn {committed} committed but not saved: {e}");
                             break;
                         }
                         println!(
-                            "[warmup {}/{}] turn {} — {} agent turns ({} civic events)",
+                            "[warmup {}/{}] turn {}: {} agent turns ({} civic events)",
                             i + 1,
                             n,
                             committed,
@@ -167,25 +195,19 @@ fn main() {
                         );
                     },
                     Err(e) => {
+                        st.audit("turn_failed", w.turn, serde_json::json!({"source": "warmup", "halted": w.halted.is_some()}));
                         eprintln!("warmup halted: {e}");
                         break;
                     },
                 }
             }
-            let seed = w.seed;
             let world_turn = w.turn;
-            drop(w);
-            let journal_error = if warmup_recs.is_empty() {
-                None
-            } else {
-                st.journal(seed, &warmup_recs).err()
-            };
             st.audit(
                 "warmup",
                 world_turn,
-                serde_json::json!({"committed": warmup_recs.len(), "journal_error": journal_error}),
+                serde_json::json!({"committed": warmup_recs.len()}),
             );
-        });
+        }));
     }
 
     if args.headless {
@@ -195,9 +217,11 @@ fn main() {
         rt.block_on(async {
             tokio::signal::ctrl_c().await.ok();
         });
+        state.audit("shutdown", 0, serde_json::json!({"source": "ctrl_c"}));
         return;
     }
 
+    let window_state = state.clone();
     if let Err(e) = window::run(
         handle,
         state,
@@ -209,12 +233,19 @@ fn main() {
             select_none: args.no_select,
             size: args.size,
             autostart: !args.paused,
+            speed: args.speed,
             focus: args.focus,
         },
     ) {
+        window_state.audit("window_failed", 0, serde_json::json!({"stage": "run"}));
         eprintln!("window failed: {e}");
         std::process::exit(1);
     }
+    window_state.audit(
+        "shutdown",
+        0,
+        serde_json::json!({"source": "window_closed"}),
+    );
 }
 
 mod window;

@@ -252,7 +252,7 @@ fn place_has_input(st: &crate::world::PlaceState, input: Option<(&str, u32)>) ->
     }
 }
 
-/// The villager's work orders that are available right now: the place
+/// The villager's work orders that are available right now, where the place
 /// matches where they stand and the place holds the order's input.
 ///
 /// (Spec: "A work order is available when its place has its input and the

@@ -3,8 +3,8 @@
 //!
 //! A claim the world can settle is true or false. A claim about a past event,
 //! about a third party's intent, or about a quantity nobody can see is
-//! unverifiable, not false - that is deliberate, because a lie that cannot be
-//! settled stays credible and can move trust (ticket #14).
+//! unverifiable, not false. That is deliberate: a lie that cannot be settled
+//! stays credible and can move trust (ticket #14).
 //!
 //! `grounded` is the check's verdict: 1.0 when every claim is true or
 //! unverifiable, 0.0 when at least one is false. A line at 0.0 is

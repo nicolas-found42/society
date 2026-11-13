@@ -174,8 +174,8 @@ impl Fact {
 /// Recent memories kept verbatim; older ones compete for the remaining slots.
 pub const MEMORY_CAP: usize = 8;
 
-/// Reflection fires on accumulated poignancy, not a clock. Each stored event
-/// spends its salience from this budget; at zero the agent consolidates.
+/// Reflection starts on accumulated poignancy, not on a clock. Each stored event
+/// subtracts its salience from this budget; at zero the agent consolidates.
 pub const REFLECTION_BUDGET: f32 = 150.0;
 
 #[cfg(test)]

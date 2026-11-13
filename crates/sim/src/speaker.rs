@@ -10,8 +10,8 @@
 //!
 //! Lies are designed: under the lie table's conditions the speaker enters lie
 //! mode at a documented rate and appends a clause carrying a false claim.
-//! The check decides whether that claim is settleable; an unverifiable lie
-//! lands.
+//! The check decides whether that claim is settleable; a lie nobody can
+//! settle stays in the line.
 
 use crate::action::SocialAct;
 use crate::check::Claim;
@@ -79,10 +79,10 @@ pub fn speak(w: &World, name: &str, d: &Decision) -> Option<Line> {
     };
 
     // Exhaustion: every rendering is spent, so the villager says the plain
-    // fallback outside the grammar rather than repeat - unless the fallback
-    // itself is spent, in which case silence (ticket #21: the fallback is
-    // one shared line, so two exhausted turns running would repeat it
-    // inside the window).
+    // fallback outside the grammar instead of repeating. If the fallback is
+    // spent too, the villager stays silent (ticket #21: the fallback is one
+    // shared line, so two exhausted turns running would repeat it inside the
+    // window).
     let (text, mut claims) = if let Some(rendered) = render(w, a, d, &key, register, &mut rng) {
         rendered
     } else {
@@ -363,8 +363,8 @@ fn fill(
     (out, claims)
 }
 
-/// A count reads as a villager speaks it: "no", "one", "two"... digits past
-/// twelve. The typed claim keeps the number; only the surface changes.
+/// A count reads as a villager speaks it: "no", "one", "two", and digits past
+/// twelve. The typed claim keeps the number; only the rendered text changes.
 fn count_word(n: u32) -> String {
     match n {
         0 => "no".into(),
@@ -477,7 +477,7 @@ pub(crate) fn recent_lines(w: &World, a: &Agent) -> Vec<String> {
 }
 
 /// Record a spoken line in the villager's ledger and trim past the window.
-/// The turn seam calls this after the line is committed.
+/// The turn function calls this after the line is committed.
 pub(crate) fn ledger_push(w: &mut World, name: &str, line: &str) {
     if let Some(a) = w.agent(name) {
         let turn = w.turn;
@@ -615,12 +615,32 @@ mod tests {
         w.agents.push(bo);
         // Spend every finished rendering of the two-templated (console,
         // plain) cell: both first clauses, each with and without its matched
-        // second clause, as committed through the real seam.
+        // second clause, as committed through the turn function.
         for seed in 0..200_u64 {
             let mut w2 = World::founding(seed);
             w2.agents.clear();
-            w2.agents.push(Agent::new("Ada", "plain", Place::Hut, 2, 0, 0, 0, vec![], &[]));
-            w2.agents.push(Agent::new("Bo", "plain", Place::Hut, 2, 0, 0, 0, vec![], &[]));
+            w2.agents.push(Agent::new(
+                "Ada",
+                "plain",
+                Place::Hut,
+                2,
+                0,
+                0,
+                0,
+                vec![],
+                &[],
+            ));
+            w2.agents.push(Agent::new(
+                "Bo",
+                "plain",
+                Place::Hut,
+                2,
+                0,
+                0,
+                0,
+                vec![],
+                &[],
+            ));
             let d2 = Decision {
                 action: "console".to_owned(),
                 verb: crate::action::Verb::Console,

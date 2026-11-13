@@ -2,7 +2,7 @@
 //!
 //! Everything here is deterministic given (state, seed, inputs). The policy,
 //! the speaker and the check are code in this crate; the server crate is the
-//! shell around them: persistence, the control surface, the window.
+//! shell around them: persistence, the control API, the window.
 
 // The sim does bounded arithmetic on small counts and unit-range f32 scores;
 // every cast below is value-checked by the surrounding clamps and tests.

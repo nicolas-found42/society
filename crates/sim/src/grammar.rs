@@ -9,9 +9,9 @@
 //!
 //! Coverage floor (spec constants): two first-clause rules per cell over 95
 //! non-speech cells (19 actions x 5 registers) and 40 speech cells (8 acts x
-//! 5 registers) is **270 first-clause rules**; three second-clause forms per
-//! action family over 27 families (19 actions + 8 speech acts) is **81
-//! second-clause forms**. [`assert_floors`] counts the tables against the
+//! 5 registers) is 270 first-clause rules. Three second-clause forms per
+//! action family over 27 families (19 actions + 8 speech acts) is 81
+//! second-clause forms. [`count_rules`] counts the tables against the
 //! registry.
 
 use crate::action::SocialAct;
