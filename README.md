@@ -127,9 +127,10 @@ told**, so a villager who was standing beside them sees nothing unusual.
 
 **Feed someone the village failed.** `{"kind":"gift","target":"Odo","amount":3}`
 puts three measures beside them and clears their hunger. **Change the harvest.**
-`{"kind":"weather","amount":0}` drops the multiplier to ×0.4 and the temperature
-5 °C (fog, or drought in summer); `amount: 4` raises it to ×1.8 on a warm 19 °C
-day. The amount is the weather's strength, 0 to 5.
+`{"kind":"weather","amount":0}` drops the harvest multiplier to ×0.4 and the day
+by 4 °C (fog, or drought in summer); `amount: 4` raises it to ×1.8 and 5 °C
+(soft rain; a bountiful sun in summer). The amount is the weather's strength,
+0 to 5.
 
 **Run two villages at once**, side by side, each with its own file and port:
 
