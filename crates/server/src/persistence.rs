@@ -5,9 +5,9 @@
 //! come back later, and the village is where you left it. Two failure modes are
 //! designed around:
 //!
-//! * a half-written world — writes go to a sibling temporary file, are flushed
+//! * a half-written world: writes go to a sibling temporary file, are flushed
 //!   and synced, then renamed over the target;
-//! * a silent reset — a corrupt or version-mismatched save is a loud startup
+//! * a silent reset: a corrupt or version-mismatched save fails startup with an
 //!   error naming the path, never a fresh founding.
 
 use std::fs;
@@ -34,7 +34,7 @@ struct Envelope {
     world: World,
 }
 
-/// Borrowed form for writing: a save must not clone the world it is saving.
+/// Borrowed form for writing, so a save does not clone the world it is saving.
 #[derive(Serialize)]
 struct EnvelopeRef<'a> {
     version: u32,
@@ -109,7 +109,7 @@ pub fn save_path() -> PathBuf {
     std::env::var_os(SAVE_PATH_ENV).map_or_else(|| PathBuf::from(DEFAULT_SAVE_PATH), PathBuf::from)
 }
 
-/// Load a village. An absent file is not an error: it means first run, and the
+/// Load a village. An absent file is not an error; it means first run, and the
 /// caller founds a fresh world from the seed.
 ///
 /// # Errors
@@ -301,8 +301,8 @@ pub fn mark_reset(world: &mut World, cause: &str) {
 }
 
 /// Load the village at `path`, founding a new one at `seed` only when there is
-/// no save. `--seed` is deliberately ignored when a village exists: restarting
-/// must never replace a living settlement.
+/// no save. `--seed` is ignored when a village exists, because restarting must
+/// never replace a living settlement.
 ///
 /// # Errors
 ///

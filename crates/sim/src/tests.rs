@@ -138,7 +138,8 @@ fn a_gift_to_a_bystander_keeps_nothing() {
         made_turn: w.turn,
         kept: None,
     });
-    // Direct the gift at the bystander through the turn seam's addressee.
+    // Direct the gift at the bystander through the addressee the turn
+    // function binds.
     let decision = policy::Decision {
         action: "give".into(),
         verb: Verb::Give,
@@ -171,8 +172,8 @@ fn a_gift_to_a_bystander_keeps_nothing() {
         .expect("still open");
     assert_eq!(pr.kept, None, "a gift to a bystander keeps nothing");
     // The promisee was in the room and heard the gift speech, so ordinary
-    // social trust may move — but no *fulfillment* lift (the +0.4 keeping
-    // bonus) and no kept-word memories on either side.
+    // social trust may move, but there is no *fulfillment* lift (the +0.4
+    // keeping bonus) and no kept-word memories on either side.
     assert!(
         !w.agent(&keeper)
             .unwrap()
@@ -239,7 +240,7 @@ fn a_rejected_gift_keeps_nothing() {
 fn keeping_is_awarded_exactly_once() {
     // Ticket #1 acceptance: the second evaluation of the same kept promise
     // is a no-op. Keep once by gift, then give again: the promise stays
-    // kept but no second fulfillment memory or trust lift lands.
+    // kept but the second call adds no fulfillment memory and no trust.
     let mut w = World::founding(308);
     let names: Vec<String> = w.living().map(|a| a.name.clone()).collect();
     let (keeper, owed) = (names[0].clone(), names[1].clone());
@@ -462,8 +463,8 @@ fn morale_respects_its_bounds_across_many_events() {
 #[test]
 fn the_morale_bias_survives_a_save_round_trip() {
     // Ticket #3 acceptance: the lasting effect is modeled state, so a
-    // save and reload carries it — unlike the old direct write, which
-    // settlement could erase before a save ever saw it.
+    // save and reload carries it. The old direct write could be erased by
+    // settlement before a save ever saw it.
     let mut w = World::founding(18);
     let names: Vec<String> = w.living().map(|a| a.name.clone()).collect();
     let (speaker, listener) = (names[0].clone(), names[1].clone());
@@ -604,8 +605,8 @@ fn broken_promise_becomes_a_scar() {
 #[test]
 fn a_promise_never_in_reach_lapses_without_a_scar() {
     // Ticket #22's mirror: no shared place anywhere in the window, so the
-    // overdue promise lapses - cleared and remembered, but no scar and no
-    // trust lost, because the keeper was never given the choice.
+    // overdue promise lapses, cleared and remembered, but with no scar and
+    // no trust lost, because the keeper was never given the choice.
     let mut w = World::founding(29);
     let who = w.agents[0].name.clone();
     let to = w.agents[1].name.clone();
@@ -629,7 +630,7 @@ fn a_promise_never_in_reach_lapses_without_a_scar() {
 fn healing_the_promisee_keeps_the_word() {
     // Ticket #22: the keeping paths are give, heal, and console to the
     // promisee. Healing the promisee marks the promise kept on both sides,
-    // with the trust lift - the same footprint as the give path.
+    // with the same trust lift and memory footprint as the give path.
     let mut w = World::founding(29);
     let who = w.agents[0].name.clone();
     let to = w.agents[1].name.clone();
@@ -1209,7 +1210,7 @@ fn full_turns(seed: u64, turns: usize) -> (World, Vec<turn::TurnRecord>) {
 #[test]
 fn a_turn_through_the_seem_is_sync_pure_and_offline() {
     // No async runtime, no network, no clock: one function call over the
-    // world (ticket #8: the pure turn seam).
+    // world (ticket #8: the pure turn function).
     let mut w = World::founding(9);
     let before = serde_json::to_string(&w).unwrap();
     let rec = turn::step(&mut w).expect("turn");
@@ -1227,7 +1228,7 @@ fn the_motive_refines_the_goal_through_the_ladder() {
     let name = w.living().next().unwrap().name.clone();
     turn::step(&mut w).expect("turn");
     let a = w.agent(&name).unwrap();
-    assert!(a.motive.is_some(), "the seam writes the motive");
+    assert!(a.motive.is_some(), "the turn function writes the motive");
     // The ladder: the survival steps override, then the motive names the
     // goal, then the role.
     if a.motive.as_deref() == Some("hunger") && !(a.hunger >= 2 && a.food == 0) {
@@ -1473,7 +1474,8 @@ fn a_kept_promise_exists_in_a_300_turn_run() {
     // `promise`. The keeping path is `give`/`heal`/`console` to the promisee.
     // Seeds 1 and 7 connect promiser to promisee; seed 2026 makes 4 promises
     // whose keepers never share a place with food in hand, so they lapse
-    // (see the expiry test) rather than keep - geography, not a missing path.
+    // (see the expiry test) instead of being kept. That is geography, not a
+    // missing path.
     for seed in [1_u64, 7] {
         let (w, _) = full_turns(seed, 300);
         let kept = w
@@ -1531,24 +1533,23 @@ fn gifts_do_not_concentrate_food_in_one_villager() {
 #[test]
 fn the_hut_and_shrine_are_lived_in_not_abandoned() {
     // Ticket #24 acceptance: the 300-turn seed-7 run measured hut 29 and
-    // shrine 30 events (recorded here as the pre-fix numbers - the defect
-    // is really the second half: a full verb, pray, went unexercised for
-    // the whole run because nothing pulled villagers there). The fix is
-    // three parts: devotion fades 0.05/turn in settle (a standing faith
-    // need only prayer restores, +0.3 a visit); `shelter_pull` scores a
-    // deeply lapsed prayer (devotion below 0.5) flat 2.0 at the need weight
-    // (2.2, beside social_need, below trade) and rest-at-hut by tiredness;
-    // and the shortlist names prayer the Work representative when no order
-    // waits and devotion lapses below 0.5, so the verb reaches the menu
-    // without displacing stocked work. The feet stay honest: shelter moves
-    // score only for the sated and stocked (hunger and thirst zero, food
-    // and water carried), only inside market/well/hut/shrine home
-    // territory, and only when the granary holds 6+ - seed 42 showed
-    // shrine-seeking diverting water runs (Ada) and empty-pocket walks
-    // (Bo) into a woods social cascade, and seed 99 showed a turn-21
-    // prayer delaying a woods round into the same trap. Post-fix seed 7
-    // holds 35/37 with prayer firing; the floor below pins no-regression
-    // past the pre-fix numbers.
+    // shrine 30 events (recorded here as the pre-fix numbers; the real
+    // defect is the second half, where a full verb, pray, went unexercised
+    // for the whole run because nothing moved villagers there). The fix has
+    // three parts. Devotion fades 0.05/turn in settle, and only prayer
+    // restores it, +0.3 a visit. `shelter_pull` scores a deeply lapsed
+    // prayer (devotion below 0.5) flat 2.0 at the need weight (2.2, beside
+    // social_need, below trade) and rest-at-hut by tiredness. The shortlist
+    // names prayer the Work representative when no order waits and devotion
+    // lapses below 0.5, so the verb reaches the menu without displacing
+    // stocked work. Moves stay within their limits: shelter moves score only
+    // for the sated and stocked (hunger and thirst zero, food and water
+    // carried), only inside market/well/hut/shrine home territory, and only
+    // when the granary holds 6 or more. Seed 42 showed shrine-seeking
+    // divert water runs (Ada) and empty-pocket walks (Bo) into a woods
+    // social cascade, and seed 99 showed a turn-21 prayer delaying a woods
+    // round into the same trap. Post-fix seed 7 holds 35/37 with prayer
+    // firing; the floor below pins no regression past the pre-fix numbers.
     let (w, _) = full_turns(7, 300);
     let at = |p: Place| w.events.iter().filter(|e| e.place == p).count();
     let hut = at(Place::Hut);
@@ -1581,14 +1582,14 @@ fn a_fully_lapsed_villager_at_the_shrine_prays() {
 #[test]
 fn winter_cracks_the_buildings_and_repair_answers() {
     // Ticket #25 acceptance: the 300-turn seed-7 run used to end with all
-    // seven places at condition 5 and 3 repairs in 3474 agent-turns - the
-    // repair branch had no reachable target past the founding 4s. The fix
-    // is winter cold: every third winter turn one place wears down one
-    // step to a floor of 1 (never ruin), and repair (+1, to 5) is the only
-    // way back up. Confined to winter so the other three seasons run the
-    // proven food equilibrium undisturbed. Post-fix seed 7 ends
-    // hut/shrine 2, market 4 (decay fired) with four places back at 5
-    // (repair restores) on 36 repairs - ongoing work both directions.
+    // seven places at condition 5 and 3 repairs in 3474 agent-turns, because
+    // the repair branch had no reachable target past the founding 4s. The fix
+    // is winter cold: every third winter turn one place wears down one step
+    // to a floor of 1 (never ruin), and repair (+1, to 5) is the only way
+    // back up. Decay stays in winter so the other three seasons run the
+    // proven food equilibrium undisturbed. Post-fix seed 7 ends with
+    // hut/shrine 2, market 4 (decay fired), and four places back at 5
+    // (repair restores) on 36 repairs, so the work runs both directions.
     let (w, _) = full_turns(7, 300);
     let all = [
         Place::Granary,
@@ -1676,8 +1677,8 @@ fn the_soak_holds_the_invariants() {
 fn the_village_does_not_camp_in_one_place() {
     use crate::turn;
     // The measured failure was 82% of villager-turns in the granary: the
-    // trade pulled the hands but the feet scored nothing, so nobody walked
-    // to work. Sixty turns on three seeds; no place may hold more than half
+    // trade score covered work but not the move to it, so nobody walked to
+    // work. Sixty turns on three seeds; no place may hold more than half
     // the villager-turns, and at least five places must see someone.
     for seed in [7_u64, 42, 99] {
         let mut w = World::founding(seed);

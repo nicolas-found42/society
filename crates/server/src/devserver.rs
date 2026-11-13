@@ -1,4 +1,4 @@
-//! Dev-server control surface. This is how an agent (or you, from a second
+//! Dev-server control API. This is how an agent (or you, from a second
 //! terminal) drives and inspects a running society without touching the window.
 //!
 //! Bound to `127.0.0.1` only. Read-only endpoints are safe to poll; the
@@ -21,28 +21,35 @@ pub const DEFAULT_PORT: u16 = 8100;
 #[derive(Clone, Debug)]
 pub struct AppState {
     pub world: Arc<tokio::sync::Mutex<World>>,
+    /// In-memory observer cache generation, including same-turn mutations.
+    pub observer_revision: Arc<std::sync::atomic::AtomicU64>,
     pub run: Arc<tokio::sync::Mutex<Vec<turn::TurnRecord>>>,
     /// Where this village lives on disk. The only path the server knows.
     pub save_path: std::path::PathBuf,
+    pub telemetry: Arc<crate::telemetry::Telemetry>,
     /// The last save failure, if any. Kept in memory for `/health`: the
     /// durable half of a save error lives in the audit log.
     pub save_error: Arc<tokio::sync::Mutex<Option<String>>>,
 }
 
 impl AppState {
-    /// Persist after a mutation. A failed save is reported, never silently
-    /// swallowed: the caller's response says the world did not reach disk.
+    /// Persist after a mutation. A failed save is reported: the caller's
+    /// response says the world did not reach disk.
     ///
     /// # Errors
     ///
     /// Returns a `SaveError` if the world fails validation or cannot be written.
     pub fn save(&self, world: &World) -> Result<(), crate::persistence::SaveError> {
+        self.observer_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
         crate::persistence::save(world, &self.save_path)
     }
 
     /// Append turn records, keeping the in-memory log bounded.
     pub async fn record(&self, recs: impl IntoIterator<Item = turn::TurnRecord>) {
         crate::push_bounded(&mut *self.run.lock().await, recs);
+        self.observer_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
     }
 
     /// The last save failure, if any, for `/health`.
@@ -63,48 +70,168 @@ impl AppState {
     ///
     /// Returns the `SaveError` when the world cannot be written.
     pub async fn save_and_track(&self, world: &World) -> Result<(), crate::persistence::SaveError> {
+        let started = std::time::Instant::now();
         match self.save(world) {
             Ok(()) => {
+                let recovered = self.last_save_error().await.is_some();
                 self.note_save_error(None).await;
+                self.audit_saved(world, started, Some(recovered));
                 Ok(())
             },
             Err(e) => {
                 let msg = e.to_string();
-                self.note_save_error(Some(msg.clone())).await;
-                self.audit("save_error", world.turn, serde_json::json!({"error": msg}));
+                self.note_save_error(Some(msg)).await;
+                self.audit_save_error(world, started, &e);
                 Err(e)
             },
         }
     }
 
+    /// Durable half of a successful save, shared by the async API path and the
+    /// native observer so a recovery always has a matching failure row.
+    fn audit_saved(&self, world: &World, started: std::time::Instant, recovered: Option<bool>) {
+        self.audit(
+            "state_saved",
+            world.turn,
+            json!({"recovered": recovered, "save_us": started.elapsed().as_micros(),
+                "state": crate::village_digest(world), "event_count": world.events.len(),
+                "halted": world.halted.is_some()}),
+        );
+    }
+
+    /// Durable half of a failed save: the failing stage, never the OS text.
+    fn audit_save_error(
+        &self,
+        world: &World,
+        started: std::time::Instant,
+        error: &crate::persistence::SaveError,
+    ) {
+        self.audit(
+            "save_error",
+            world.turn,
+            json!({"stage": save_stage(error), "state": crate::village_digest(world),
+                "event_count": world.events.len(), "save_us": started.elapsed().as_micros()}),
+        );
+    }
+
     /// Durably journal committed turns: fsynced JSONL next to the save, so
     /// history survives restarts and outlives the in-memory cap.
     ///
-    /// Failures are reported to the caller, never silently swallowed.
+    /// Failures are reported to the caller.
     ///
     /// # Errors
     ///
     /// Returns a string when the journal cannot be appended to.
     pub fn journal(&self, seed: u64, recs: &[turn::TurnRecord]) -> Result<(), String> {
+        let mut failure: Option<String> = None;
         for r in recs {
-            crate::diagnostics::append_turn(
+            if let Err(error) = crate::diagnostics::append_turn_context(
                 &self.save_path,
                 seed,
                 r,
                 &crate::diagnostics::build_version(),
                 crate::persistence::SAVE_VERSION,
-            )?;
+                self.telemetry.context(),
+            ) {
+                self.telemetry.outcome("journal", &Err(error.clone()));
+                failure.get_or_insert(error);
+            }
         }
-        Ok(())
+        failure.map_or(Ok(()), Err)
     }
 
-    /// Durably audit one observer/shell event. Best-effort by design: the
-    /// audit must never break a mutation, so failures return as strings for
-    /// the response body rather than failing the call.
+    /// Durably audit one observer/shell event. The audit must never break a
+    /// mutation, so it is best-effort: failures return as strings for the
+    /// response body rather than failing the call.
     pub fn audit(&self, action: &str, turn: u64, detail: Value) {
-        if let Err(e) = crate::diagnostics::append_audit(&self.save_path, action, turn, detail) {
-            eprintln!("diagnostics audit `{action}` not recorded: {e}");
+        let mut context = self.telemetry.context();
+        context
+            .operation_id
+            .get_or_insert_with(crate::telemetry::operation_id);
+        self.telemetry.outcome(
+            "audit",
+            &crate::diagnostics::append_audit_context(
+                &self.save_path,
+                action,
+                turn,
+                detail,
+                context,
+            ),
+        );
+    }
+    /// Native observers already hold the world lock; persist without awaiting
+    /// another lock. Prose remains only in the existing save, never audit detail.
+    #[must_use]
+    pub fn save_observer(&self, world: &World, action: &str, kind: &str) -> bool {
+        let started = std::time::Instant::now();
+        let outcome = self.save(world);
+        // The latch is a tokio mutex shared with `/health`, and this runs on the
+        // UI thread under the world lock, so only `try_lock` is safe here. When
+        // it is momentarily held the latch keeps its previous value and the
+        // recovery is recorded as unknown instead of as a false negative.
+        let recovered = self.save_error.try_lock().map_or(None, |mut slot| {
+            let recovered = slot.is_some();
+            *slot = outcome.as_ref().err().map(ToString::to_string);
+            Some(recovered)
+        });
+        if let Err(e) = &outcome {
+            self.audit_save_error(world, started, e);
+        } else {
+            self.audit_saved(world, started, recovered);
         }
+        self.audit(
+            action,
+            world.turn,
+            json!({"kind": kind, "saved": outcome.is_ok(),
+            "state": crate::village_digest(world), "event_count": world.events.len()}),
+        );
+        outcome.is_ok()
+    }
+
+    /// Mark the pre-state before synchronous engine work, including failed steps.
+    #[must_use]
+    pub fn start_step(&self, world: &World, source: &str) -> std::time::Instant {
+        let started = std::time::Instant::now();
+        self.audit(
+            "turn_started",
+            world.turn,
+            json!({"source": source, "state": crate::village_digest(world),
+            "event_count": world.events.len()}),
+        );
+        started
+    }
+
+    /// Save and journal each completed step while the caller still owns the
+    /// world lock. Journal failure cannot undo a committed turn or fail gameplay.
+    /// The two files are independent: neither implies the other succeeded.
+    ///
+    /// # Errors
+    /// Returns the save failure after attempting both evidence sinks.
+    pub async fn commit_turn(
+        &self,
+        world: &World,
+        rec: &turn::TurnRecord,
+        source: &str,
+        started: std::time::Instant,
+    ) -> Result<(), crate::persistence::SaveError> {
+        let save = self.save_and_track(world).await;
+        let journal = self.journal(world.seed, std::slice::from_ref(rec));
+        // The row's `turn` is the world state turn after the step; `record_turn`
+        // names the committed turn, and the runbook joins on that field.
+        self.audit("turn_completed", world.turn, json!({"source": source, "record_turn": rec.turn,
+            "saved": save.is_ok(), "journaled": journal.is_ok(), "elapsed_us": started.elapsed().as_micros(),
+            "state": crate::village_digest(world), "summary": rec.summary, "event_count": world.events.len()}));
+        save
+    }
+}
+
+/// The failing stage of a save, as a bounded audit category.
+const fn save_stage(error: &crate::persistence::SaveError) -> &'static str {
+    match error {
+        crate::persistence::SaveError::Io { action, .. } => action,
+        crate::persistence::SaveError::Corrupt { .. } => "corrupt",
+        crate::persistence::SaveError::Version { .. } => "version",
+        crate::persistence::SaveError::Unwritable { .. } => "validation",
     }
 }
 
@@ -123,11 +250,54 @@ pub fn router(state: AppState) -> Router {
         .route("/reset", post(reset))
         .route("/inject", post(inject))
         .route("/halt", post(halt))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            observe_request,
+        ))
         .with_state(state)
 }
 
-/// Nothing here is a simulation fact; it is the harness proving itself alive.
-/// The cap and the save path are static configuration, so this is where an
+/// Bounded route categories for the audit. Known routes keep their own name so
+/// the 404 of a missing villager or place is not confused with an unknown
+/// endpoint; the raw path is never retained.
+fn route_category(path: &str) -> &'static str {
+    match path {
+        "/turn" => "turn",
+        "/reset" => "reset",
+        "/inject" => "inject",
+        "/halt" => "halt",
+        "/health" | "/log" | "/diagnostics" | "/verify" | "/state" | "/events" | "/social" => {
+            "read"
+        },
+        _ if path.starts_with("/agent/") => "agent",
+        _ if path.starts_with("/places/") => "place",
+        _ => "other",
+    }
+}
+
+/// Retain mutations and errors; reads are deliberately unsampled only on error.
+async fn observe_request(
+    State(s): State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let id = crate::telemetry::operation_id();
+    let path = route_category(request.uri().path());
+    let mutation = request.method() != axum::http::Method::GET;
+    let started = std::time::Instant::now();
+    crate::telemetry::OPERATION.scope(id.clone(), async {
+        if mutation { s.audit("request_started", 0, json!({"route": path})); }
+        let mut response = next.run(request).await;
+        if mutation || response.status().is_client_error() || response.status().is_server_error() {
+            s.audit("request_finished", 0, json!({"route": path, "status": response.status().as_u16(), "elapsed_us": started.elapsed().as_micros()}));
+        }
+        if let Ok(value) = id.parse() { response.headers_mut().insert("x-society-operation-id", value); }
+        response
+    }).await
+}
+
+/// Nothing here is a simulation fact; it reports that the server answers. The
+/// cap and the save path are static configuration, so this is where an
 /// observer tells "growth is slow" from "growth is blocked". The engine is
 /// code in the process: there is no external dependency to probe, so `ok`
 /// means the router is answering and nothing else.
@@ -136,8 +306,11 @@ async fn health(State(s): State<AppState>) -> impl IntoResponse {
     let halted = world.halted.clone();
     let turn = world.turn;
     drop(world);
-    let (journal_oldest, journal_turns, journal_bytes) =
-        crate::diagnostics::journal_depth(&s.save_path);
+    let depth =
+        crate::diagnostics::scan_journal(&s.save_path, 0, crate::diagnostics::MAX_QUERY_ENTRIES);
+    let journal_oldest = depth.entries.iter().map(|e| e.turn).min();
+    let journal_turns = depth.entries.len();
+    let journal_bytes = crate::diagnostics::journal_bytes(&s.save_path);
     Json(json!({
         "ok": halted.is_none(),
         "engine": "code",
@@ -145,13 +318,19 @@ async fn health(State(s): State<AppState>) -> impl IntoResponse {
         "population_cap": society_sim::POPULATION_CAP,
         "birth_cost": society_sim::BIRTH_COST,
         "build": crate::diagnostics::build_version(),
+        "telemetry": s.telemetry.status(),
+        "retention": {"segments": crate::diagnostics::RETAINED_SEGMENTS + 1, "journal_segment_bytes": crate::diagnostics::JOURNAL_ROTATE_BYTES, "audit_segment_bytes": crate::diagnostics::AUDIT_ROTATE_BYTES, "age_guarantee": false},
         "save_version": crate::persistence::SAVE_VERSION,
         "journal_version": crate::diagnostics::JOURNAL_VERSION,
         "save_path": s.save_path.display().to_string(),
         "log_cap": crate::TURN_LOG_CAP,
-        "journal_oldest_turn": journal_oldest,
+        // The reader caps at MAX_QUERY_ENTRIES, so a capped window reports the
+        // oldest turn it kept; `journal_depth_limited` says the store is older.
+        "journal_window_oldest_turn": journal_oldest,
         "journal_turns": journal_turns,
         "journal_bytes": journal_bytes,
+        "journal_depth_limited": depth.truncated,
+        "journal_quality": {"corrupt_lines": depth.corrupt_lines, "read_errors": depth.read_errors, "head_missing": depth.head_missing, "files_read": depth.files_read},
         "last_save_error": s.last_save_error().await,
         "turn": turn,
     }))
@@ -299,13 +478,18 @@ async fn social_snapshot(State(s): State<AppState>) -> impl IntoResponse {
 async fn place_detail(
     State(s): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<Value>, StatusCode> {
+) -> (StatusCode, Json<Value>) {
     let w = s.world.lock().await;
-    let (place, st) = w
+    let Some((place, st)) = w
         .places
         .iter()
         .find(|(p, _)| p.id().eq_ignore_ascii_case(&id))
-        .ok_or(StatusCode::NOT_FOUND)?;
+    else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown place", "place": id})),
+        );
+    };
     let mut value = serde_json::to_value(st).expect("place serializes");
     value["id"] = json!(place.id());
     value["adjacent"] = json!(place.adjacent().iter().map(|q| q.id()).collect::<Vec<_>>());
@@ -315,7 +499,7 @@ async fn place_detail(
         .map(agent_snapshot)
         .collect::<Vec<_>>());
     value["recent_dialogue"] = json!(recent_place_dialogue(&w, *place, 10));
-    Ok(Json(value))
+    (StatusCode::OK, Json(value))
 }
 
 #[allow(
@@ -325,16 +509,21 @@ async fn place_detail(
 async fn agent_detail(
     State(s): State<AppState>,
     Path(name): Path<String>,
-) -> Result<Json<Value>, StatusCode> {
+) -> (StatusCode, Json<Value>) {
     let w = s.world.lock().await;
-    let a = w.agent(&name).ok_or(StatusCode::NOT_FOUND)?;
+    let Some(a) = w.agent(&name) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown villager", "name": name})),
+        );
+    };
     let mut value = agent_snapshot(a);
     // The policy's decision factors for this villager's last recorded turn:
     // what the inspector's factors panel shows, and the observable answer to
     // "why did she do that".
     let run = s.run.lock().await;
     value["factors"] = last_factors(&run, &a.name);
-    Ok(Json(value))
+    (StatusCode::OK, Json(value))
 }
 
 /// The recorded term contributions from the villager's last turn, or `null`
@@ -347,16 +536,16 @@ pub fn last_factors(run: &[turn::TurnRecord], name: &str) -> Value {
         .map_or(Value::Null, |at| json!(at.factors))
 }
 
-/// The last few lines spoken at one place, oldest first. A world query, not a
-/// simulation fact: it reads the event log the world already carries.
+/// The last few lines spoken at one place, oldest first. It is a world query,
+/// not a simulation fact, and reads the event log the world already carries.
 ///
 /// Provenance is the `spoken` flag on the event (ticket #4): a line enters
-/// conversation history iff a villager actually said words there. Deaths,
-/// births, foundings, halts, rejections, silent chores, and observer prose
-/// (whispers, rumors, feasts, oaths, goals) are narrative context, never
-/// dialogue - even with nonempty text at the same place. `spoken` defaults
-/// to `false` for pre-flag saves, so old chronicles exclude rather than
-/// invent speech.
+/// conversation history only when a villager actually said words there.
+/// Deaths, births, foundings, halts, rejections, silent chores, and observer
+/// prose (whispers, rumors, feasts, oaths, goals) are narrative context, never
+/// dialogue, even with nonempty text at the same place. `spoken` defaults to
+/// `false` for pre-flag saves, so old chronicles leave speech out instead of
+/// inventing it.
 #[must_use]
 pub fn recent_place_dialogue(w: &World, place: Place, limit: usize) -> Vec<String> {
     let mut out: Vec<String> = w
@@ -397,89 +586,180 @@ async fn events(State(s): State<AppState>, Query(q): Query<EventQuery>) -> Json<
 struct LogQuery {
     since_turn: Option<u64>,
     limit: Option<usize>,
+    #[serde(flatten)]
+    filter: crate::diagnostics::Filter,
 }
 
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "the world lock is held for the whole request on purpose"
+    reason = "the run lock is held while the in-memory tail is merged on purpose"
 )]
 async fn log_tail(State(s): State<AppState>, Query(q): Query<LogQuery>) -> Json<Value> {
     let since = q.since_turn.unwrap_or(0);
     let limit = q.limit.unwrap_or(20);
-    let rows: Vec<turn::TurnRecord> = {
-        let run = s.run.lock().await;
-        run.iter()
-            .filter(|r| r.turn >= since)
-            .take(limit)
-            .cloned()
-            .collect()
-    };
-    let from_memory = rows.len();
-    let (journal, journal_corrupt) = if rows.len() < limit {
-        crate::diagnostics::read_journal(&s.save_path, since, limit - rows.len())
-    } else {
-        (Vec::new(), 0)
-    };
-    // Journal fallback: turns that aged out of the in-memory cap (or that a
-    // restart wiped) still read back, oldest first, ahead of the live tail.
-    let mut merged: Vec<Value> = journal
-        .into_iter()
-        .map(|e| serde_json::to_value(&e.record).unwrap_or(Value::Null))
+    let evidence = crate::diagnostics::query_journal(&s.save_path, since, limit, &q.filter);
+    let world = s.telemetry.context().world_id;
+    // Only the current world's rows can have a live counterpart in `run`.
+    // Membership, not the newest turn, decides what to merge: a sink that fails
+    // for one turn and recovers leaves an interior gap, not a trailing one.
+    let durable: Vec<u64> = evidence
+        .entries
+        .iter()
+        .filter(|e| e.context.world_id == world)
+        .map(|e| e.turn)
         .collect();
-    let journal_rows = merged.len();
-    for r in &rows {
-        merged.push(serde_json::to_value(r).unwrap_or(Value::Null));
+    let oldest_durable = durable.iter().min().copied();
+    let crate::diagnostics::Evidence {
+        entries,
+        corrupt_lines,
+        read_errors,
+        head_missing,
+        truncated: journal_truncated,
+        files_read,
+    } = evidence;
+    let mut rows: Vec<turn::TurnRecord> = Vec::with_capacity(entries.len());
+    let mut envelopes: Vec<Value> = Vec::with_capacity(entries.len());
+    let mut mine: Vec<bool> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        mine.push(entry.context.world_id == world);
+        envelopes.push(journal_envelope(&entry));
+        rows.push(entry.record);
     }
+    // Time and identity filters cannot be applied to a memory-only row, so they
+    // exclude the merge rather than silently ignoring it.
+    if q.filter.is_empty() {
+        let run = s.run.lock().await;
+        for record in run.iter() {
+            if record.turn < since || durable.contains(&record.turn) {
+                continue;
+            }
+            // Only a scan that clipped older matching rows makes its oldest row
+            // the window's lower bound; otherwise `since` is that bound and a
+            // memory-only turn above it belongs in the response.
+            if journal_truncated && oldest_durable.is_some_and(|oldest| record.turn < oldest) {
+                continue;
+            }
+            // Insert before the first later row of this incarnation, or append,
+            // so both a boundary turn and an interior gap keep the read order.
+            let at = (0..rows.len())
+                .find(|i| mine[*i] && rows[*i].turn > record.turn)
+                .unwrap_or(rows.len());
+            rows.insert(at, record.clone());
+            envelopes.insert(at, Value::Null);
+            mine.insert(at, true);
+        }
+    }
+    let dropped = rows.len().saturating_sub(limit);
+    if dropped > 0 {
+        rows.drain(..dropped);
+        envelopes.drain(..dropped);
+    }
+    let from_memory = envelopes.iter().filter(|e| e.is_null()).count();
+    let from_journal = rows.len() - from_memory;
+    let truncated = journal_truncated || dropped > 0;
     Json(json!({
-        "turns": merged.len(),
-        "cap": crate::TURN_LOG_CAP,
+        "turns": rows.len(),
+        "memory_cap": crate::TURN_LOG_CAP,
         "from_memory": from_memory,
-        "from_journal": journal_rows,
-        "journal_corrupt_lines": journal_corrupt,
-        "rows": merged,
+        "from_journal": from_journal,
+        "rows": rows,
+        "envelopes": envelopes,
+        "envelope_scope": "one per row: the durable envelope, or null for a turn held only in memory",
+        "evidence": {"corrupt_lines": corrupt_lines, "read_errors": read_errors,
+            "head_missing": head_missing, "truncated": truncated, "files_read": files_read},
+        "order": "append order; most recent matching tail",
+        "telemetry": s.telemetry.status(),
     }))
+}
+
+/// The durable envelope around one turn record, without the record itself.
+fn journal_envelope(e: &crate::diagnostics::JournalEntry) -> Value {
+    json!({
+        "journal_version": e.journal_version,
+        "build": e.build,
+        "save_version": e.save_version,
+        "seed": e.seed,
+        "turn": e.turn,
+        "day": e.day,
+        "wall_time": e.wall_time,
+        "context": e.context,
+    })
 }
 
 #[derive(Deserialize)]
 struct DiagnosticsQuery {
     limit: Option<usize>,
+    #[serde(flatten)]
+    filter: crate::diagnostics::Filter,
 }
 
-#[allow(
-    clippy::significant_drop_tightening,
-    reason = "the world lock is held for the whole request on purpose"
-)]
 async fn diagnostics_tail(
     State(s): State<AppState>,
     Query(q): Query<DiagnosticsQuery>,
 ) -> Json<Value> {
-    let (entries, corrupt) = crate::diagnostics::read_audit(&s.save_path, q.limit.unwrap_or(100));
-    Json(json!({
-        "entries": entries,
-        "corrupt_lines": corrupt,
-    }))
+    let evidence = crate::diagnostics::query_audit(&s.save_path, q.limit.unwrap_or(100), &q.filter);
+    Json(
+        json!({"entries": evidence.entries, "corrupt_lines": evidence.corrupt_lines,
+        "read_errors": evidence.read_errors, "head_missing": evidence.head_missing, "truncated": evidence.truncated,
+        "files_read": evidence.files_read, "telemetry": s.telemetry.status()}),
+    )
 }
 
 #[derive(Deserialize)]
 struct VerifyQuery {
     since_turn: Option<u64>,
     limit: Option<usize>,
+    #[serde(flatten)]
+    filter: crate::diagnostics::Filter,
 }
 
-/// Re-step the journal slice through the engine and name the first turn where
-/// the world stops matching its history. `None` divergence means the slice
-/// replays identically: the automatic half of diagnosis.
+/// Compare a bounded journal slice against the current pure founding engine.
+/// Evidence quality and comparison scope accompany every result.
 async fn verify_replay(State(s): State<AppState>, Query(q): Query<VerifyQuery>) -> Json<Value> {
-    let since = q.since_turn.unwrap_or(0);
-    let limit = q.limit.unwrap_or(200);
-    let (entries, corrupt) = crate::diagnostics::read_journal(&s.save_path, since, limit);
-    let checked = entries.len();
-    let divergence = crate::diagnostics::verify_journal(&entries);
-    Json(json!({
-        "checked": checked,
-        "corrupt_lines": corrupt,
-        "divergence": divergence,
-    }))
+    let evidence = crate::diagnostics::query_journal(
+        &s.save_path,
+        q.since_turn.unwrap_or(0),
+        q.limit.unwrap_or(200),
+        &q.filter,
+    );
+    let checked = evidence.entries.len();
+    let incomplete = evidence.corrupt_lines > 0
+        || evidence.read_errors > 0
+        || evidence.head_missing
+        || evidence.truncated;
+    let divergence = if incomplete {
+        None
+    } else {
+        crate::diagnostics::verify_journal(&evidence.entries)
+    };
+    // A journal that stops before the live world has committed a turn the
+    // engine never retained; the compared prefix still matches, so say so.
+    // Only this incarnation's rows count, and only for an unfiltered read.
+    let world_turn = s.world.lock().await.turn;
+    let world_id = s.telemetry.context().world_id;
+    // A clipped window or a read that starts after turn 0 cannot witness a hole
+    // outside it, so it declines the claim instead of answering `true`.
+    let complete_window = q.since_turn.unwrap_or(0) == 0 && !evidence.truncated;
+    let journal_current = (q.filter.is_empty() && complete_window).then(|| {
+        let mut turns: Vec<u64> = evidence
+            .entries
+            .iter()
+            .filter(|e| e.context.world_id == world_id)
+            .map(|e| e.turn)
+            .collect();
+        turns.sort_unstable();
+        turns.dedup();
+        // Reaching the live turn is not enough: a sink that failed for one
+        // turn and recovered leaves a hole a max-only check calls complete.
+        turns.last().is_some_and(|newest| *newest + 1 == world_turn)
+            && turns.windows(2).all(|pair| pair[1] == pair[0] + 1)
+    });
+    Json(
+        json!({"checked": checked, "evidence": evidence, "divergence": divergence,
+        "world_turn": world_turn, "journal_current": journal_current,
+        "status": if checked == 0 {"no_evidence"} else if incomplete {"incomplete_evidence"} else if divergence.is_some() {"baseline_diverged"} else {"baseline_matches"},
+        "scope": "comparison with founding seed under CURRENT pure engine; excludes observer interventions and desktop civic systems; matching records do not prove historical state equivalence"}),
+    )
 }
 
 #[derive(Deserialize)]
@@ -493,30 +773,38 @@ struct TurnRequest {
 )]
 async fn run_turns(State(s): State<AppState>, Json(req): Json<TurnRequest>) -> impl IntoResponse {
     let n = req.turns.unwrap_or(1).min(200);
+    let waiting = std::time::Instant::now();
     let mut world = s.world.lock().await;
+    s.audit(
+        "world_lock_acquired",
+        world.turn,
+        json!({"wait_us": waiting.elapsed().as_micros()}),
+    );
     if let Some(reason) = &world.halted {
         return (
             StatusCode::CONFLICT,
             Json(json!({ "error": "halted", "reason": reason })),
         );
     }
-    // The engine is synchronous, in-process code: a turn either completes or
-    // reports its error, and there is no hung daemon to fence with a budget.
+    // The engine is synchronous, in-process code, so a turn either completes
+    // or reports its error. There is no hung daemon to fence with a budget.
     let mut records = Vec::new();
     let mut error = None;
     for _ in 0..n {
+        let started = s.start_step(&world, "api");
         match turn::step(&mut world) {
             Ok(rec) => {
                 records.push(rec.clone());
-                // The seam is pure, so the shell owns the save and the
+                // The turn function is pure, so the shell owns the save and the
                 // journal. Per turn, the way the engine always did it: an
                 // unwritten world is a reset waiting to happen.
-                if let Err(e) = s.save_and_track(&world).await {
+                if let Err(e) = s.commit_turn(&world, &rec, "api", started).await {
                     error = Some(format!("turn {} committed but not saved: {e}", rec.turn));
                     break;
                 }
             },
             Err(reason) => {
+                s.audit("turn_failed", world.turn, json!({"source": "api", "halted": world.halted.is_some(), "elapsed_us": started.elapsed().as_micros()}));
                 error = Some(reason);
                 break;
             },
@@ -524,23 +812,18 @@ async fn run_turns(State(s): State<AppState>, Json(req): Json<TurnRequest>) -> i
     }
     let committed = records.len();
     let world_turn = world.turn;
-    let seed = world.seed;
-    drop(world);
-    let journal_error = if committed > 0 {
-        s.journal(seed, &records).err()
-    } else {
-        None
-    };
+    let telemetry = s.telemetry.status();
     if !records.is_empty() {
         s.record(records.iter().cloned()).await;
     }
+    drop(world);
     if let Some(reason) = error {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({
                 "error": reason,
                 "committed": committed,
-                "journal_error": journal_error,
+                "telemetry": telemetry,
                 "turn": world_turn,
             })),
         );
@@ -548,15 +831,15 @@ async fn run_turns(State(s): State<AppState>, Json(req): Json<TurnRequest>) -> i
     s.audit(
         "turns",
         world_turn,
-        json!({"committed": committed, "journal_error": journal_error}),
+        json!({"committed": committed, "telemetry": telemetry}),
     );
     (
         StatusCode::OK,
         Json(json!({
             "turns": committed,
             "turn": world_turn,
-            "saved": true,
-            "journal_error": journal_error,
+            "saved": !records.is_empty(),
+            "telemetry": telemetry,
             "records": records,
         })),
     )
@@ -587,6 +870,7 @@ async fn reset(
             )
         },
     };
+    s.telemetry.reset(&s.save_path);
     *world = World::founding(req.seed.unwrap_or(7));
     crate::persistence::mark_reset(&mut world, "the observer reset the village");
     let world_turn = world.turn;
@@ -598,14 +882,20 @@ async fn reset(
         world_turn,
         json!({"seed": seed, "save_cleared": cleared, "saved": saved.is_ok()}),
     );
+    let ok = saved.is_ok();
     let body = json!({
-        "ok": saved.is_ok(),
+        "ok": ok,
         "seed": seed,
         "save_cleared": cleared,
-        "saved": saved.is_ok(),
+        "saved": ok,
         "save_error": saved.err().map(|e| e.to_string()),
     });
-    (StatusCode::OK, Json(body))
+    let status = if ok {
+        StatusCode::OK
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (status, Json(body))
 }
 
 #[derive(Deserialize)]
@@ -629,14 +919,22 @@ struct InjectRequest {
 )]
 async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> impl IntoResponse {
     let kind = req.kind.clone();
-    let summary = crate::diagnostics::inject_summary(
-        &req.kind,
-        req.target.as_deref(),
-        req.to.as_deref(),
-        req.place.as_deref(),
-    );
     let mut w = s.world.lock().await;
     let turn = w.turn;
+    let summary = crate::diagnostics::inject_summary(
+        &req.kind,
+        req.target.as_deref().filter(|name| w.agent(name).is_some()),
+        req.to.as_deref().filter(|name| w.agent(name).is_some()),
+        // Match the case-insensitive lookup the event arms use, so the audit
+        // names the place the intervention actually reached.
+        req.place.as_deref().and_then(|id| {
+            Place::ALL
+                .into_iter()
+                .find(|p| p.id().eq_ignore_ascii_case(id))
+                .map(Place::id)
+        }),
+    );
+    s.audit("inject_attempt", turn, summary.clone());
     let (status, body) = match kind.as_str() {
         "whisper" => {
             let Some(target) = req.target else {
@@ -1006,7 +1304,7 @@ async fn inject(State(s): State<AppState>, Json(req): Json<InjectRequest>) -> im
     clippy::significant_drop_tightening,
     reason = "the world lock is held for the whole request on purpose"
 )]
-async fn halt(State(s): State<AppState>, Json(req): Json<Value>) -> impl IntoResponse {
+async fn halt(State(s): State<AppState>, Json(req): Json<Value>) -> (StatusCode, Json<Value>) {
     let reason = req
         .get("reason")
         .and_then(|r| r.as_str())
@@ -1018,10 +1316,16 @@ async fn halt(State(s): State<AppState>, Json(req): Json<Value>) -> impl IntoRes
     let world_turn = w.turn;
     match s.save_and_track(&w).await {
         Ok(()) => {
-            s.audit("halt", world_turn, json!({"reason": reason}));
-            Json(json!({ "ok": true, "halted": halted }))
+            s.audit("halt", world_turn, json!({"observer_requested": true}));
+            (
+                StatusCode::OK,
+                Json(json!({ "ok": true, "halted": halted })),
+            )
         },
-        Err(e) => Json(json!({ "ok": false, "halted": halted, "save_error": e.to_string() })),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "ok": false, "halted": halted, "save_error": e.to_string() })),
+        ),
     }
 }
 
@@ -1193,12 +1497,163 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let save = root.join("v.json");
         let state = AppState {
+            observer_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             world: Arc::new(tokio::sync::Mutex::new(World::founding(7))),
             run: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            telemetry: Arc::new(crate::telemetry::Telemetry::open(&save, true)),
             save_path: save.clone(),
             save_error: Arc::new(tokio::sync::Mutex::new(None)),
         };
         (state, root)
+    }
+
+    #[tokio::test]
+    async fn observer_revision_tracks_failed_saves_and_history_publication() {
+        let (state, root) = test_state("observer-revision");
+        let before = state
+            .observer_revision
+            .load(std::sync::atomic::Ordering::Acquire);
+        // A directory at the destination forces save failure after an in-memory mutation.
+        std::fs::create_dir(&state.save_path).unwrap();
+        {
+            let mut world = state.world.lock().await;
+            world.agent_mut("Ada").unwrap().water += 1;
+            let failed = state.save(&world).is_err();
+            drop(world);
+            assert!(failed);
+        }
+        assert!(
+            state
+                .observer_revision
+                .load(std::sync::atomic::Ordering::Acquire)
+                > before
+        );
+        let before = state
+            .observer_revision
+            .load(std::sync::atomic::Ordering::Acquire);
+        state.record(Vec::new()).await;
+        assert!(
+            state
+                .observer_revision
+                .load(std::sync::atomic::Ordering::Acquire)
+                > before
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn audit_failure_is_visible_without_breaking_application_mutations() {
+        let (s, root) = test_state("audit-failure");
+        std::fs::create_dir(crate::diagnostics::audit_path(&s.save_path)).unwrap();
+        let response = run_turns(State(s.clone()), Json(TurnRequest { turns: Some(1) }))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(s.telemetry.status()["write_failures"].as_u64().unwrap() > 0);
+        assert_eq!(
+            crate::persistence::load(&s.save_path)
+                .unwrap()
+                .unwrap()
+                .turn,
+            1
+        );
+        assert_eq!(
+            crate::diagnostics::scan_journal(&s.save_path, 0, 10)
+                .entries
+                .len(),
+            1
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_journal_does_not_fail_a_saved_turn_and_reports_degradation() {
+        let (s, root) = test_state("journal-failure");
+        std::fs::create_dir(crate::diagnostics::journal_path(&s.save_path)).unwrap();
+        let mut w = s.world.lock().await;
+        let started = s.start_step(&w, "test");
+        let rec = turn::step(&mut w).unwrap();
+        s.commit_turn(&w, &rec, "test", started).await.unwrap();
+        drop(w);
+        assert_eq!(
+            crate::persistence::load(&s.save_path)
+                .unwrap()
+                .unwrap()
+                .turn,
+            1
+        );
+        assert_eq!(s.telemetry.status()["write_failures"], 1);
+        let evidence = crate::diagnostics::scan_audit(&s.save_path, 100);
+        let outcome = evidence
+            .entries
+            .iter()
+            .find(|e| e.action == "turn_completed")
+            .unwrap();
+        assert_eq!(outcome.detail["saved"], true);
+        assert_eq!(outcome.detail["journaled"], false);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn save_failure_retains_record_and_recovery_is_observable() {
+        let (s, root) = test_state("save-failure");
+        let mut w = s.world.lock().await;
+        std::fs::create_dir(&s.save_path).unwrap();
+        let started = s.start_step(&w, "test");
+        let rec = turn::step(&mut w).unwrap();
+        assert!(s.commit_turn(&w, &rec, "test", started).await.is_err());
+        assert!(s.last_save_error().await.is_some());
+        assert_eq!(
+            crate::diagnostics::scan_journal(&s.save_path, 0, 10)
+                .entries
+                .len(),
+            1
+        );
+        std::fs::remove_dir(&s.save_path).unwrap();
+        s.save_and_track(&w).await.unwrap();
+        drop(w);
+        assert!(s.last_save_error().await.is_none());
+        let evidence = crate::diagnostics::scan_audit(&s.save_path, 100);
+        assert!(evidence
+            .entries
+            .iter()
+            .any(|e| e.action == "state_saved" && e.detail["recovered"] == true));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_observer_save_survives_reload_without_a_later_turn() {
+        let (s, root) = test_state("native-save");
+        let mut w = World::founding(7);
+        w.place_state_mut(Place::Granary).food += 19;
+        assert!(s.save_observer(&w, "intervention", "test"));
+        // The observer path must describe its persistence the same way the API
+        // path does, so a recovery is still explainable from the audit log.
+        let (rows, corrupt) = crate::diagnostics::read_audit(&s.save_path, 10);
+        assert_eq!(corrupt, 0);
+        assert!(rows.iter().any(|e| e.action == "state_saved"
+            && e.detail["recovered"] == false
+            && e.detail["halted"] == false));
+        let loaded = crate::persistence::load(&s.save_path).unwrap().unwrap();
+        assert_eq!(
+            loaded.place_state(Place::Granary).food,
+            w.place_state(Place::Granary).food
+        );
+        let id = s.telemetry.context().world_id;
+        let resumed = crate::telemetry::Telemetry::open(&s.save_path, false);
+        assert_eq!(resumed.context().world_id, id);
+        resumed.reset(&s.save_path);
+        assert_ne!(resumed.context().world_id, id);
+        // A failed observer save is audited with its stage, not only a flag.
+        std::fs::remove_file(&s.save_path).unwrap();
+        std::fs::create_dir_all(&s.save_path).unwrap();
+        assert!(!s.save_observer(&w, "intervention", "test"));
+        let (rows, _) = crate::diagnostics::read_audit(&s.save_path, 10);
+        assert!(rows.iter().any(|e| e.action == "save_error"
+            && e.detail["stage"].is_string()
+            && e.detail["stage"] != ""));
+        assert!(s.save_error.try_lock().is_ok_and(|slot| slot.is_some()));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
@@ -1223,6 +1678,224 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn log_includes_a_turn_the_journal_missed() {
+        // A degraded journal sink must not hide a committed turn: the record
+        // is saved and still held in memory, so `/log` serves it with a null
+        // envelope instead of reporting a shorter history.
+        let (s, root) = test_state("log-memory-merge");
+        let mut w = s.world.lock().await;
+        let rec = turn::step(&mut w).unwrap();
+        let seed = w.seed;
+        s.commit_turn(&w, &rec, "test", s.start_step(&w, "test"))
+            .await
+            .unwrap();
+        s.record([rec.clone()]).await;
+        drop(w);
+        // Make the next journal append fail without erasing the retained row.
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(
+                crate::diagnostics::journal_path(&s.save_path),
+                std::fs::Permissions::from_mode(0o400),
+            )
+            .unwrap();
+        }
+        let mut w = s.world.lock().await;
+        let missed = turn::step(&mut w).unwrap();
+        s.commit_turn(&w, &missed, "test", s.start_step(&w, "test"))
+            .await
+            .unwrap();
+        s.record([missed.clone()]).await;
+        drop(w);
+        let body = log_tail(
+            State(s.clone()),
+            Query(LogQuery {
+                since_turn: None,
+                limit: Some(10),
+                filter: crate::diagnostics::Filter::default(),
+            }),
+        )
+        .await
+        .0;
+        assert_eq!(body["turns"], 2, "{body}");
+        assert_eq!(body["from_memory"], 1, "{body}");
+        assert_eq!(body["from_journal"], 1, "{body}");
+        assert_eq!(body["rows"][1]["turn"], missed.turn);
+        assert!(body["envelopes"][0].is_object(), "{body}");
+        assert!(body["envelopes"][1].is_null(), "{body}");
+        assert_eq!(seed, body["envelopes"][0]["seed"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    async fn step_once(s: &AppState) {
+        let response = run_turns(State(s.clone()), Json(TurnRequest { turns: Some(1) }))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn log_serves_a_turn_an_interior_journal_gap_missed() {
+        use std::os::unix::fs::PermissionsExt as _;
+        // A sink that fails for one turn and recovers leaves a hole, not a
+        // trailing gap; the committed turn is still in memory and still served.
+        let (s, root) = test_state("log-gap");
+        step_once(&s).await;
+        let journal = crate::diagnostics::journal_path(&s.save_path);
+        // Unwritable, not replaced: the existing row must survive the outage.
+        std::fs::set_permissions(&journal, std::fs::Permissions::from_mode(0o400)).unwrap();
+        step_once(&s).await;
+        std::fs::set_permissions(&journal, std::fs::Permissions::from_mode(0o600)).unwrap();
+        step_once(&s).await;
+        let body = log_tail(
+            State(s.clone()),
+            Query(LogQuery {
+                since_turn: None,
+                limit: Some(10),
+                filter: crate::diagnostics::Filter::default(),
+            }),
+        )
+        .await
+        .0;
+        assert_eq!(body["turns"], 3, "{body}");
+        assert_eq!(body["from_memory"], 1, "{body}");
+        assert_eq!(body["from_journal"], 2, "{body}");
+        assert_eq!(body["rows"][1]["turn"], 1, "{body}");
+        assert!(body["envelopes"][1].is_null(), "{body}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn log_since_turn_keeps_an_in_window_memory_turn() {
+        use std::os::unix::fs::PermissionsExt as _;
+        // `since_turn` bounds the window when the journal read did not clip older
+        // rows, so a memory-only turn at or above it belongs in the response even
+        // though it sits below the oldest durable row.
+        let (s, root) = test_state("log-since");
+        step_once(&s).await;
+        let journal = crate::diagnostics::journal_path(&s.save_path);
+        std::fs::set_permissions(&journal, std::fs::Permissions::from_mode(0o400)).unwrap();
+        step_once(&s).await;
+        std::fs::set_permissions(&journal, std::fs::Permissions::from_mode(0o600)).unwrap();
+        step_once(&s).await;
+        let body = log_tail(
+            State(s.clone()),
+            Query(LogQuery {
+                since_turn: Some(1),
+                limit: Some(10),
+                filter: crate::diagnostics::Filter::default(),
+            }),
+        )
+        .await
+        .0;
+        assert_eq!(body["turns"], 2, "{body}");
+        assert_eq!(body["from_memory"], 1, "{body}");
+        assert_eq!(body["from_journal"], 1, "{body}");
+        assert_eq!(body["rows"][0]["turn"], 1, "{body}");
+        assert!(body["envelopes"][0].is_null(), "{body}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn log_keeps_the_clipped_tail_tighter_than_a_memory_turn() {
+        use std::os::unix::fs::PermissionsExt as _;
+        // When the journal read clipped older matching rows, its oldest row is the
+        // window's lower bound: memory-only turns below it are outside the tail.
+        let (s, root) = test_state("log-clipped");
+        step_once(&s).await;
+        let journal = crate::diagnostics::journal_path(&s.save_path);
+        std::fs::set_permissions(&journal, std::fs::Permissions::from_mode(0o400)).unwrap();
+        step_once(&s).await;
+        std::fs::set_permissions(&journal, std::fs::Permissions::from_mode(0o600)).unwrap();
+        step_once(&s).await;
+        let body = log_tail(
+            State(s.clone()),
+            Query(LogQuery {
+                since_turn: None,
+                limit: Some(1),
+                filter: crate::diagnostics::Filter::default(),
+            }),
+        )
+        .await
+        .0;
+        assert_eq!(body["turns"], 1, "{body}");
+        assert_eq!(body["from_memory"], 0, "{body}");
+        assert_eq!(body["rows"][0]["turn"], 2, "{body}");
+        assert!(body["evidence"]["truncated"].as_bool().unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn log_limit_smaller_than_the_memory_tail_still_answers() {
+        // The response limit trims the oldest rows after the merge; the
+        // in-memory count must describe what is served, not what was merged.
+        let (s, root) = test_state("log-limit");
+        std::fs::create_dir(crate::diagnostics::journal_path(&s.save_path)).unwrap();
+        for _ in 0..3 {
+            step_once(&s).await;
+        }
+        let body = log_tail(
+            State(s.clone()),
+            Query(LogQuery {
+                since_turn: None,
+                limit: Some(1),
+                filter: crate::diagnostics::Filter::default(),
+            }),
+        )
+        .await
+        .0;
+        assert_eq!(body["turns"], 1, "{body}");
+        assert_eq!(body["from_memory"], 1, "{body}");
+        assert_eq!(body["from_journal"], 0, "{body}");
+        assert!(body["evidence"]["truncated"].as_bool().unwrap());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn zero_turns_does_not_claim_a_save() {
+        let (s, root) = test_state("zero-turns");
+        let response = run_turns(State(s.clone()), Json(TurnRequest { turns: Some(0) }))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["saved"], false, "{body}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_reset_and_halt_answer_with_a_status() {
+        let (s, root) = test_state("failed-mutations");
+        std::fs::create_dir(&s.save_path).unwrap();
+        let (status, body) = reset(State(s.clone()), Json(ResetRequest { seed: None })).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{:?}", body.0);
+        assert_eq!(body.0["ok"], false);
+        let (status, body) = halt(State(s.clone()), Json(serde_json::json!({}))).await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body:?}");
+        assert_eq!(body.0["ok"], false);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn missing_agent_and_place_answer_with_the_shared_error_shape() {
+        let (s, root) = test_state("not-found-shape");
+        let (status, body) = agent_detail(State(s.clone()), Path("Nobody".into())).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body.0["error"], "unknown villager");
+        let (status, body) = place_detail(State(s.clone()), Path("nowhere".into())).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body.0["error"], "unknown place");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn audit_records_turns_resets_and_injects() {
         // Diagnostics item 3: observer actions leave a durable summary trail.
@@ -1245,6 +1918,50 @@ mod tests {
         assert_eq!(entries[0].action, "turns");
         assert_eq!(entries[1].detail["kind"], "gift");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn verify_declines_currency_for_a_windowed_read() {
+        // Only a complete read can call the journal current: a window that starts
+        // late or clips older rows cannot see a hole outside itself.
+        let (s, root) = test_state("verify-window");
+        for _ in 0..3 {
+            step_once(&s).await;
+        }
+        let full = verify_replay(
+            State(s.clone()),
+            Query(VerifyQuery {
+                since_turn: None,
+                limit: None,
+                filter: crate::diagnostics::Filter::default(),
+            }),
+        )
+        .await
+        .0;
+        assert_eq!(full["journal_current"], true, "{full}");
+        let clipped = verify_replay(
+            State(s.clone()),
+            Query(VerifyQuery {
+                since_turn: None,
+                limit: Some(1),
+                filter: crate::diagnostics::Filter::default(),
+            }),
+        )
+        .await
+        .0;
+        assert!(clipped["journal_current"].is_null(), "{clipped}");
+        let late = verify_replay(
+            State(s.clone()),
+            Query(VerifyQuery {
+                since_turn: Some(1),
+                limit: None,
+                filter: crate::diagnostics::Filter::default(),
+            }),
+        )
+        .await
+        .0;
+        assert!(late["journal_current"].is_null(), "{late}");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
@@ -1310,8 +2027,8 @@ mod tests {
 
     #[test]
     fn dialogue_excludes_narration_and_keeps_spoken_lines() {
-        // Ticket #4: a mixed market chronicle - a spoken promise, a death,
-        // a birth, an empty line, a rejection note - yields only the spoken
+        // Ticket #4: a mixed market chronicle (a spoken promise, a death, a
+        // birth, an empty line, a rejection note) yields only the spoken
         // line, oldest first, capped by the limit.
         use society_sim::EventKind;
         let mut w = World::founding(4);

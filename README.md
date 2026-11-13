@@ -35,9 +35,24 @@ the file, never a silent reset.
 |---|---|---|
 | `SOCIETY_SAVE_PATH` | `data/society.json` | village file; one file per village |
 
-A turn costs a fraction of a millisecond: there is no call to rate-limit,
-retry or queue, and no permission window to size. The same seed and the same
-save produce the same turns, the same lines and the same village, every time.
+The window starts simulating at **1×: one turn per second**. Use **Pause** and
+**Simulate** to control playback, or drag **Speed** from **1× to 100×** to fast
+forward. The multiplier is a target rate; simulation and saving can limit actual
+throughput. The native observer redraws continuously during playback, targeting
+120 fps on a 120 Hz display; villager movement and atmosphere blend between
+committed states independently of turn speed. The status bar shows observed fps.
+The frame budget is measured by a manual release probe
+(`cargo test -p society --release -- --ignored observer_frame_budget_through_100x`), not by
+the default test run.
+Use `--speed 100` to start directly at the maximum multiplier. Unchanged frames reuse the world
+snapshot, turn history, and ring layout. Pause lets the current small batch finish (at most four turns).
+Manual **1 Turn** and **+5 Turns** pause automatic playback. At narrow window
+sizes, select villagers directly on the ring; the roster appears in wider windows.
+
+Turns run locally, without a remote call to rate-limit, retry or queue.
+Each committed turn is durably saved and journaled, so disk throughput can
+constrain fast forwarding. The same seed and the same save produce the same
+turns, the same lines and the same village, every time.
 
 The window never takes focus and never raises itself, so it can sit behind what
 you are working on. Screenshot it at any time, from any app, with:
@@ -262,7 +277,7 @@ You cannot edit minds or kill directly.
 | GET | `/agent/{name}` | one villager, with the factors behind their last decision |
 | GET | `/places/{id}` | one place: stores, owner, condition, hearth, fertility |
 | GET | `/events?since=N&limit=M` | append-only event log |
-| GET | `/log?since_turn=T` | per-turn records: actions, lines, acts, the turn digest (journal-backed past the in-memory cap) |
+| GET | `/log?since_turn=T` | durable turn records, correlation envelopes and evidence quality |
 | GET | `/diagnostics?limit=N` | observer/shell audit: boots, turns, resets, injects, halts, save errors |
 | GET | `/verify?since_turn=T&limit=N` | re-step the journal through the engine; names the first divergent turn |
 | POST | `/turn` | `{"turns":N}` |
@@ -279,15 +294,39 @@ curl -s -X POST localhost:8100/inject -H 'content-type: application/json' \
 
 ## Diagnostics (what happened, and why not)
 
-Every committed turn is journaled durably next to the save as
-`<save>.journal.jsonl` (one fsynced JSONL line per turn with a
-`{save_version, build, seed, turn, wall_time}` envelope), so `/log` reads
-back past the 240-turn in-memory cap and across restarts. Observer and shell
-actions land in `<save>.diagnostics.jsonl`: boots, turns committed, resets,
-injects (kind + target only, never observer prose), halts, and save errors.
-`/health` reports the build, save/journal versions, journal depth, and the
-last save error. `/verify` re-steps a journal slice through the engine and
-names the first divergent turn.
+Every completed turn is saved and journaled independently while the shell holds
+its world lock. `<save>.journal.jsonl` keeps turn records across restarts;
+`<save>.diagnostics.jsonl` keeps request and observer actions, before/after vitals,
+save/journal outcomes, timing, recovery and lifecycle errors. Correlation includes
+a persistent village ID, process session, operation ID and source fingerprint.
+HTTP responses include `x-society-operation-id`.
+
+Both logs retain a head plus four rotations (32 MiB journal segments, 8 MiB audit
+segments), with no age guarantee. `/log` returns durable history with one envelope
+per row and, for a query without a time or identity filter, any committed turn
+with no durable row — a trailing turn or an interior gap, bounded by
+`since_turn` and the retained tail (row envelope `null`); the UI keeps its
+240-turn memory tail. `/diagnostics` and `/log` accept
+`since_time`, `until_time` (epoch seconds), `world_id`, `session_id`, and
+`operation_id`; read errors, corrupt lines, missing heads and clipped results are
+explicit. `/health` exposes sink failures and retention limits. `/verify` compares
+against the **current pure founding engine**; it cannot replay observer inputs or
+desktop civic systems, and matching records do not prove historical state identity;
+`journal_current` says whether this read reaches the live turn with no gap; it is
+`null` when the query starts after turn 0 or clips its window, because such a read
+cannot see a hole outside itself.
+
+```bash
+python3 tools/evidence.py --save data/society.json --since 2026-11-03T00:00:00Z --limit 100
+python3 tools/evidence.py --save data/society.json --operation OPERATION_ID --journal
+python3 tools/evidence.py --save data/society.json --crash
+```
+
+The offline reader works when the app cannot start. Full saves and turn journals
+can contain observer prose; audit summaries omit it. See
+[the coverage inventory, verified failure exercises, and investigation runbook](docs/observability.md)
+for retrieval, retention, privacy and replay limits. New instrumentation cannot
+recover history that was never collected.
 
 Each `AgentTurn` carries a `decision_id` (`{seed}:{turn}:{name}`) joining it
 to the event feed, up to three `rejected` runners-up (`tier` = filtered

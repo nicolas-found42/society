@@ -1,9 +1,9 @@
 //! Library half of the binary: wiring shared by the window and the headless
 //! runner. The engine is the pure simulation crate; this crate is the shell
-//! around it: persistence, the control surface, the window.
+//! around it: persistence, the control API, the window.
 
 // `App`-level wiring and JSON snapshots are bags of small fields; splitting
-// them hides the shapes the control surface publishes.
+// them hides the shapes the control API publishes.
 #![allow(
     clippy::struct_field_names,
     reason = "snapshot structs mirror the published API shapes"
@@ -12,8 +12,9 @@
 pub mod devserver;
 pub mod diagnostics;
 pub mod persistence;
+pub mod telemetry;
 
-pub use devserver::{AppState, DEFAULT_PORT, build_social_fabric};
+pub use devserver::{build_social_fabric, AppState, DEFAULT_PORT};
 pub use society_sim::turn::{AgentTurn, BirthRecord, TurnRecord, TurnSummary};
 
 use std::path::Path;
@@ -104,16 +105,21 @@ pub fn boot(
     }
 
     let state = AppState {
+        observer_revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         world: Arc::new(tokio::sync::Mutex::new(world)),
         run: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        telemetry: Arc::new(telemetry::Telemetry::open(save_path, fresh)),
         save_path: save_path.to_path_buf(),
         save_error: Arc::new(tokio::sync::Mutex::new(None)),
     };
-    let turn = state.world.blocking_lock().turn;
+    let (turn, actual_seed) = {
+        let w = state.world.blocking_lock();
+        (w.turn, w.seed)
+    };
     state.audit(
         if reset { "boot_reset" } else { "boot" },
         turn,
-        serde_json::json!({"seed": seed, "fresh": fresh}),
+        serde_json::json!({"seed": actual_seed, "fresh": fresh, "requested_seed": seed, "pid": std::process::id(), "os": std::env::consts::OS, "arch": std::env::consts::ARCH}),
     );
     Ok(state)
 }

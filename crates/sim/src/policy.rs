@@ -150,9 +150,9 @@ pub(crate) struct Term {
 
 /// The thirteen pinned terms (spec: "Feature-term weights"). The weights are
 /// the first cut; a revision is a design change reported with its A/B result.
-/// `shelter_pull` (ticket #24) is the home-fire nudge: at the need level
-/// beside `social_need`, below trade; the feet score below need so they
-/// steer only when nothing presses.
+/// `shelter_pull` (ticket #24) rewards prayer, rest and the walk home: it sits
+/// at the need level beside `social_need` and below trade, and a move scores
+/// below need, so a move wins only when no need presses.
 pub(crate) const TERMS: [Term; 13] = [
     Term {
         name: "profession_ready",
@@ -238,12 +238,11 @@ const fn is_workish(c: &Candidate) -> bool {
 
 /// 1.0 when a work order of the villager's profession is waiting here and the
 /// candidate advances it. A move that shortens the ring distance to a stocked
-/// work-order place scores 0.4: the trade pulls the feet, not just the
-/// hands, so the farmer walks to the field instead of taking in the
-/// granary. The pull stays below eating here (0.2 trade + appetite terms),
-/// so a starving villager takes before they walk. Other work of the
-/// villager's own trade scores 0.2; another trade's work scores nothing, so
-/// the woods do not become the granary with trees.
+/// work-order place scores 0.4, so the farmer walks to the field instead of
+/// taking food from the granary. That score stays below eating here (0.2 trade
+/// plus the appetite terms), so a starving villager takes food before walking.
+/// Other work of the villager's own trade scores 0.2; another trade's work
+/// scores nothing, so the woods do not become a granary with trees.
 fn term_profession_ready(w: &World, a: &Agent, c: &Candidate) -> f32 {
     if profession::order_for(w, a, c.verb).is_some() {
         1.0
@@ -275,8 +274,9 @@ fn approaches_stocked_order(w: &World, a: &Agent, c: &Candidate) -> bool {
         .any(|p| dest.ring_distance(*p) < a.place.ring_distance(*p))
 }
 
-/// An unkept promise to someone present pulls toward the promise, and toward
-/// keeping it by hand (giving them food) when words are not the point.
+/// An unkept promise to someone present raises the promise act, and the acts
+/// that keep it by hand (giving them food, healing them, consoling them) when
+/// words are not the point.
 fn term_promise_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
     let Some(pr) = &a.promise else { return 0.0 };
     if pr.kept.is_some() {
@@ -292,11 +292,11 @@ fn term_promise_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
     }
 }
 
-/// Someone present who is hungry, ill or thirsty needs the acts that answer
+/// Someone present who is hungry, ill or grieving needs the acts that answer
 /// the need: food acts for hunger and thirst, heal and console for illness
 /// and grief. The gift is aimed: it scores only when the addressee themself
-/// is hungry, is kin, or is owed the villager's unkept promise - feeding a
-/// fed stranger beside a hungry one is not generosity, and a camp that feeds
+/// is hungry, is kin, or is owed the villager's unkept promise. Feeding a fed
+/// stranger beside a hungry one is not generosity, and a camp that feeds
 /// itself has no reason to ever leave.
 fn term_social_need(w: &World, a: &Agent, c: &Candidate) -> f32 {
     let others: Vec<String> = w.present(a.place, &a.name);
@@ -312,10 +312,10 @@ fn term_social_need(w: &World, a: &Agent, c: &Candidate) -> f32 {
     match c.action.as_str() {
         // Feeding answers hunger; healing answers illness; consoling answers
         // grief. A console beside mere hunger answers nothing, and a heal
-        // beside a busy day is not medicine. The gift fires on presence -
-        // someone here is hungry, is kin, or is owed the villager's word -
-        // and the addressee aims it at the neediest below satiety (ticket
-        // #23). Frequency is presence-gated; targeting is need-first.
+        // beside a busy day is not medicine. The gift depends on presence:
+        // someone here is hungry, is kin, or is owed the villager's word.
+        // The addressee aims it at the neediest below satiety (ticket #23).
+        // Frequency is presence-gated; targeting is need-first.
         "give" | "help" if gift_lands(w, a, c, &others) => 1.0,
         "heal" if others.iter().any(ill) => 1.0,
         "heal" if others.iter().any(grieving) => 0.3,
@@ -326,19 +326,22 @@ fn term_social_need(w: &World, a: &Agent, c: &Candidate) -> f32 {
 }
 
 /// Someone present is hungry or thirsty, is kin, or is owed the villager's
-/// unkept promise. The addressee aims the gift (see [`addressee_of`]); the
-/// term fires on presence so need-directed aiming does not starve the
-/// frequency that carries trust and births.
+/// unkept promise. The addressee aims the gift (see [`addressee_of`]). The
+/// term depends on presence alone, so need-directed aiming does not reduce
+/// the frequency that carries trust and births.
 fn gift_lands(w: &World, a: &Agent, c: &Candidate, others: &[String]) -> bool {
     let Some(to) = addressee_of(w, a, c) else {
         return false;
     };
     // The addressee themself must be needy, kin, or owed (ticket #23: the
     // most-trusted fallback may name a sated stranger when the room is all
-    // fed - the veto follows the gift, not just the shortlist, or all-fed
-    // rooms re-concentrate). The owed promisee is exempt: keeping a word
-    // is not feeding the fed.
-    let to_owed = a.promise.as_ref().is_some_and(|pr| pr.kept.is_none() && pr.to == to);
+    // fed, so the gift is tested here too and not only in the shortlist, or
+    // all-fed rooms re-concentrate). The owed promisee is exempt: keeping a
+    // word is not feeding the fed.
+    let to_owed = a
+        .promise
+        .as_ref()
+        .is_some_and(|pr| pr.kept.is_none() && pr.to == to);
     let to_needy = w.agent(&to).is_some_and(|x| x.food < SATIETY_MEASURES)
         || a.relation_with(&to).is_some_and(|r| {
             matches!(
@@ -348,7 +351,9 @@ fn gift_lands(w: &World, a: &Agent, c: &Candidate, others: &[String]) -> bool {
         })
         || to_owed;
     others.iter().any(|o| {
-        a.promise.as_ref().is_some_and(|pr| pr.kept.is_none() && pr.to == *o)
+        a.promise
+            .as_ref()
+            .is_some_and(|pr| pr.kept.is_none() && pr.to == *o)
             || a.relation_with(o).is_some_and(|r| {
                 matches!(
                     r.kinship,
@@ -359,8 +364,8 @@ fn gift_lands(w: &World, a: &Agent, c: &Candidate, others: &[String]) -> bool {
     }) && to_needy
 }
 
-/// A grudge of 1.5 or more against someone present pulls toward the
-/// accusation, and colours the other acts aimed at them.
+/// A grudge of 1.5 or more against someone present raises the accusation, and
+/// raises the other acts aimed at that villager.
 fn term_grudge_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
     let grudged = w
         .present(a.place, &a.name)
@@ -382,7 +387,7 @@ fn term_grudge_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
     }
 }
 
-/// Kin present pull the caring acts toward them.
+/// Kin present raises the caring acts aimed at them.
 fn term_kinship_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
     let kin = w
         .present(a.place, &a.name)
@@ -416,10 +421,9 @@ fn term_role_duty(_w: &World, a: &Agent, c: &Candidate) -> f32 {
     }
 }
 
-/// The place is broken, empty or unowned, and the candidate works on it. The
-/// empty-ground pull is appetite's business: a hungry villager strips the
-/// patch, a fed one walks to their trade instead - or every foraging spot
-/// becomes a camp.
+/// The place is broken, empty or unowned, and the candidate works on it. This
+/// score follows appetite: a hungry villager strips the patch, a fed one walks
+/// to their trade instead, or every foraging spot becomes a camp.
 fn term_place_need(w: &World, a: &Agent, c: &Candidate) -> f32 {
     let st = w.place_state(a.place);
     let broken = st.condition < 5 || (a.place == Place::Hut && !st.hearth_lit);
@@ -447,7 +451,7 @@ fn term_place_need(w: &World, a: &Agent, c: &Candidate) -> f32 {
     v.min(1.0)
 }
 
-/// The most-trusted villager present pulls the addressed acts.
+/// The most-trusted villager present raises the addressed acts.
 fn term_trust_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
     let Some(most) = most_trusted_present(w, a) else {
         return 0.0;
@@ -461,11 +465,11 @@ fn term_trust_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
     }
 }
 
-/// The action fits the villager's state: their mood, and their appetite
-/// below the survival threshold - a villager who is hungry and empty-handed
-/// is already leaning toward food, even before the tier takes over. A move
-/// only fits an appetite when its destination can answer it: a hungry
-/// villager walks toward grain, a thirsty one toward the well.
+/// The action fits the villager's state: their mood, and their appetite below
+/// the survival threshold. A villager who is hungry and empty-handed already
+/// leans toward food, even before the tier takes over. A move fits an appetite
+/// only when its destination can answer it: a hungry villager walks toward
+/// grain, a thirsty one toward the well.
 fn term_mood_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
     let hungry = a.hunger >= 1 && a.food == 0;
     let thirsty = a.thirst >= 1 && a.water == 0;
@@ -484,9 +488,7 @@ fn term_mood_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
                 matches!(c.verb, Verb::Take | Verb::Forage | Verb::Steal)
                     || (c.verb == Verb::Move && move_seeks_food(w, a, c))
             },
-            Mood::Weary => {
-                c.verb == Verb::Rest || (c.verb == Verb::Move && move_seeks_hut(a, c))
-            },
+            Mood::Weary => c.verb == Verb::Rest || (c.verb == Verb::Move && move_seeks_hut(a, c)),
             Mood::Bitter => {
                 matches!(c.verb, Verb::Accuse)
                     || (c.verb == Verb::Speak && c.act == SocialAct::Threat)
@@ -504,35 +506,34 @@ fn term_mood_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
     f32::from(fits)
 }
 
-/// The home-fire nudge (ticket #24): a deeply lapsed prayer scores flat at
-/// the need level, rest at the hut scores with tiredness, and approach
-/// moves toward either score a fixed step when the matching need is live.
-/// Devotion fades 0.05 a turn and only prayer restores it, so the shrine
-/// calls in ordinary states - not just grief. The weight (2.2, beside
-/// `social_need`) makes prayer competitive; the walk scores below need,
-/// so the feet steer without hijacking the day.
+/// Prayer, rest and the walk home (ticket #24): a deeply lapsed prayer scores
+/// flat at the need level, rest at the hut scores with tiredness, and a move
+/// toward either scores a fixed step when the matching need is live. Devotion
+/// fades 0.05 a turn and only prayer restores it, so the shrine is chosen in
+/// ordinary states, not only in grief. The weight (2.2, beside `social_need`)
+/// makes prayer competitive; a move scores below need, so the walk never
+/// outranks a live need.
 fn term_shelter_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
-    // The feet only move the sated and stocked (ticket #24's seed-42
-    // lessons): Ada deferred drawing water for a shrine-approach, and Bo
-    // left the hut for the shrine on empty pockets - each seeded a woods
-    // social cascade. A villager with any hunger or thirst, or empty
-    // pockets, keeps their feet on needs. The acts carry no appetite gate:
-    // real urgency is already handled below this term - the desperate get
-    // a restricted menu without prayer, and the survival tier excludes
-    // faith.
+    // Moves serve only the sated villager who carries food and water (ticket
+    // #24's seed-42 lessons): Ada deferred drawing water for a shrine move,
+    // and Bo left the hut for the shrine on empty pockets, and each seeded a
+    // woods social cascade. A villager with any hunger or thirst, or empty
+    // pockets, keeps to needs. The acts carry no appetite gate: the tiers
+    // handle real urgency above this term, where the desperate get a
+    // restricted menu without prayer and the survival tier excludes faith.
     if c.verb == Verb::Move && (a.hunger >= 1 || a.thirst >= 1 || a.food == 0 || a.water == 0) {
         return 0.0;
     }
     if c.verb == Verb::Pray {
         // Below 0.5 the villager owes the shrine a visit: the flat 2.0 at
         // weight 2.2 (4.4 points) beats company and, on raw points, a
-        // stocked order too - which is why orders take menu priority above:
+        // stocked order too. That is why orders take menu priority above:
         // prayer fills the Work slot only when no order waits, so the two
         // never compete on the menu. Prayer restores 0.3 a visit, so the
-        // pull spends itself and the loop-breaker keeps the shrine social.
-        // Above 0.5 no pull: the threshold keeps early-game feet on needs
-        // (seed 99 tips when a turn-21 prayer delays a woods round; at 0.05
-        // decay nobody lapses that early).
+        // score drops back after a visit and the loop-breaker keeps the
+        // shrine social. Above 0.5 no score: the threshold keeps early-game
+        // moves on needs (seed 99 tips when a turn-21 prayer delays a woods
+        // round; at 0.05 decay nobody lapses that early).
         if a.devotion < 0.5 {
             return 2.0;
         }
@@ -542,11 +543,11 @@ fn term_shelter_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
         return f32::from(a.energy <= 5);
     }
     if c.verb == Verb::Move {
-        // Home territory only (ticket #24's seed-42 lesson): approach moves
-        // through the woods harvest corridor trap shrine-seekers - easy to
-        // enter, hard to leave when foraging outscores the walk. Seeking
-        // flows within market/well/hut/shrine; granary/field/woods are work
-        // territory, and the granary gate holds the feet when stores run low.
+        // Home territory only (ticket #24's seed-42 lesson): a move through
+        // the woods harvest corridor traps shrine-seekers, since it is easy
+        // to enter and hard to leave when foraging outscores the walk. Moves
+        // stay within market/well/hut/shrine; granary/field/woods are work
+        // territory, and the granary gate holds moves when stores run low.
         let home = matches!(
             a.place,
             Place::Market | Place::Well | Place::Hut | Place::Shrine
@@ -561,9 +562,9 @@ fn term_shelter_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
     }
     0.0
 }
-/// The move's destination holds food, can be foraged, or is nearer than
-/// here to the granary while the granary holds food: hunger walks downhill
-/// toward grain even when the next step itself is bare.
+/// The move's destination holds food, can be foraged, or is nearer than here
+/// to the granary while the granary holds food: a hungry villager moves toward
+/// grain even when the next place itself is bare.
 fn move_seeks_food(w: &World, a: &Agent, c: &Candidate) -> bool {
     let Some(dest) = c.place else {
         return false;
@@ -575,8 +576,8 @@ fn move_seeks_food(w: &World, a: &Agent, c: &Candidate) -> bool {
         && dest.ring_distance(Place::Granary) < a.place.ring_distance(Place::Granary)
 }
 
-/// The move's destination is the well with water to draw, or nearer than
-/// here to it: thirst walks downhill toward water.
+/// The move's destination is the well with water to draw, or nearer than here
+/// to it: a thirsty villager moves toward water.
 fn move_seeks_water(w: &World, a: &Agent, c: &Candidate) -> bool {
     let Some(dest) = c.place else {
         return false;
@@ -585,9 +586,9 @@ fn move_seeks_water(w: &World, a: &Agent, c: &Candidate) -> bool {
         || dest.ring_distance(Place::Well) < a.place.ring_distance(Place::Well)
 }
 
-/// The move's destination is nearer than here to the shrine: grief walks
-/// downhill toward the moss (ticket #24: nothing pulled villagers to the
-/// shrine, so pray went unexercised for 300 turns).
+/// The move's destination is nearer than here to the shrine (ticket #24:
+/// nothing moved villagers to the shrine, so pray went unexercised for 300
+/// turns).
 const fn move_seeks_shrine(a: &Agent, c: &Candidate) -> bool {
     let Some(dest) = c.place else {
         return false;
@@ -595,9 +596,8 @@ const fn move_seeks_shrine(a: &Agent, c: &Candidate) -> bool {
     dest.ring_distance(Place::Shrine) < a.place.ring_distance(Place::Shrine)
 }
 
-/// The move's destination is nearer than here to the hut: weariness walks
-/// downhill toward rest (ticket #24: rest is hut-optimal but nobody walked
-/// there for it).
+/// The move's destination is nearer than here to the hut (ticket #24: rest is
+/// best at the hut but nobody moved there for it).
 const fn move_seeks_hut(a: &Agent, c: &Candidate) -> bool {
     let Some(dest) = c.place else {
         return false;
@@ -643,12 +643,12 @@ fn term_ownership(w: &World, a: &Agent, c: &Candidate) -> f32 {
 /// The villager a candidate's act addresses, bound by the act.
 ///
 /// The accused for an accusation, the beneficiary for a promise, otherwise
-/// the most-trusted present villager below satiety, need breaking trust
-/// ties before the name does (ticket #23: pure trust routing concentrates
-/// food in one villager; need-first routing instead starves the gift
-/// frequency the trust terms score, and seed 2026 collapses). A villager
-/// holding [`SATIETY_MEASURES`] or more measures is never a give/help
-/// addressee, however trusted - the veto is what de-concentrates.
+/// the most-trusted present villager below satiety. Need breaks trust ties
+/// before the name does (ticket #23: pure trust routing concentrates food in
+/// one villager; need-first routing then starves the gift frequency the trust
+/// terms score, and seed 2026 collapses). A villager holding
+/// [`SATIETY_MEASURES`] or more measures is never a give/help addressee,
+/// however trusted: that cap is what de-concentrates the stores.
 ///
 /// `None` when nobody is present or the act addresses nobody.
 #[must_use]
@@ -690,16 +690,20 @@ pub fn addressee_of(w: &World, a: &Agent, c: &Candidate) -> Option<String> {
 /// villager at 89 measures against a 1-measure median).
 pub const SATIETY_MEASURES: u32 = 4;
 
-/// The most-trusted present villager below satiety, need breaking trust
-/// ties before the name does - except the owed promisee, who jumps the
-/// queue (ticket #22: a keeping gift must be able to reach its promisee, or
+/// The most-trusted present villager below satiety, with need breaking trust
+/// ties before the name does, except the owed promisee, who comes first
+/// (ticket #22: a keeping gift must be able to reach its promisee, or
 /// `serves_obligation` never admits it and no promise is ever kept). Trust
-/// orders so the gift keeps carrying the terms that score it; need outranks
-/// the name so the hungry eat before the merely early-alphabetical. The owed
-/// promisee is exempt from the satiety filter: a gift that keeps a promise
-/// is keeping a word, not feeding the fed.
+/// orders first so the gift keeps carrying the terms that score it; need
+/// outranks the name so the hungry eat before the merely early-alphabetical.
+/// The owed promisee skips the satiety filter: a gift that keeps a promise is
+/// keeping a word, not feeding the fed.
 fn fed_among_trusted(w: &World, a: &Agent, others: &[String]) -> Option<String> {
-    let owed = a.promise.as_ref().filter(|pr| pr.kept.is_none()).map(|pr| pr.to.clone());
+    let owed = a
+        .promise
+        .as_ref()
+        .filter(|pr| pr.kept.is_none())
+        .map(|pr| pr.to.clone());
     others
         .iter()
         .filter(|n| {
@@ -732,7 +736,10 @@ fn need_score(w: &World, a: &Agent, name: &str) -> f32 {
     if x.thirst >= 1 {
         return 2.0 - f32::from(x.thirst);
     }
-    if a.promise.as_ref().is_some_and(|pr| pr.kept.is_none() && pr.to == name) {
+    if a.promise
+        .as_ref()
+        .is_some_and(|pr| pr.kept.is_none() && pr.to == name)
+    {
         return 3.0;
     }
     if a.relation_with(name).is_some_and(|r| {
@@ -814,7 +821,7 @@ fn serves_survival(w: &World, a: &Agent, c: &Candidate) -> bool {
             c.verb == Verb::Move
                 && ((a.hunger >= SURVIVAL_HUNGER && a.food == 0 && move_seeks_food(w, a, c))
                     || (a.thirst >= SURVIVAL_THIRST && a.water == 0 && move_seeks_water(w, a, c)))
-        }
+        },
     }
 }
 
@@ -837,11 +844,11 @@ fn serves_obligation(w: &World, a: &Agent, c: &Candidate) -> bool {
 
 // ---- Motive derivation ----------------------------------------------------
 
-/// The motive derived from the action and the world (never asked).
+/// The motive derived from the action and the world, never asked.
 ///
 /// The precedence follows the goal ladder: hunger, thirst, promise, fear,
-/// kinship, duty. A move toward food or water carries the matching motive:
-/// the feet are already doing hunger's work.
+/// kinship, duty. A move toward food or water carries the matching motive,
+/// because that move already serves hunger or thirst.
 #[must_use]
 pub fn derive_motive(w: &World, a: &Agent, d: &Decision) -> Motive {
     let meta = catalog::meta_for(&d.action);
@@ -911,9 +918,9 @@ fn distribution(scores: &[(String, f32)]) -> Vec<(String, f32)> {
     exps.into_iter().map(|(k, e)| (k, e / sum)).collect()
 }
 
-/// Decide without applying or settling. This is the harness's entry point and
-/// the seam the turn function uses. `None` when there is no such living
-/// villager or the world has halted.
+/// Decide without applying or settling. The turn function and the parity
+/// check both enter here. `None` when there is no such living villager or
+/// the world has halted.
 #[must_use]
 #[allow(
     clippy::too_many_lines,
@@ -969,10 +976,10 @@ pub fn decide(w: &World, name: &str) -> Option<Decision> {
     }
 
     // Tiered precedence. Tier 0 beats tier 1 beats tier 2. When nothing on
-    // the menu serves survival directly, a hungry villager still walks
+    // the menu serves survival directly, a hungry villager still moves
     // toward food rather than falling back to the full menu and their trade:
-    // the fallback admits need-seeking moves, so hunger steers the feet even
-    // when the shelf is a turn away.
+    // the fallback admits need-seeking moves, so hunger moves the villager
+    // even when the shelf is a turn away.
     let survival = is_survival(w, a);
     let obligation = obligation_against(w, a);
     let tiered: Option<Vec<Candidate>> = if survival {
@@ -1082,8 +1089,8 @@ pub fn decide(w: &World, name: &str) -> Option<Decision> {
         .unwrap_or_default();
     chosen.place = crate::action::Intent::parse(&chosen.action, a.place).and_then(|i| i.place);
 
-    // The addressee is bound by the act: give, help, heal and console work on
-    // a person; the other acts address one when their act is social.
+    // The act binds the addressee. Give, help, heal and console work on a
+    // person; the other acts address one when their act is social.
     let personward = matches!(
         chosen.verb,
         Verb::Give | Verb::Help | Verb::Console | Verb::Heal
@@ -1099,7 +1106,10 @@ pub fn decide(w: &World, name: &str) -> Option<Decision> {
     // outscored runners-up. Bounded at three for the record.
     let mut rejected: Vec<Rejected> = Vec::with_capacity(3);
     if hard {
-        for c in pool.iter().filter(|c| !scope.iter().any(|s| s.key() == c.key())) {
+        for c in pool
+            .iter()
+            .filter(|c| !scope.iter().any(|s| s.key() == c.key()))
+        {
             if rejected.len() >= 3 {
                 break;
             }
@@ -1358,7 +1368,10 @@ mod tests {
         cor.hunger = 2;
         w.agents.push(cor);
         let a = w.agent("Ada").unwrap();
-        assert_eq!(addressee_of(&w, a, &giver("give", Verb::Give)).as_deref(), Some("Cor"));
+        assert_eq!(
+            addressee_of(&w, a, &giver("give", Verb::Give)).as_deref(),
+            Some("Cor")
+        );
     }
 
     #[test]
@@ -1377,7 +1390,10 @@ mod tests {
         w.agents.push(cor);
         w.agents.push(villager("Bo", Place::Hut));
         let a = w.agent("Ada").unwrap();
-        assert_eq!(addressee_of(&w, a, &giver("give", Verb::Give)).as_deref(), Some("Bo"));
+        assert_eq!(
+            addressee_of(&w, a, &giver("give", Verb::Give)).as_deref(),
+            Some("Bo")
+        );
     }
 
     #[test]
@@ -1395,7 +1411,9 @@ mod tests {
             "the winner is never its own runner-up"
         );
         assert!(
-            d.rejected.iter().all(|r| matches!(r.reason.as_str(), "tier" | "outscored")),
+            d.rejected
+                .iter()
+                .all(|r| matches!(r.reason.as_str(), "tier" | "outscored")),
             "every reject names its cause: {:?}",
             d.rejected
         );
