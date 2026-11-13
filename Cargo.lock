@@ -3665,6 +3665,7 @@ dependencies = [
 name = "society-bench"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
  "society-server",
  "society-sim",

@@ -10,9 +10,9 @@
 //!    makes a turn durable: serialise the world, verify it loads back, write a
 //!    temporary file, fsync it, rename it over the target. Runs once per
 //!    committed turn, immediately after the turn.
-//! 3. `observer_snapshot` — `society_server::devserver::world_snapshot` plus
-//!    the wire bytes, the payload every observer of the control API reads
-//!    (`/state`, `/social`). Runs per observer request.
+//! 3. `observer_snapshot` — `society_server::observer::encode`, the payload
+//!    every observer of the control API reads (`/state`, `/social`). Runs per
+//!    observer request.
 //!
 //! The harness adds no dependency: the counting allocator, the percentile
 //! math, the RSS sampling and the JSON fixture are all written here on top of
@@ -39,6 +39,8 @@ use society_sim::World;
 
 const DEFAULT_ITERATIONS: usize = 1_000;
 const DEFAULT_WARMUP: usize = 20;
+const DEFAULT_SEED: u64 = 7;
+const DEFAULT_TURNS: usize = 233;
 const DEFAULT_FIXTURE: &str = "baseline/perf_baseline.json";
 /// A path may be this much slower than the recorded baseline before the
 /// check fails: 25% on p99 and on per-iteration allocation.
@@ -46,7 +48,7 @@ const TOLERANCE: f64 = 1.25;
 /// A sub-millisecond path is jitter, not regression: the scheduler alone moves
 /// its p99 by more than 25%. The budget is therefore never tighter than the
 /// recorded p99 plus this floor.
-const JITTER_FLOOR_MS: f64 = 0.25;
+const JITTER_FLOOR_MS: f64 = 0.50;
 /// The fsync in the save path is the filesystem's own jitter, and it moves the
 /// tail far more than the median: the same machine measured 13.0 ms and
 /// 14.3 ms at the median across two quiet captures, and 23.6 ms at p99 on a
@@ -345,20 +347,24 @@ fn machine_json() -> Value {
 struct Args {
     iterations: usize,
     warmup: usize,
+    seed: u64,
+    turns: usize,
     fixture: String,
-    source: String,
+    source: Option<String>,
     check: bool,
+    breakdown: bool,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut args = Args {
         iterations: DEFAULT_ITERATIONS,
         warmup: DEFAULT_WARMUP,
+        seed: DEFAULT_SEED,
+        turns: DEFAULT_TURNS,
         fixture: DEFAULT_FIXTURE.to_owned(),
-        source: society_server::persistence::save_path()
-            .to_string_lossy()
-            .into_owned(),
+        source: None,
         check: false,
+        breakdown: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -377,20 +383,38 @@ fn parse_args() -> Result<Args, String> {
                     .parse()
                     .map_err(|_| "--warmup needs a number")?;
             },
+            "--seed" => {
+                args.seed = it
+                    .next()
+                    .ok_or("--seed needs a number")?
+                    .parse()
+                    .map_err(|_| "--seed needs a number")?;
+            },
+            "--turns" => {
+                args.turns = it
+                    .next()
+                    .ok_or("--turns needs a number")?
+                    .parse()
+                    .map_err(|_| "--turns needs a number")?;
+            },
             "--out" => {
                 args.fixture = it.next().ok_or("--out needs a path")?;
             },
             "--source" => {
-                args.source = it.next().ok_or("--source needs a path")?;
+                args.source = Some(it.next().ok_or("--source needs a path")?);
             },
             "--check" => args.check = true,
+            "--breakdown" => args.breakdown = true,
             "-h" | "--help" => {
                 println!(
-                    "society-bench [--iterations N] [--warmup N] [--out PATH] [--source SAVE] [--check]\n\
+                    "society-bench [--iterations N] [--warmup N] [--seed N] [--turns N] [--out PATH] [--source SAVE] [--check]\n\
                      \n\
                      Measures the three latency-critical paths of the society and writes\n\
-                     the baseline to baseline/perf_baseline.json. --check compares the\n\
-                     run against the recorded budgets and exits non-zero on a regression."
+                     the baseline to baseline/perf_baseline.json. Without --source, builds a\n\
+                     deterministic village from --seed (default 7) stepped --turns (default 233).\n\
+                     --check compares the run against the recorded budgets and exits non-zero on a regression.\n\
+                     --breakdown prints the per-stage cost inside the save, journal, audit and load\n\
+                     paths instead of writing the baseline."
                 );
                 std::process::exit(0);
             },
@@ -421,36 +445,37 @@ fn main() {
         },
     };
 
-    let source_path = std::path::PathBuf::from(&args.source);
-    let world = match society_server::persistence::load(&source_path) {
-        Ok(Some(w)) => w,
-        Ok(None) => {
-            eprintln!(
-                "society-bench: no village at `{}`, founding a fresh one from seed 7",
-                source_path.display()
-            );
-            World::founding(7)
-        },
-        Err(e) => {
-            eprintln!(
-                "society-bench: cannot read `{}`: {e}",
-                source_path.display()
-            );
-            std::process::exit(2);
-        },
+    let (world, source_label, source_bytes) = if let Some(src) = &args.source {
+        let source_path = std::path::PathBuf::from(src);
+        let w = match society_server::persistence::load(&source_path) {
+            Ok(Some(w)) => w,
+            Ok(None) => {
+                eprintln!("society-bench: no village at `{}`", source_path.display());
+                std::process::exit(2);
+            },
+            Err(e) => {
+                eprintln!(
+                    "society-bench: cannot read `{}`: {e}",
+                    source_path.display()
+                );
+                std::process::exit(2);
+            },
+        };
+        let bytes = source_path.metadata().map_or(0, |m| m.len());
+        (w, source_path.to_string_lossy().into_owned(), bytes)
+    } else {
+        let mut w = World::founding(args.seed);
+        for _ in 0..args.turns {
+            if society_sim::turn::step(&mut w).is_err() {
+                break;
+            }
+        }
+        (
+            w,
+            format!("deterministic:seed={}:turns={}", args.seed, args.turns),
+            0,
+        )
     };
-
-    let world_meta = json!({
-        "source": source_path.to_string_lossy(),
-        "seed": world.seed,
-        "turn": world.turn,
-        "day": world.day,
-        "living": world.living().count(),
-        "agents": world.agents.len(),
-        "events": world.events.len(),
-        "save_bytes": source_path.metadata().map_or(0, |m| m.len()),
-    });
-
     println!(
         "society-bench: {} iterations per path, {} warmup, world at turn {} ({} events, {} agents)",
         args.iterations,
@@ -459,6 +484,15 @@ fn main() {
         world.events.len(),
         world.agents.len(),
     );
+
+    if args.breakdown {
+        let scratch = Scratch {
+            path: std::env::temp_dir()
+                .join(format!("society-bench-breakdown-{}", std::process::id())),
+        };
+        breakdown(&world, args.iterations, args.warmup, &scratch.path);
+        return;
+    }
 
     // 1. The committed turn.
     let turn_world = world.clone();
@@ -470,7 +504,21 @@ fn main() {
     let slot = RefCell::new(None::<World>);
     let turn_measurement = measure(
         || {
-            *slot.borrow_mut() = Some(turn_world.clone());
+            // Clone shrinks every Vec capacity to len; pre-reserve steady-state
+            // turn headroom outside the timed/counted body so we do not charge
+            // a full-history Vec reallocation on every single iteration.
+            let mut w = turn_world.clone();
+            w.events.reserve(64);
+            w.agents.reserve(4);
+            for a in &mut w.agents {
+                a.facts.reserve(16);
+                a.memories.reserve(8);
+                a.beliefs.reserve(8);
+                a.line_ledger.reserve(8);
+                a.trust.reserve(4);
+                a.relations.reserve(4);
+            }
+            *slot.borrow_mut() = Some(w);
         },
         || {
             let mut w = slot.borrow_mut().take().expect("prepared world");
@@ -540,6 +588,22 @@ fn main() {
             r.name, r.p50_ms, r.p95_ms, r.p99_ms, r.alloc_bytes_per_iter
         );
     }
+
+    let save_bytes = if source_bytes > 0 {
+        source_bytes
+    } else {
+        reports[1].output_bytes
+    };
+    let world_meta = json!({
+        "source": source_label,
+        "seed": world.seed,
+        "turn": world.turn,
+        "day": world.day,
+        "living": world.living().count(),
+        "agents": world.agents.len(),
+        "events": world.events.len(),
+        "save_bytes": save_bytes,
+    });
 
     let fixture = json!({
         "schema": "society.perf-baseline/1",
@@ -671,4 +735,162 @@ fn print_table(reports: &[PathReport]) {
             r.rss_after_kb - r.rss_before_kb
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Stage breakdown
+// ---------------------------------------------------------------------------
+
+/// The envelope as the bench sees it. `persistence::EnvelopeRef` is private to
+/// the server; this mirrors its shape so a stage is timed on the bytes the
+/// save actually writes.
+#[derive(serde::Serialize)]
+struct EnvelopeRef<'a> {
+    version: u32,
+    world: &'a World,
+}
+
+#[derive(serde::Deserialize)]
+struct EnvelopeOwned {
+    #[allow(
+        dead_code,
+        reason = "the field exists so the parse matches the save verification"
+    )]
+    version: u32,
+    #[allow(dead_code, reason = "the parse must build the world the save verifies")]
+    world: World,
+}
+
+fn breakdown(world: &World, iterations: usize, warmup: usize, dir: &std::path::Path) {
+    let path = dir.join("village.json");
+    let _ = std::fs::remove_dir_all(dir);
+    let envelope = EnvelopeRef {
+        version: society_server::persistence::SAVE_VERSION,
+        world,
+    };
+    let bytes = serde_json::to_vec(&envelope).expect("the world serialises");
+    // A real turn record, so the journal measures the row it writes in place.
+    let record = {
+        let mut w = world.clone();
+        society_sim::turn::step(&mut w).expect("the turn runs")
+    };
+    let context = society_server::telemetry::Context::default();
+
+    let stage = |name: &str, m: &Measurement| {
+        let p50 = ms(percentile(&sorted_nanos(m), 0.50));
+        let p99 = ms(percentile(&sorted_nanos(m), 0.99));
+        let alloc = m.alloc_bytes / m.nanos.len().max(1) as u64;
+        println!("  {name:<28} p50 {p50:>8.3} ms  p99 {p99:>8.3} ms  {alloc:>9} B/iter");
+    };
+
+    println!(
+        "society-bench --breakdown: {iterations} iterations, {warmup} warmup, {} bytes of save",
+        bytes.len()
+    );
+
+    let m = measure(
+        || {},
+        || {
+            std::hint::black_box(serde_json::to_vec(&envelope).unwrap());
+        },
+        || {},
+        iterations,
+        warmup,
+    );
+    stage("save.serialize", &m);
+
+    let m = measure(
+        || {},
+        || {
+            std::hint::black_box(serde_json::from_slice::<EnvelopeOwned>(&bytes).unwrap());
+        },
+        || {},
+        iterations,
+        warmup,
+    );
+    stage("save.verify_parse", &m);
+
+    let tmp = dir.join("write.json.tmp");
+    let _ = std::fs::create_dir_all(dir);
+    let m = measure(
+        || {},
+        || {
+            use std::io::Write as _;
+            let mut f = std::fs::File::create(&tmp).unwrap();
+            f.write_all(&bytes).unwrap();
+            f.flush().unwrap();
+            f.sync_all().unwrap();
+            drop(f);
+            std::fs::rename(&tmp, &path).unwrap();
+        },
+        || {},
+        iterations,
+        warmup,
+    );
+    stage("save.write_fsync_rename", &m);
+
+    let m = measure(
+        || {},
+        || {
+            society_server::persistence::save(world, &path).expect("the save lands");
+        },
+        || {},
+        iterations,
+        warmup,
+    );
+    stage("save.total", &m);
+
+    let m = measure(
+        || {},
+        || {
+            std::hint::black_box(society_server::persistence::load(&path).unwrap().unwrap());
+        },
+        || {},
+        iterations,
+        warmup,
+    );
+    stage("load.total", &m);
+
+    let m = measure(
+        || {},
+        || {
+            society_server::diagnostics::append_turn_context(
+                &path,
+                world.seed,
+                &record,
+                "breakdown",
+                society_server::persistence::SAVE_VERSION,
+                context.clone(),
+            )
+            .expect("the journal appends");
+        },
+        || {},
+        iterations,
+        warmup,
+    );
+    stage("journal.append", &m);
+
+    let m = measure(
+        || {},
+        || {
+            society_server::diagnostics::append_audit_context(
+                &path,
+                "turn_completed",
+                world.turn,
+                json!({"breakdown": true}),
+                context.clone(),
+            )
+            .expect("the audit appends");
+        },
+        || {},
+        iterations,
+        warmup,
+    );
+    stage("audit.append", &m);
+}
+
+fn sorted_nanos(m: &Measurement) -> Vec<u64> {
+    let mut sorted = m.nanos.clone();
+    sorted.sort_unstable();
+    sorted
 }

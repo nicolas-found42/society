@@ -41,6 +41,99 @@ struct EnvelopeRef<'a> {
     world: &'a World,
 }
 
+/// The version of a save on disk, read without building the document.
+///
+/// A save is a two-key envelope and the version decides whether the world is
+/// even readable, so the version is settled before the world is parsed: a file
+/// from another build fails on its version, not on whichever field that build
+/// renamed first. The world's own keys are skipped rather than materialised,
+/// which is where the load's cost used to go: `serde_json::Value` built a
+/// string-and-map copy of the whole village, and `World::deserialize` then
+/// walked that copy to build the village a second time.
+#[derive(Debug)]
+struct Header(Option<serde_json::Value>);
+
+impl<'de> Deserialize<'de> for Header {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(HeaderVisitor)
+    }
+}
+
+struct HeaderVisitor;
+
+impl<'de> serde::de::Visitor<'de> for HeaderVisitor {
+    type Value = Header;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a save envelope object")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Header, A::Error> {
+        let mut version = None;
+        while let Some(key) = map.next_key::<std::borrow::Cow<'_, str>>()? {
+            if key == "version" {
+                // Kept as a `Value` so a non-integer version reads as absent,
+                // which is the same answer the whole-document parse gave.
+                version = Some(map.next_value::<serde_json::Value>()?);
+            } else {
+                map.next_value::<serde::de::IgnoredAny>()?;
+            }
+        }
+        Ok(Header(version))
+    }
+
+    // A save that is not a JSON object carries no version. The document is
+    // still consumed so a truncated or malformed one fails as a parse error.
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Header, A::Error> {
+        while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+        Ok(Header(None))
+    }
+
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Header, E> {
+        Ok(Header(None))
+    }
+
+    fn visit_none<E: serde::de::Error>(self) -> Result<Header, E> {
+        Ok(Header(None))
+    }
+
+    fn visit_some<D: serde::Deserializer<'de>>(self, d: D) -> Result<Header, D::Error> {
+        d.deserialize_any(self)
+    }
+
+    fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Header, E> {
+        Ok(Header(None))
+    }
+
+    fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Header, E> {
+        Ok(Header(None))
+    }
+
+    fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Header, E> {
+        Ok(Header(None))
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Header, E> {
+        Ok(Header(None))
+    }
+
+    fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Header, E> {
+        Ok(Header(None))
+    }
+}
+
+/// A save read back into a world. The version was already settled by [`Header`],
+/// so only the world's presence matters here.
+#[derive(Deserialize)]
+struct WorldEnvelope {
+    #[allow(
+        dead_code,
+        reason = "the version is checked from the header, not the parse"
+    )]
+    version: u32,
+    world: Option<World>,
+}
+
 /// Lightweight metadata summary of a saved village on disk.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SaveSummary {
@@ -128,12 +221,11 @@ pub fn load(path: &Path) -> Result<Option<World>, SaveError> {
         },
     };
 
-    let value: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|e| SaveError::Corrupt {
-            path: path.to_path_buf(),
-            reason: e.to_string(),
-        })?;
-    let Some(version) = value.get("version").and_then(serde_json::Value::as_u64) else {
+    let header: Header = serde_json::from_slice(&bytes).map_err(|e| SaveError::Corrupt {
+        path: path.to_path_buf(),
+        reason: e.to_string(),
+    })?;
+    let Some(version) = header.0.as_ref().and_then(serde_json::Value::as_u64) else {
         return Err(SaveError::Corrupt {
             path: path.to_path_buf(),
             reason: "no format version".into(),
@@ -146,14 +238,18 @@ pub fn load(path: &Path) -> Result<Option<World>, SaveError> {
             expected: SAVE_VERSION,
         });
     }
-    let world = value.get("world").ok_or_else(|| SaveError::Corrupt {
-        path: path.to_path_buf(),
-        reason: "no world in save".into(),
-    })?;
-    let world = World::deserialize(world).map_err(|e| SaveError::Corrupt {
-        path: path.to_path_buf(),
-        reason: e.to_string(),
-    })?;
+    let envelope: WorldEnvelope =
+        serde_json::from_slice(&bytes).map_err(|e| SaveError::Corrupt {
+            path: path.to_path_buf(),
+            reason: e.to_string(),
+        })?;
+    let Some(mut world) = envelope.world else {
+        return Err(SaveError::Corrupt {
+            path: path.to_path_buf(),
+            reason: "no world in save".into(),
+        });
+    };
+    world.warm_caches();
     Ok(Some(world))
 }
 

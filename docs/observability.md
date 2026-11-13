@@ -81,7 +81,7 @@ Impact/likelihood/diagnostic value are qualitative, not measured probabilities.
 | P2 high / medium / high | Replay success implied more than retained evidence supports. Did the actual historical world replay? | Empty/incomplete evidence explicit; mixed village and >10000-turn replays rejected. Endpoint describes current founding-engine comparison, excluding interventions/civic systems. Does not prove past state equivalence. Passed for pure baseline and missing-turn divergence. |
 | Remaining P1 high / medium / high | Full disk failure can remove audit, journal and crash evidence together. | Local failure counters prove degradation while process lives; external archive/independent sink needed for durable diagnosis after total store loss. Deployment requirement, not silently provisioned. |
 | Remaining P2 medium / medium / high | Historical exact state, arbitrary observer payloads and desktop civic transitions cannot be replayed from turn records alone. | To close: design consent-aware input journal + periodic state checkpoints with total byte budget and replay all effects against historical source build. Requires domain/privacy design; not claimed complete here. |
-| Remaining P2 medium / medium / medium | Multiple processes can share a save path; World.events/scars/save size grow. | To close: enforce single writer and measure long-running save/read latency before any bounded event migration (event ranges and simulation history depend on indexes). Existing boot sessions, save timing, event counts and digest help detect growth; no migration in this pass. |
+| Remaining P2 medium / medium / medium | Multiple processes can share a save path; World.events/scars/save size grow. | Long-running turn-1077 latency is now measured (`baseline/PERF_BASELINE.md`): `engine_turn` stays 0.138–0.215 ms p50 and `observer_snapshot` 0.076–0.092 ms p50 after tail-bounded event scans and live-fact caching, while `durable_save` grows linearly with save bytes (19.8–22.3 ms p50 / ~15.2–15.7 MB allocs at ~6 MB). To close: enforce single writer and evaluate bounded event migration (event ranges and simulation history depend on indexes); no migration in this pass. |
 
 ## What changed and how to retrieve it
 
@@ -295,7 +295,8 @@ The inventory is complete for repository component boundaries, while runtime
 coverage remains limited as marked above. No claim of universally diagnosable
 failures or complete historical replay is made. Prioritize an independent archive
 with a documented retention/access policy if yesterday's evidence must survive
-loss of the local disk; measure realistic long-running save/history query costs;
+loss of the local disk; measure history query costs alongside the recorded
+turn-1077 `durable_save` / `engine_turn` / `observer_snapshot` baselines;
 then design privacy-aware checkpoints and replayable observer/civic inputs.
 Live provider timeout/TLS behavior, interactive UI/graphics failures, multi-writer
 races, filesystem hangs and machine power-loss durability remain untested. No

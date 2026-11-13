@@ -513,17 +513,7 @@ pub(crate) fn lie_rate(w: &World, a: &Agent, addressee: Option<&str>) -> f32 {
         }
     }
     // a threat was overheard this turn (fear): x1.5
-    #[allow(
-        clippy::suspicious_operation_groupings,
-        reason = "an event's actor against the villager's name is the intended join"
-    )]
-    let overheard = w.events.iter().any(|e| {
-        e.turn == w.turn
-            && e.place == a.place
-            && e.actor != a.name
-            && e.social.as_deref() == Some("threat")
-    });
-    if overheard {
+    if crate::policy::threatened_this_turn(w, a) {
         rate *= LIE_THREAT_MULT;
     }
     // an unkept promise older than the overdue threshold: x1.6
