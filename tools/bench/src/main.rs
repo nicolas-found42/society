@@ -991,6 +991,20 @@ fn breakdown(world: &World, iterations: usize, warmup: usize, dir: &std::path::P
     );
     stage("load.total", &m);
 
+    // Split the load: the typed pass that builds the village, against the
+    // header pass that settles the version first.
+    let m = measure(
+        || {},
+        || {
+            let envelope: EnvelopeOwned = serde_json::from_slice(&bytes).unwrap();
+            std::hint::black_box(envelope.world.turn);
+        },
+        || {},
+        iterations,
+        warmup,
+    );
+    stage("load.typed_pass", &m);
+
     let m = measure(
         || {},
         || {
