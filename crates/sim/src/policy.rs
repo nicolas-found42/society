@@ -299,6 +299,12 @@ fn term_promise_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
 /// stranger beside a hungry one is not generosity, and a camp that feeds
 /// itself has no reason to ever leave.
 fn term_social_need(w: &World, a: &Agent, c: &Candidate) -> f32 {
+    if !matches!(
+        c.action.as_str(),
+        "give" | "help" | "heal" | "console" | "speak"
+    ) {
+        return 0.0;
+    }
     let others: Vec<String> = w.present(a.place, &a.name);
     if others.is_empty() {
         return 0.0;
@@ -367,6 +373,9 @@ fn gift_lands(w: &World, a: &Agent, c: &Candidate, others: &[String]) -> bool {
 /// A grudge of 1.5 or more against someone present raises the accusation, and
 /// raises the other acts aimed at that villager.
 fn term_grudge_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
+    if !a.relations.iter().any(|r| r.grudge >= OBLIGATION_GRUDGE) {
+        return 0.0;
+    }
     let grudged = w
         .present(a.place, &a.name)
         .into_iter()
@@ -389,6 +398,20 @@ fn term_grudge_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
 
 /// Kin present raises the caring acts aimed at them.
 fn term_kinship_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
+    if !matches!(
+        c.action.as_str(),
+        "give" | "help" | "heal" | "console" | "speak"
+    ) {
+        return 0.0;
+    }
+    if !a.relations.iter().any(|r| {
+        matches!(
+            r.kinship,
+            Kinship::Partner | Kinship::Parent | Kinship::Child | Kinship::Sibling
+        )
+    }) {
+        return 0.0;
+    }
     let kin = w
         .present(a.place, &a.name)
         .into_iter()
@@ -453,12 +476,15 @@ fn term_place_need(w: &World, a: &Agent, c: &Candidate) -> f32 {
 
 /// The most-trusted villager present raises the addressed acts.
 fn term_trust_pull(w: &World, a: &Agent, c: &Candidate) -> f32 {
+    let social = catalog::meta_for(&c.action).category == Category::Social || c.verb == Verb::Speak;
+    if !social {
+        return 0.0;
+    }
     let Some(most) = most_trusted_present(w, a) else {
         return 0.0;
     };
     let addressed = addressee_of(w, a, c).is_some_and(|t| t == most);
-    let social = catalog::meta_for(&c.action).category == Category::Social || c.verb == Verb::Speak;
-    if addressed && social {
+    if addressed {
         a.trust_of(&most) / 4.0
     } else {
         0.0
@@ -607,13 +633,17 @@ const fn move_seeks_hut(a: &Agent, c: &Candidate) -> bool {
 
 /// Not taken in the last three turns (the novelty window).
 fn term_novelty(w: &World, a: &Agent, c: &Candidate) -> f32 {
+    let min_turn = w.turn.saturating_sub(NOVELTY_WINDOW);
     #[allow(
         clippy::suspicious_operation_groupings,
         reason = "an event's actor against the villager's name is the intended join"
     )]
-    let recent = w.events.iter().any(|e| {
-        e.action == c.action && e.actor == a.name && w.turn.saturating_sub(e.turn) <= NOVELTY_WINDOW
-    });
+    let recent = w
+        .events
+        .iter()
+        .rev()
+        .take_while(|e| e.turn >= min_turn)
+        .any(|e| e.actor == a.name && e.action == c.action);
     f32::from(!recent)
 }
 
@@ -891,17 +921,21 @@ pub fn derive_motive(w: &World, a: &Agent, d: &Decision) -> Motive {
 }
 
 /// A threat was overheard this turn: anyone at the speaker's place spoke one.
-fn threatened_this_turn(w: &World, a: &Agent) -> bool {
+pub(crate) fn threatened_this_turn(w: &World, a: &Agent) -> bool {
     #[allow(
         clippy::suspicious_operation_groupings,
         reason = "an event's actor against the villager's name is the intended join"
     )]
-    w.events.iter().any(|e| {
-        e.turn == w.turn
-            && e.place == a.place
-            && e.actor != a.name
-            && e.social.as_deref() == Some("threat")
-    })
+    w.events
+        .iter()
+        .rev()
+        .take_while(|e| e.turn >= w.turn)
+        .any(|e| {
+            e.turn == w.turn
+                && e.place == a.place
+                && e.actor != a.name
+                && e.social.as_deref() == Some("threat")
+        })
 }
 
 // ---- The distribution ------------------------------------------------------

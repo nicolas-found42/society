@@ -272,9 +272,11 @@ pub fn step(w: &mut World) -> Result<TurnRecord, String> {
 
     // Settle, then harvest the record.
     w.settle();
-    let births: Vec<BirthRecord> = w
+    let mut births: Vec<BirthRecord> = w
         .events
         .iter()
+        .rev()
+        .take_while(|e| e.turn >= turn)
         .filter(|e| e.turn == turn && e.kind == EventKind::Birth)
         .map(|e| BirthRecord {
             child: e.actor.clone(),
@@ -293,6 +295,7 @@ pub fn step(w: &mut World) -> Result<TurnRecord, String> {
             place: e.place.id().to_owned(),
         })
         .collect();
+    births.reverse();
 
     Ok(record_of(turn, day, agents, births))
 }

@@ -283,14 +283,16 @@ const CATEGORIES: [Category; 5] = [
 fn recent_actions<'w>(w: &'w World, name: &str) -> (HashSet<&'w str>, HashSet<&'w str>) {
     let mut in_three = HashSet::new();
     let mut in_two = HashSet::new();
-    for e in &w.events {
+    let min_turn = w.turn.saturating_sub(3);
+    for e in w.events.iter().rev() {
+        if e.turn < min_turn {
+            break;
+        }
         if e.actor != name {
             continue;
         }
         let age = w.turn.saturating_sub(e.turn);
-        if age <= 3 {
-            in_three.insert(e.action.as_str());
-        }
+        in_three.insert(e.action.as_str());
         if age <= 2 {
             in_two.insert(e.action.as_str());
         }

@@ -1,10 +1,10 @@
 {
   "schema": "society.perf-baseline/1",
-  "generated_at": "2026-10-21T08:43:49Z",
+  "generated_at": "2026-11-13T01:41:34Z",
   "iterations": 1000,
   "warmup": 20,
   "tolerance": 1.25,
-  "jitter_floor_ms": 0.25,
+  "jitter_floor_ms": 0.5,
   "p95_headroom": 2.0,
   "machine": {
     "cpu": "Apple M5 Pro",
@@ -14,17 +14,17 @@
     "kernel": "27.0.0",
     "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
     "profile": "release",
-    "git_commit": "c6e36e5"
+    "git_commit": "064b16e"
   },
   "world": {
-    "source": "data/society.json",
+    "source": "deterministic:seed=7:turns=233",
     "seed": 7,
     "turn": 233,
     "day": 19,
     "living": 12,
-    "agents": 12,
-    "events": 2837,
-    "save_bytes": 3712936
+    "agents": 15,
+    "events": 2681,
+    "save_bytes": 1133854
   },
   "paths": [
     {
@@ -33,25 +33,25 @@
       "runs_when": "once per committed turn",
       "iterations": 1000,
       "latency_ms": {
-        "p50": 0.2,
-        "p95": 0.222,
-        "p99": 0.238,
-        "min": 0.178,
-        "max": 0.319,
-        "mean": 0.202
+        "p50": 0.184,
+        "p95": 0.209,
+        "p99": 0.222,
+        "min": 0.167,
+        "max": 0.238,
+        "mean": 0.187
       },
       "memory": {
-        "alloc_bytes_per_iter": 534205,
-        "alloc_calls_per_iter": 4210,
+        "alloc_bytes_per_iter": 227467,
+        "alloc_calls_per_iter": 5377,
         "live_growth_bytes": 0,
-        "output_bytes": 9062,
-        "rss_before_kb": 45296,
-        "rss_after_kb": 51664,
-        "rss_peak_kb": 51664
+        "output_bytes": 9691,
+        "rss_before_kb": 11328,
+        "rss_after_kb": 13248,
+        "rss_peak_kb": 13248
       },
       "budget": {
-        "p99_ms": 0.488,
-        "alloc_bytes_per_iter": 667756
+        "p99_ms": 0.722,
+        "alloc_bytes_per_iter": 284333
       }
     },
     {
@@ -60,25 +60,25 @@
       "runs_when": "once per committed turn, right after it",
       "iterations": 1000,
       "latency_ms": {
-        "p50": 13.008,
-        "p95": 13.945,
-        "p99": 14.911,
-        "min": 12.263,
-        "max": 22.162,
-        "mean": 13.107
+        "p50": 8.004,
+        "p95": 9.066,
+        "p99": 9.994,
+        "min": 6.806,
+        "max": 16.81,
+        "mean": 8.067
       },
       "memory": {
-        "alloc_bytes_per_iter": 8724884,
-        "alloc_calls_per_iter": 48389,
+        "alloc_bytes_per_iter": 3456085,
+        "alloc_calls_per_iter": 17668,
         "live_growth_bytes": 0,
-        "output_bytes": 3756013,
-        "rss_before_kb": 51696,
-        "rss_after_kb": 55968,
-        "rss_peak_kb": 55968
+        "output_bytes": 1133854,
+        "rss_before_kb": 13280,
+        "rss_after_kb": 16432,
+        "rss_peak_kb": 16432
       },
       "budget": {
-        "p99_ms": 27.889,
-        "alloc_bytes_per_iter": 10906105
+        "p99_ms": 18.132,
+        "alloc_bytes_per_iter": 4320106
       }
     },
     {
@@ -87,25 +87,25 @@
       "runs_when": "per observer request (/state, /social)",
       "iterations": 1000,
       "latency_ms": {
-        "p50": 0.073,
-        "p95": 0.081,
-        "p99": 0.088,
-        "min": 0.067,
-        "max": 0.098,
-        "mean": 0.073
+        "p50": 0.085,
+        "p95": 0.101,
+        "p99": 0.107,
+        "min": 0.079,
+        "max": 0.117,
+        "mean": 0.087
       },
       "memory": {
-        "alloc_bytes_per_iter": 75360,
-        "alloc_calls_per_iter": 33,
+        "alloc_bytes_per_iter": 80186,
+        "alloc_calls_per_iter": 76,
         "live_growth_bytes": 0,
-        "output_bytes": 52412,
-        "rss_before_kb": 55968,
-        "rss_after_kb": 55984,
-        "rss_peak_kb": 55984
+        "output_bytes": 67728,
+        "rss_before_kb": 16448,
+        "rss_after_kb": 16496,
+        "rss_peak_kb": 16496
       },
       "budget": {
-        "p99_ms": 0.338,
-        "alloc_bytes_per_iter": 94200
+        "p99_ms": 0.607,
+        "alloc_bytes_per_iter": 100232
       }
     }
   ]

@@ -50,8 +50,9 @@ Manual **1 Turn** and **+5 Turns** pause automatic playback. At narrow window
 sizes, select villagers directly on the ring; the roster appears in wider windows.
 
 Turns run locally, without a remote call to rate-limit, retry or queue: the
-engine decides, speaks, checks, acts and settles in 0.2 ms, measured. Making
-that turn durable costs more than running it — 13 ms to write and fsync the
+engine decides, speaks, checks, acts and settles in ~0.2 ms, measured (even
+after 1,000+ turns). Making that turn durable costs more than running it —
+8 ms on the turn-233 baseline (22 ms at turn 1077) to write and fsync the
 village file and append the journal — so disk throughput can constrain fast
 forwarding; the numbers behind both are in `baseline/PERF_BASELINE.md`. The same
 seed and the same save produce the same turns, the same lines and the same
@@ -300,7 +301,7 @@ village: `/state` answers with what the settlement is now — every field of
 every villager except the claims they hold about the world. Those claims are
 the whole of what a villager has learned, they grow with every day the village
 lives, and one villager's claims are served by `/agent/{name}`. A poll of
-`/state` costs 0.073 ms and 75 KB of allocation for a 52 KB answer at turn
+`/state` costs ~0.09 ms and 80 KB of allocation for a 68 KB answer at turn
 233, measured. The numbers, and the threshold a later change is judged
 against, are in `baseline/PERF_BASELINE.md`. A villager's trust reads `3.2` on
 the wire, not `3.200000047683716`: the payload carries the world's own

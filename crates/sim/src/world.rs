@@ -702,6 +702,14 @@ pub struct Agent {
     /// an exact repeat inside its window (spec constants: six turns).
     #[serde(default)]
     pub line_ledger: Vec<(u64, String)>,
+    /// Transient index of live facts in `facts` so `record_fact` stays O(live)
+    /// instead of scanning all historical invalidated facts.
+    #[serde(skip)]
+    live_fact_indices: Vec<usize>,
+    #[serde(skip)]
+    cached_facts_len: Option<usize>,
+    #[serde(skip)]
+    cached_facts_tick: u64,
 }
 const fn default_energy() -> u8 {
     8
@@ -809,6 +817,9 @@ impl Agent {
             reflection_poignancy: 0.0,
             evicted_memories: 0,
             line_ledger: Vec::new(),
+            live_fact_indices: Vec::new(),
+            cached_facts_len: Some(0),
+            cached_facts_tick: 0,
         }
     }
 
@@ -886,6 +897,17 @@ impl Agent {
         }
     }
 
+    pub(crate) fn warm_fact_cache(&mut self, tick: u64) {
+        self.live_fact_indices.clear();
+        for (idx, f) in self.facts.iter().enumerate() {
+            if f.live(tick) {
+                self.live_fact_indices.push(idx);
+            }
+        }
+        self.cached_facts_len = Some(self.facts.len());
+        self.cached_facts_tick = tick;
+    }
+
     pub fn record_fact(
         &mut self,
         subject: impl Into<String>,
@@ -895,12 +917,22 @@ impl Agent {
     ) {
         let subject = subject.into();
         let text = text.into();
-        for f in &mut self.facts {
-            if f.subject == subject && f.live(tick) && f.text != text {
-                f.invalid_at = Some(tick);
-            }
+        if self.cached_facts_len != Some(self.facts.len()) || tick < self.cached_facts_tick {
+            self.warm_fact_cache(tick);
         }
-        let id = self.facts.len() as u64 + 1;
+        self.live_fact_indices.retain(|&idx| {
+            let f = &mut self.facts[idx];
+            if !f.live(tick) {
+                return false;
+            }
+            if f.subject == subject && f.text != text {
+                f.invalid_at = Some(tick);
+                return false;
+            }
+            true
+        });
+        let new_idx = self.facts.len();
+        let id = new_idx as u64 + 1;
         self.facts.push(Fact {
             id,
             subject,
@@ -910,6 +942,9 @@ impl Agent {
             expired_at: None,
             confidence,
         });
+        self.live_fact_indices.push(new_idx);
+        self.cached_facts_len = Some(self.facts.len());
+        self.cached_facts_tick = tick;
     }
 
     pub fn refresh_mood_and_goal(&mut self, season: Season) {
@@ -1601,14 +1636,20 @@ impl World {
                         // Co-location anywhere in the ten-turn window: both
                         // acted at the same place on the same turn. Actions
                         // imply presence, so the event record is the history.
-                        let reachable = (pr.made_turn..=turn).any(|t| {
-                            self.events.iter().any(|e| {
-                                e.turn == t
-                                    && e.actor == pr.to
-                                    && self.events.iter().any(|k| {
-                                        k.turn == t && k.actor == a.name && k.place == e.place
-                                    })
-                            })
+                        let start = self
+                            .events
+                            .iter()
+                            .rposition(|e| e.turn < pr.made_turn)
+                            .map_or(0, |i| i + 1);
+                        let window = &self.events[start..];
+                        let keeper = a.name.as_str();
+                        let reachable = window.iter().any(|e| {
+                            e.turn >= pr.made_turn
+                                && e.turn <= turn
+                                && e.actor == pr.to
+                                && window.iter().any(|k| {
+                                    k.turn == e.turn && k.actor == keeper && k.place == e.place
+                                })
                         });
                         (a.name.clone(), pr.to.clone(), reachable)
                     })
@@ -1827,6 +1868,14 @@ impl World {
             grounded: None,
             divine: false,
         });
+    }
+
+    /// Warm transient lookup caches after loading a serialized world.
+    pub fn warm_caches(&mut self) {
+        let tick = self.turn;
+        for a in &mut self.agents {
+            a.warm_fact_cache(tick);
+        }
     }
 }
 
@@ -2133,5 +2182,32 @@ mod tests {
             .expect("field present");
         let back: Agent = serde_json::from_value(value).unwrap();
         assert_eq!(back.explicit_goal, None);
+    }
+
+    #[test]
+    fn record_fact_cache_preserves_invalidation_across_reload_and_backwards_ticks() {
+        let mut a = villager();
+        a.record_fact("Bo", "Bo said: one", 1, 0.9);
+        a.record_fact("Cor", "Cor said: alpha", 2, 0.9);
+        a.record_fact("Bo", "Bo said: two", 3, 0.9);
+        assert_eq!(a.facts.len(), 3);
+        assert_eq!(a.facts[0].invalid_at, Some(3));
+        assert_eq!(a.facts[1].invalid_at, None);
+        assert_eq!(a.facts[2].invalid_at, None);
+
+        // Reload clears #[serde(skip)] cache; next write must still invalidate live match.
+        let json = serde_json::to_string(&a).unwrap();
+        let mut reloaded: Agent = serde_json::from_str(&json).unwrap();
+        reloaded.record_fact("Bo", "Bo said: three", 4, 0.9);
+        assert_eq!(reloaded.facts[2].invalid_at, Some(4));
+        assert_eq!(reloaded.facts[1].invalid_at, None);
+
+        // Identical text does not invalidate the prior live fact.
+        reloaded.record_fact("Bo", "Bo said: three", 5, 0.9);
+        assert_eq!(reloaded.facts[3].invalid_at, None);
+
+        // Backwards tick rebuilds cache so facts live at the earlier tick still invalidate.
+        reloaded.record_fact("Bo", "Bo said: zero", 2, 0.9);
+        assert_eq!(reloaded.facts[0].invalid_at, Some(2));
     }
 }
