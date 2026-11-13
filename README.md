@@ -361,8 +361,9 @@ the numbers; the corpus stays in the tree.
 cargo test --workspace
 ```
 
-218 tests, no network, no fixtures, no dev-dependencies. They pin the rules that are
-easy to get wrong and expensive to get wrong: affordances never offer an illegal
+218 tests run by default — 219 exist, one is an opt-in release probe — with no
+network, no fixtures and no dev-dependencies. They pin the rules that are easy to
+get wrong and expensive to get wrong: affordances never offer an illegal
 move, taking never drives a store negative, a starving villager cannot give away
 their last meal, memory caps never evict a scar, starvation kills on the third turn,
 a broken promise becomes permanent, the survival tier beats a villager's motive, no
