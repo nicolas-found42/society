@@ -121,12 +121,15 @@ whoever she next accuses move in the inspector.
 ![Two divine events arriving in the feed while the village is paused: a whisper to Ada and a gift of three measures beside Odo](docs/media/intervene.gif)
 
 Both land in the feed as `Divine` rows at the current turn, under `observer` as
-the actor. Villagers only remember an intervention if they were in the place it
-happened: **nobody is told.**
+the actor. Only the target learns anything: the whisper becomes a witnessed
+memory at 0.95 salience for Ada, and the gift changes Odo's stores. **Nobody is
+told**, so a villager who was standing beside them sees nothing unusual.
 
 **Feed someone the village failed.** `{"kind":"gift","target":"Odo","amount":3}`
 puts three measures beside them and clears their hunger. **Change the harvest.**
-`{"kind":"weather","amount":4}` turns the weather foul and the multiplier down.
+`{"kind":"weather","amount":0}` drops the multiplier to ×0.4 and the temperature
+5 °C (fog, or drought in summer); `amount: 4` raises it to ×1.8 on a warm 19 °C
+day. The amount is the weather's strength, 0 to 5.
 
 **Run two villages at once**, side by side, each with its own file and port:
 
@@ -135,13 +138,18 @@ SOCIETY_SAVE_PATH=data/second.json cargo run -p society --release -- --port 8101
 ```
 
 **Read one turn the way the code saw it.** Advance three turns, then look at the
-last row: the action that was chosen, the runners-up that were rejected and why,
-the line, and its grounded claims.
+last row: the action that was chosen, the motive behind it, the runners-up that
+were rejected and why, the line, and whether its claims held against the world.
 
 ```bash
 curl -s -X POST localhost:8100/turn -d '{"turns":3}' -H 'content-type: application/json' >/dev/null
-curl -s localhost:8100/log | jq '.rows[-1].agents[] | {name, action, say, motive, grounded}'
+curl -s localhost:8100/log | jq '.rows[-1].agents[] | {name, action, say, why, grounded}'
+curl -s localhost:8100/log | jq '.rows[-1].agents[0].rejected[]'
 ```
+
+`why` is the motive the policy settled on, and each entry in `rejected` carries the
+candidate, its score and the reason it lost: `outscored` or `tier`, where a hard
+survival need beat it regardless of score.
 
 **Start over** — explicitly, because a seed alone must never overwrite a village:
 `cargo run -p society --release -- --reset`.
