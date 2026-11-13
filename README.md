@@ -96,18 +96,18 @@ policy derived, the register the mood implied, who was addressed, and whether th
 line's claims held against the world (`grounded 1.00`). The per-turn digest counts
 the lines spoken, the silences, the discredited claims and the lies.
 
-![Fast forward at 100x: turns commit as fast as the disk allows while the window keeps redrawing](docs/media/speed.gif)
-
-**Anyone can turn the dial to 100×**, but the village will not go faster than its
-disk: each committed turn rewrites the save and flushes it. That is the real
-ceiling, and the [Performance](#performance) section has the numbers.
-
 ![The inspector: a villager's persona, goal, vitals, skills, legal actions, and trust, affinity, respect and grudge against every other villager](docs/media/inspector.png)
 
 **Inspector** — one villager: persona, current goal, vitals, carried supplies,
 skills, the actions currently legal for them, the factors behind their last
 decision, and the trust/affinity/respect/grudge table toward everyone else. This
 is where the code stops looking like a black box.
+
+![Fast forward at 100x: turns commit as fast as the disk allows while the window keeps redrawing](docs/media/speed.gif)
+
+The dial goes to 100×, but the village will not go faster than its disk: each
+committed turn rewrites the save and flushes it. That is the real ceiling, and the
+[Performance](#performance) section has the numbers.
 
 ## Things to try (in five minutes)
 
