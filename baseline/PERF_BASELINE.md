@@ -130,6 +130,11 @@ oldest-out retention and the same clipping rule, but parses only the row's
 662 KB journal, the typed reader costs 1.564 ms and the growth reader 0.695 ms,
 with 50× fewer allocated bytes (1,421,745 → 28,395).
 
+The typed readers and growth reader share `diagnostics::scan_retained`: one
+oldest-out count/encoded-byte policy and one streaming read path. Each reader
+chooses its existing deserialised row shape. The growth reader summarises the
+retained deque directly, without allocating a vector of records or turn numbers.
+
 End to end, over HTTP, on a 600-turn village (`/turn` to 600, then 25 polls):
 
 | | before | after |

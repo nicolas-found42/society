@@ -171,14 +171,14 @@ fn main() {
         )]
         rt.block_on(society_server::telemetry::OPERATION.scope(society_server::telemetry::operation_id(), async move {
             let mut w = st.world.lock().await;
-            let mut warmup_recs = Vec::new();
+            let mut completed = 0_usize;
             for i in 0..n {
                 let started = st.start_step(&w, "warmup");
                 match society_sim::turn::step(&mut w) {
                     Ok(rec) => {
                         let civic_notes = window::apply_village_systems(&mut w);
                         let (committed, agents) = (rec.turn, rec.agents.len());
-                        warmup_recs.push(rec.clone());
+                        completed += 1;
                         let saved = st.commit_turn(&w, &rec, "warmup", started).await;
                         st.record(std::iter::once(rec)).await;
                         if let Err(e) = saved {
@@ -205,7 +205,7 @@ fn main() {
             st.audit(
                 "warmup",
                 world_turn,
-                serde_json::json!({"committed": warmup_recs.len()}),
+                serde_json::json!({"committed": completed}),
             );
         }));
     }

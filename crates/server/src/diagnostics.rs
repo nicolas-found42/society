@@ -454,6 +454,33 @@ fn scan<T: serde::de::DeserializeOwned>(
     limit: usize,
     include: impl Fn(&T) -> bool,
 ) -> Evidence<T> {
+    let Retained {
+        entries,
+        reads,
+        truncated,
+    } = scan_retained(head, limit, include);
+    Evidence {
+        entries: entries.into_iter().map(|(entry, _)| entry).collect(),
+        corrupt_lines: reads.corrupt_lines,
+        read_errors: reads.read_errors,
+        head_missing: reads.head_missing,
+        truncated,
+        files_read: reads.files_read,
+    }
+}
+
+/// A bounded tail before a caller materialises rows or summarises their turns.
+struct Retained<T> {
+    entries: std::collections::VecDeque<(T, usize)>,
+    reads: ReadStats,
+    truncated: bool,
+}
+
+fn scan_retained<T: serde::de::DeserializeOwned>(
+    head: &Path,
+    limit: usize,
+    include: impl Fn(&T) -> bool,
+) -> Retained<T> {
     let _guard = FILE_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -478,13 +505,10 @@ fn scan<T: serde::de::DeserializeOwned>(
         }
         Line::Parsed
     });
-    Evidence {
-        entries: tail.into_iter().map(|(entry, _)| entry).collect(),
-        corrupt_lines: reads.corrupt_lines,
-        read_errors: reads.read_errors,
-        head_missing: reads.head_missing,
+    Retained {
+        entries: tail,
+        reads,
         truncated,
-        files_read: reads.files_read,
     }
 }
 
@@ -605,31 +629,14 @@ struct JournalRowTurn {
 /// Summarise the retained journal window. See [`JournalGrowth`].
 #[must_use]
 pub fn journal_growth(save: &Path, limit: usize) -> JournalGrowth {
-    let _guard = FILE_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let limit = limit.min(MAX_QUERY_ENTRIES);
-    let mut window = std::collections::VecDeque::new();
-    let mut window_bytes = 0;
-    let mut truncated = false;
-    let reads = read_segments(&journal_path(save), |bytes| {
-        serde_json::from_slice::<JournalRowTurn>(bytes).map_or(Line::Corrupt, |row| {
-            // The same oldest-out retention [`scan`] applies, so the reported
-            // window is the newest tail either way.
-            window_bytes += bytes.len();
-            window.push_back((row.turn, bytes.len()));
-            while window.len() > limit || window_bytes > MAX_RESULT_BYTES {
-                if let Some((_, size)) = window.pop_front() {
-                    window_bytes -= size;
-                }
-                truncated = true;
-            }
-            Line::Parsed
-        })
-    });
+    let Retained {
+        entries,
+        reads,
+        truncated,
+    } = scan_retained(&journal_path(save), limit, |_: &JournalRowTurn| true);
     JournalGrowth {
-        turns: window.len(),
-        oldest_turn: window.iter().map(|(turn, _)| *turn).min(),
+        turns: entries.len(),
+        oldest_turn: entries.iter().map(|(row, _)| row.turn).min(),
         truncated,
         corrupt_lines: reads.corrupt_lines,
         read_errors: reads.read_errors,
@@ -1339,6 +1346,70 @@ mod tests {
         assert_eq!(absent.turns, 0);
         assert_eq!(absent.oldest_turn, None);
         assert!(absent.head_missing);
+    }
+
+    #[test]
+    fn retained_readers_share_byte_limits_but_not_row_validation() {
+        let dir = tmp("reader-byte-limits");
+        let save = dir.join("v.json");
+        let head = journal_path(&save);
+        let mut bytes = Vec::new();
+        for turn in 0..10 {
+            let mut entry = JournalEntry {
+                context: Context::default(),
+                journal_version: JOURNAL_VERSION,
+                build: String::new(),
+                save_version: crate::persistence::SAVE_VERSION,
+                seed: 7,
+                turn,
+                day: 0,
+                wall_time: 0,
+                record: rec(turn),
+            };
+            let unpadded = serde_json::to_vec(&entry).unwrap().len();
+            entry.build = "x".repeat(usize::try_from(MAX_LINE_BYTES).unwrap() - unpadded - 1);
+            bytes.extend_from_slice(&serde_json::to_vec(&entry).unwrap());
+            bytes.push(b'\n');
+        }
+        fs::write(&head, bytes).unwrap();
+        let typed = scan_journal(&save, 0, 100);
+        let growth = journal_growth(&save, 100);
+        assert_eq!(
+            typed.entries.iter().map(|e| e.turn).collect::<Vec<_>>(),
+            vec![2, 3, 4, 5, 6, 7, 8, 9]
+        );
+        assert!(typed.truncated);
+        assert_eq!(typed.corrupt_lines, 0);
+        assert_eq!(growth.turns, 8);
+        assert_eq!(growth.oldest_turn, Some(2));
+        assert!(growth.truncated);
+        assert_eq!(growth.corrupt_lines, 0);
+        let filtered = scan_journal(&save, 5, 100);
+        assert_eq!(
+            filtered.entries.iter().map(|e| e.turn).collect::<Vec<_>>(),
+            vec![5, 6, 7, 8, 9]
+        );
+        assert!(!filtered.truncated);
+        let empty = scan_journal(&save, 0, 0);
+        assert!(empty.entries.is_empty());
+        assert!(empty.truncated);
+        let empty_growth = journal_growth(&save, 0);
+        assert_eq!(empty_growth.turns, 0);
+        assert_eq!(empty_growth.oldest_turn, None);
+        assert!(empty_growth.truncated);
+        // Health validates only a row's turn; history requires the full envelope.
+        fs::write(&head, b"{\"turn\":5}\n{\"turn\":\"bad\"}\n").unwrap();
+        let typed = scan_journal(&save, 0, 100);
+        let growth = journal_growth(&save, 100);
+        assert!(typed.entries.is_empty());
+        assert_eq!(typed.corrupt_lines, 2);
+        assert_eq!(growth.turns, 1);
+        assert_eq!(growth.oldest_turn, Some(5));
+        assert_eq!(growth.corrupt_lines, 1);
+        assert_eq!(growth.files_read, 1);
+        assert!(!growth.head_missing);
+        assert_eq!(growth.read_errors, 0);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     /// The window spans rotated segments, so the growth reader has to walk them
