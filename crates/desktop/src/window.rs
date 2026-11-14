@@ -96,11 +96,8 @@ struct App {
     pending: Option<PendingTurn>,
 }
 
-/// A turn running on the runtime: where its result arrives, and when it began.
-type PendingTurn = (
-    std::sync::mpsc::Receiver<(Vec<TurnRecord>, Option<String>)>,
-    Instant,
-);
+/// A turn worker reports completion; records are published through `AppState::run`.
+type PendingTurn = (std::sync::mpsc::Receiver<(usize, Option<String>)>, Instant);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -1641,15 +1638,16 @@ impl App {
                     }
                 }
                 let world_turn = w.turn;
+                let completed = recs.len();
                 if !recs.is_empty() {
-                    st.record(recs.iter().cloned()).await;
+                    st.record(recs).await;
                 }
                 st.audit(
                     "turns",
                     world_turn,
-                    serde_json::json!({"committed": recs.len(), "failed": err.is_some()}),
+                    serde_json::json!({"committed": completed, "failed": err.is_some()}),
                 );
-                (recs, err)
+                (completed, err)
             };
             // The window polls this channel; if it closed first the turn is
             // still durable in the save, journal and audit log, so the dropped
@@ -1672,7 +1670,7 @@ impl App {
             return;
         };
         match rx.try_recv() {
-            Ok((recs, err)) => {
+            Ok((completed, err)) => {
                 self.busy = false;
                 let secs = started.elapsed().as_secs_f32();
                 if err.is_some() {
@@ -1682,8 +1680,8 @@ impl App {
                     || {
                         format!(
                             "{} {} · {:.0} ms",
-                            recs.len(),
-                            if recs.len() == 1 { "turn" } else { "turns" },
+                            completed,
+                            if completed == 1 { "turn" } else { "turns" },
                             secs * 1000.0
                         )
                     },
@@ -3942,7 +3940,7 @@ mod tests {
         assert!(app.pending.is_none());
         let (tx, rx) = std::sync::mpsc::channel();
         app.pending = Some((rx, Instant::now()));
-        tx.send((Vec::new(), Some("save failed".into()))).unwrap();
+        tx.send((0, Some("save failed".into()))).unwrap();
         app.drain_pending();
         assert!(!app.auto && !app.busy);
         assert!(app.status.contains("save failed"));
@@ -4140,6 +4138,82 @@ mod tests {
                     assert!(ring_width >= 800.0, "roster squeezed ring to {ring_width}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn playback_completion_preserves_history_and_failed_save_outcomes() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        for (requested, fail_save) in [(0, false), (1, false), (3, false), (3, true)] {
+            let dir = std::env::temp_dir().join(format!(
+                "society-completion-{}-{requested}-{fail_save}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            let save = dir.join("village.json");
+            let state = society_server::boot(7, &save, true).unwrap();
+            let mut expected = state.world.blocking_lock().clone();
+            if fail_save {
+                std::fs::remove_file(&save).unwrap();
+                std::fs::create_dir(&save).unwrap();
+            }
+            let mut app = observer(World::founding(7), &rt);
+            app.state = state;
+            app.refresh();
+            app.auto = true;
+            app.request_turn(requested);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while app.busy && Instant::now() < deadline {
+                app.drain_pending();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(!app.busy, "worker did not finish");
+            let completed = if fail_save { 1 } else { requested };
+            let mut expected_records = Vec::new();
+            for _ in 0..completed {
+                expected_records.push(society_sim::turn::step(&mut expected).unwrap());
+                apply_village_systems(&mut expected);
+            }
+            app.poll();
+            assert_eq!(
+                serde_json::to_value(&app.turns).unwrap(),
+                serde_json::to_value(&expected_records).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(&*app.state.world.blocking_lock()).unwrap(),
+                serde_json::to_value(&expected).unwrap()
+            );
+            let journal = society_server::diagnostics::scan_journal(&save, 0, 10);
+            for (entry, record) in journal.entries.iter().zip(&expected_records) {
+                assert_eq!(
+                    serde_json::to_value(&entry.record).unwrap(),
+                    serde_json::to_value(record).unwrap()
+                );
+            }
+            assert_eq!(journal.entries.len(), completed);
+            let audit = society_server::diagnostics::scan_audit(&save, 100);
+            let outcome = audit.entries.iter().find(|e| e.action == "turns").unwrap();
+            assert_eq!(outcome.detail["committed"], completed);
+            assert_eq!(outcome.detail["failed"], fail_save);
+            if fail_save {
+                assert!(!app.auto);
+                assert!(app
+                    .status
+                    .starts_with("Playback paused: turn 0 committed but not saved:"));
+                assert!(app.state.save_error.blocking_lock().is_some());
+            } else {
+                assert!(app.auto);
+                let noun = if completed == 1 { "turn" } else { "turns" };
+                assert!(app.status.starts_with(&format!("{completed} {noun} · ")));
+                assert_eq!(
+                    serde_json::to_value(
+                        society_server::persistence::load(&save).unwrap().unwrap()
+                    )
+                    .unwrap(),
+                    serde_json::to_value(&expected).unwrap()
+                );
+            }
+            std::fs::remove_dir_all(dir).unwrap();
         }
     }
 

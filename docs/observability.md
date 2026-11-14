@@ -144,6 +144,15 @@ turn, while completed save/digest `turn` is post-step. Ordering across files use
 operation/turn/stage, not seconds alone. Wall timestamps are epoch seconds and can
 jump with the clock; elapsed microseconds use a monotonic clock.
 
+The native worker publishes its completed records to `AppState.run` under the
+world lock before notifying the window with a completion count and optional
+error. The window reads feed and inspector history from that bounded tail, not
+from the notification. API and native worker batches publish history after the
+batch; warmup publishes after each turn and retains only its completion count.
+A failed save still counts the turn completed in memory and retains its record.
+Window and warmup turns apply desktop civic systems before saving; API turns
+continue to use only the pure engine.
+
 `source_id` contains git HEAD at build time plus a non-cryptographic fingerprint
 of workspace sources/manifests/lockfile, Cargo config and compiler version. It
 distinguishes dirty source trees whose package version remains 0.1.0; it is not an
